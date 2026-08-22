@@ -14,6 +14,8 @@ services:
       - --n-gpu-layers
       - "999"
       - --jinja
+      - --api-key
+      - "${QWEN_INFERENCE_API_KEY:?Set a private inference API key}"
     volumes:
       - "${DIV3RSA_MODEL_DIR:?Set the verified model directory}:/models:ro"
     expose:
@@ -35,3 +37,36 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=2g,noexec,nosuid
+    networks:
+      - inference
+
+  agent-worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/agent-worker.Dockerfile
+      args:
+        NODE_IMAGE: "${NODE_IMAGE:?Set an immutable Node image reference with @sha256 digest}"
+    restart: unless-stopped
+    depends_on:
+      qwen-v2-q8:
+        condition: service_healthy
+    environment:
+      SUPABASE_URL: "${SUPABASE_URL:?Set Supabase URL}"
+      SUPABASE_SECRET_KEY: "${SUPABASE_SECRET_KEY:?Set server-only Supabase secret}"
+      QWEN_INFERENCE_BASE_URL: http://qwen-v2-q8:8080/v1
+      QWEN_INFERENCE_API_KEY: "${QWEN_INFERENCE_API_KEY:?Set inference API key}"
+      DIV3RSA_WORKER_ID: "${DIV3RSA_WORKER_ID:-agent-worker-1}"
+      DIV3RSA_REPOSITORY_ROOT: /app
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - inference
+      - control-plane
+
+networks:
+  inference:
+    internal: true
+  control-plane: {}

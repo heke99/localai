@@ -27,8 +27,21 @@ export const MODEL_ALIASES: Record<ModelAlias, string> = {
   "verifier-prod": QWEN_Q8.id
 };
 
+const REGISTERED_MODELS = new Map<string, RegisteredModelVersion>([[QWEN_Q8.id, QWEN_Q8]]);
+
 export function resolveModel(alias: ModelAlias): RegisteredModelVersion {
   const id = MODEL_ALIASES[alias];
-  if (id !== QWEN_Q8.id) throw new Error(`Unregistered model version: ${id}`);
-  return QWEN_Q8;
+  const model = REGISTERED_MODELS.get(id);
+  if (!model) throw new Error(`Unregistered model version: ${id}`);
+  return model;
+}
+
+export function registerModel(model: RegisteredModelVersion): void {
+  if (REGISTERED_MODELS.has(model.id)) throw new Error(`Duplicate model version: ${model.id}`);
+  REGISTERED_MODELS.set(model.id, model);
+}
+
+export function assignAlias(alias: ModelAlias, modelVersionId: string): void {
+  if (!REGISTERED_MODELS.has(modelVersionId)) throw new Error(`Unregistered model version: ${modelVersionId}`);
+  MODEL_ALIASES[alias] = modelVersionId;
 }

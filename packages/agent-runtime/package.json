@@ -1,5 +1,5 @@
 {
-  "name": "@div3rsa/model-gateway",
+  "name": "@div3rsa/agent-runtime",
   "version": "0.1.0",
   "private": true,
   "type": "module",

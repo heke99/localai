@@ -28,8 +28,41 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
   }
 
   async *stream(request: GenerateRequest): AsyncIterable<string> {
-    const result = await this.generate(request);
-    yield result.content;
+    const response = await this.fetcher(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "x-request-id": request.requestId },
+      body: JSON.stringify({ model: QWEN_Q8.id, messages: request.messages, max_tokens: request.maxOutputTokens, temperature: request.temperature, stream: true })
+    });
+    if (!response.ok || !response.body) throw new Error(`Inference stream failed with status ${response.status}`);
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += value;
+      const events = buffer.split("\n\n");
+      buffer = events.pop() ?? "";
+      for (const event of events) {
+        for (const line of event.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (!data || data === "[DONE]") continue;
+          const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+          const content = parsed.choices?.[0]?.delta?.content;
+          if (content) yield content;
+        }
+      }
+    }
+    if (buffer.trim()) {
+      for (const line of buffer.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (!data || data === "[DONE]") continue;
+        const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+        const content = parsed.choices?.[0]?.delta?.content;
+        if (content) yield content;
+      }
+    }
   }
 
   async healthCheck(): Promise<ModelHealth> {

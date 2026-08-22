@@ -477,7 +477,84 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      cancel_agent_run: { Args: { target_run_id: string }; Returns: boolean }
+      get_agent_run: {
+        Args: { target_run_id: string }
+        Returns: {
+          cancel_requested_at: string
+          created_at: string
+          failure_code: string
+          id: string
+          mode: string
+          model_alias: string
+          output_content: string
+          status: string
+          updated_at: string
+        }[]
+      }
+      start_agent_run: {
+        Args: {
+          conversation_id: string
+          lab_authorization_id?: string
+          mode: string
+          prompt: string
+          request_id: string
+          trace_id: string
+          workspace_id: string
+        }
+        Returns: {
+          resolved_conversation_id: string
+          run_id: string
+        }[]
+      }
+      worker_claim_agent_run: {
+        Args: { worker_id: string }
+        Returns: {
+          conversation_id: string
+          job_id: string
+          mode: string
+          model_alias: string
+          organization_id: string
+          prompt: string
+          request_id: string
+          requested_by: string
+          run_id: string
+          trace_id: string
+        }[]
+      }
+      worker_complete_agent_run: {
+        Args: {
+          model_version?: string
+          output_content: string
+          target_job_id: string
+          target_run_id: string
+          usage?: Json
+        }
+        Returns: undefined
+      }
+      worker_fail_agent_run: {
+        Args: {
+          error_code: string
+          retryable?: boolean
+          target_job_id: string
+          target_run_id: string
+        }
+        Returns: undefined
+      }
+      worker_is_agent_run_cancelled: {
+        Args: { target_run_id: string }
+        Returns: boolean
+      }
+      worker_record_agent_step: {
+        Args: {
+          state?: Json
+          step_kind: string
+          step_status: string
+          summary: string
+          target_run_id: string
+        }
+        Returns: number
+      }
     }
     Enums: {
       access_request_status: "pending" | "reviewing" | "approved" | "rejected"

@@ -20,10 +20,21 @@ The canonical source is the supplied master specification. Delivery is staged so
 - Superadmin authority is enforced outside the foundation model and requires an `aal2` session for sensitive writes.
 - GPU workers are stateless; durable agent, knowledge and audit state remains in the control plane.
 
-## Next checkpoints
+## Pre-agent checkpoint implemented
 
-- Complete agent/skill runtime state machine and durable checkpoint worker.
-- Add provider adapters behind `GpuProvider`, queueing, metrics and autoscaling.
-- Add credential broker and sandbox profiles before enabling repository or Lab tool execution.
-- Add knowledge ingestion with provenance, conflict checks and superadmin approval.
-- Add eval, canary and rollback workflows before production model promotion.
+- Agent state machine, durable run queue, `SKIP LOCKED` claiming, retry limits, cancellation and checkpoints.
+- Progressive skill manifest, dependency-aware selection and pinned body loading.
+- Authenticated run API and Chat/Code/Lab/Research dashboard status flow.
+- Policy, credential, tool gateway and deny-by-default sandbox contracts.
+- Knowledge preparation, provenance, secret rejection and conflict persistence.
+- Dataset curation, deterministic version hashes, training separation and eval promotion gates.
+- Model-independent gateway, real SSE parsing and Qwen V2 Q8 worker boundary.
+
+## External installation checkpoint
+
+- Select the GPU provider and provision the first `large_96gb` worker.
+- Pin the llama.cpp and Node container digests plus CUDA/runtime versions.
+- Download and checksum-verify the 29 GB Q8 artifact on the worker.
+- Start the private model and agent-worker compose stack.
+- Run representative model, agent, RLS and complete UI-to-model E2E suites.
+- Record eval results before moving the model from `registered` to `verified`, `canary` and `production`.

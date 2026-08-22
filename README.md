@@ -23,6 +23,8 @@ The repository keeps **skills, memory, policy, credentials, model weights and GP
 - Immutable Qwen3.8-27B-OBLITERATED **V2 Q8_0** manifest and model aliases.
 - Stable `ModelAdapter` and `GpuProvider` contracts so app logic is independent from Qwen, llama.cpp, RTX PRO 6000 and a specific GPU provider.
 - Model worker compose profile, resumable checksum-verified artifact download and a `large_96gb` capacity profile.
+- Durable pre-agent runtime with run queue, state transitions, retries, cancellation, checkpoints and usage/audit persistence.
+- Progressive skill engine, policy/tool/credential/sandbox boundaries and learning/eval gates.
 
 The exact system specification is committed at `docs/CANONICAL-SYSTEM-SPEC.md`. Work continues in the phase order documented there; a model is not considered production deployed merely because it is registered.
 
@@ -71,3 +73,11 @@ The 29 GB Q8 model is intentionally not committed. A GPU worker downloads and ve
 ```bash
 DIV3RSA_MODEL_DIR=/models/qwen-v2 npm run model:fetch:q8
 ```
+
+After immutable Node, llama.cpp and CUDA image/runtime versions are pinned, the private inference and agent workers start together with:
+
+```bash
+docker compose -f infra/docker/model-worker.compose.yaml up --build
+```
+
+Until that external installation is complete, the application can accept and persist authorized runs but deliberately leaves them queued.
