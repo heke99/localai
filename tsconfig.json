@@ -22,6 +22,11 @@
       "@div3rsa/model-gateway": ["services/model-gateway/src/index.ts"],
       "@div3rsa/skill-engine": ["packages/skill-engine/src/index.ts"],
       "@div3rsa/learning-runtime": ["packages/learning-runtime/src/index.ts"]
+      ,"@div3rsa/knowledge-runtime": ["packages/knowledge-runtime/src/index.ts"]
+      ,"@div3rsa/repository-intelligence": ["packages/repository-intelligence/src/index.ts"]
+      ,"@div3rsa/integrations": ["packages/integrations/src/index.ts"]
+      ,"@div3rsa/sandbox-runtime": ["packages/sandbox-runtime/src/index.ts"]
+      ,"@div3rsa/operations-runtime": ["packages/operations-runtime/src/index.ts"]
     }
   },
   "include": ["apps/**/*.ts", "apps/**/*.tsx", "packages/**/*.ts", "services/**/*.ts", "workers/**/*.ts", "vitest.config.ts"],

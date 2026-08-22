@@ -38,3 +38,11 @@ The canonical source is the supplied master specification. Delivery is staged so
 - Start the private model and agent-worker compose stack.
 - Run representative model, agent, RLS and complete UI-to-model E2E suites.
 - Record eval results before moving the model from `registered` to `verified`, `canary` and `production`.
+
+## Operational implementation checkpoint
+
+- Superadmin control plane and AAL2-audited queue RPCs.
+- Knowledge and repository intelligence runtimes.
+- Provider, credential and disposable Docker execution boundaries.
+- Eval/canary/rollback, LoRA/QLoRA plan generation, telemetry and GPU reconciliation logic.
+- Browser E2E and Vercel build/deploy configuration.

@@ -46,4 +46,22 @@ h1 { max-width: 850px; margin: 20px 0; font-size: clamp(46px, 7vw, 88px); line-h
 .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
 .error { color: #fca5a5; }
 .assistant-output { max-width: 850px; width: 100%; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); white-space: pre-wrap; line-height: 1.55; }
+.admin-page { max-width: 1180px; margin: 0 auto; padding: 56px 24px 100px; display: grid; gap: 28px; }
+.admin-page h2 { font-size: clamp(36px, 6vw, 64px); margin: 10px 0; }
+.metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.metric-grid .card { display: grid; gap: 12px; color: var(--muted); }
+.metric-grid strong { color: var(--text); font-size: 32px; }
+.admin-section { border: 1px solid var(--line); border-radius: 14px; padding: 24px; background: #0d1214; }
+.admin-section h3 { margin-top: 0; }
+.admin-list { display: grid; gap: 10px; }
+.admin-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 15px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.admin-row div { display: grid; gap: 6px; }
+.admin-row small { display: block; color: var(--muted); }
+.admin-row p { margin: 3px 0 0; color: var(--muted); }
+.inline-form { display: grid; grid-template-columns: 220px 1fr auto; gap: 10px; }
+.inline-form select, .inline-form input { color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.button.danger { border-color: #6e3030; color: #fca5a5; }
+.status-badge { color: var(--accent); text-transform: uppercase; font-size: 12px; letter-spacing: .1em; }
 @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } .dashboard { grid-template-columns: 1fr; } .sidebar { display: none; } .navlinks { display: none; } }
+@media (max-width: 900px) { .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .inline-form { grid-template-columns: 1fr; } .admin-row { align-items: flex-start; flex-direction: column; } }

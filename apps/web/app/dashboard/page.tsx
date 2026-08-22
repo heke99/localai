@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "../../lib/supabase/server";
 import { AgentConsole } from "./agent-console";
+import Link from "next/link";
 
 export default async function DashboardPage() {
   const supabase = await createSupabaseServerClient();
@@ -12,7 +13,7 @@ export default async function DashboardPage() {
   }
   const { data: workspaces } = await supabase.from("workspaces").select("id").limit(1);
   return <main className="shell">
-    <nav className="nav"><span className="brand">DIV3RSA</span><span className="eyebrow">general-prod · Q8</span></nav>
+    <nav className="nav"><span className="brand">DIV3RSA</span><span className="eyebrow">general-prod · Q8</span>{user.app_metadata.system_role === "superadmin" ? <Link href="/superadmin">Control plane</Link> : null}</nav>
     <AgentConsole workspaceId={workspaces?.[0]?.id ?? null} />
   </main>;
 }

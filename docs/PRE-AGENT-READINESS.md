@@ -24,6 +24,19 @@ The application and control-plane code can be built and verified without install
 - Repository, shell, browser and Lab execution remain disabled until the credential broker and sandbox backends are connected.
 - Training remains disabled until a separate training compute pool is configured.
 
+## Code-complete operational foundations
+
+- AAL2-only superadmin control plane for access review, model/queue visibility and audited operation submission.
+- Bounded document/URL ingestion with provenance, secret and prompt-injection quarantine plus tenant-scoped hybrid retrieval.
+- Incremental repository manifests, symbol/dependency extraction and hybrid lexical/symbol search. Full compiler AST adapters remain provider-pluggable.
+- GitHub, Supabase and Vercel HTTP adapters with pinned API behavior, scoped tokens, host-safe identifiers and timeouts.
+- A real Docker sandbox backend with digest-pinned images, non-root execution, capability removal, resource ceilings and deny-by-default networking.
+- Reproducible LoRA/QLoRA execution plans, canary regression gates, rollback targets, redacted tracing and deterministic GPU reconciliation.
+- Playwright browser journeys with trace, screenshot and video retention on failure.
+- Vercel monorepo configuration for the linked `localai-web` project.
+
+These foundations are executable without the model weights. Provider mutations, training execution and GPU provisioning stay disabled until scoped credentials, pinned worker images and the separate compute pools are configured.
+
 ## Installation evidence required
 
 1. Immutable llama.cpp image digest.
