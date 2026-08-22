@@ -55,6 +55,6 @@ export default function Home() {
     </section>
 
     <section className="public-cta"><div><p className="section-label">Invitation only</p><h2>Redo för ett smartare sätt att arbeta?</h2></div><Link className="button primary hero-primary" href="/request-access">Ansök om åtkomst <span aria-hidden="true">↗</span></Link></section>
-    <footer className="public-footer"><span className="brand">DIV3RSA</span><span>Private intelligence for advanced work.</span><span>© 2026</span></footer>
+    <footer className="public-footer"><span className="brand">DIV3RSA</span><span>En privat arbetsyta för avancerat arbete.</span><span>© 2026</span></footer>
   </main>;
 }
