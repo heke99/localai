@@ -1,0 +1,285 @@
+.root {
+  --control-panel: #0d1214;
+  --control-panel-2: #111719;
+  --control-soft: #161d20;
+  --control-line: rgba(255,255,255,.09);
+  --control-line-strong: rgba(255,255,255,.15);
+  --control-text-soft: #9aa7a2;
+  --control-good: #72dfa9;
+  --control-warn: #e4bd74;
+  --control-bad: #ef8f8f;
+  background: #090c0e;
+}
+
+.root :global(.control-topbar) {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  min-height: 72px;
+  background: rgba(9,12,14,.94);
+  backdrop-filter: blur(16px);
+}
+
+.root :global(.control-topbar > div),
+.root :global(.control-top-actions),
+.root :global(.control-health),
+.root :global(.control-row-title),
+.root :global(.provider-grid article > div),
+.root :global(.dashboard-brand),
+.root :global(.dashboard-account),
+.root :global(.dashboard-nav-actions) {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.root :global(.control-role) {
+  padding-left: 12px;
+  border-left: 1px solid var(--control-line-strong);
+  color: var(--control-text-soft);
+  font-size: 12px;
+}
+
+.root :global(.control-top-actions) { margin-left: auto; }
+
+.root :global(.control-layout) {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  max-width: 1500px;
+  margin: 0 auto;
+}
+
+.root :global(.control-sidebar) {
+  position: sticky;
+  top: 72px;
+  align-self: start;
+  height: calc(100vh - 72px);
+  padding: 32px 22px;
+  border-right: 1px solid var(--control-line);
+}
+
+.root :global(.control-sidebar-title) {
+  margin: 0 0 14px;
+  color: #dfe7e3;
+  font-weight: 650;
+}
+
+.root :global(.control-sidebar nav) { display: grid; gap: 3px; }
+.root :global(.control-sidebar nav a) {
+  padding: 9px 10px;
+  border-radius: 7px;
+  color: var(--control-text-soft);
+  font-size: 13px;
+}
+.root :global(.control-sidebar nav a:hover) { color: #f5f8f6; background: rgba(255,255,255,.04); }
+
+.root :global(.control-sidebar-note) {
+  display: grid;
+  gap: 6px;
+  margin-top: 30px;
+  padding: 14px;
+  border: 1px solid var(--control-line);
+  border-radius: 10px;
+  background: var(--control-panel);
+  overflow: hidden;
+}
+.root :global(.control-sidebar-note span),
+.root :global(.control-sidebar-note small) { color: var(--control-text-soft); font-size: 11px; }
+.root :global(.control-sidebar-note strong) { font-size: 13px; }
+.root :global(.control-sidebar-note small) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.root :global(.control-content) {
+  min-width: 0;
+  padding: 46px clamp(24px,4vw,62px) 100px;
+}
+
+.root :global(.control-header) {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 42px;
+  scroll-margin-top: 100px;
+}
+.root :global(.control-header h1) {
+  margin: 10px 0 16px;
+  max-width: none;
+  font-size: clamp(46px,6vw,76px);
+}
+.root :global(.control-header .lead) { max-width: 790px; font-size: 17px; }
+
+.root :global(.control-health) {
+  flex: 0 0 260px;
+  padding: 15px 17px;
+  border: 1px solid var(--control-line);
+  border-radius: 11px;
+  background: var(--control-panel);
+}
+.root :global(.control-health > div) { display: grid; gap: 4px; }
+.root :global(.control-health strong) { font-size: 13px; }
+.root :global(.control-health small) { color: var(--control-text-soft); }
+.root :global(.health-dot) { width: 9px; height: 9px; border-radius: 50%; background: var(--control-warn); }
+.root :global(.health-dot.ready) { background: var(--control-good); box-shadow: 0 0 0 4px rgba(114,223,169,.08); }
+
+.root :global(.control-metrics) {
+  display: grid;
+  grid-template-columns: repeat(6,minmax(0,1fr));
+  gap: 10px;
+  margin-top: 36px;
+}
+.root :global(.control-metrics article) {
+  display: grid;
+  gap: 7px;
+  padding: 17px;
+  border: 1px solid var(--control-line);
+  border-radius: 10px;
+  background: var(--control-panel);
+}
+.root :global(.control-metrics span), .root :global(.control-metrics small) { color: var(--control-text-soft); font-size: 11px; }
+.root :global(.control-metrics strong) { font-size: 27px; font-weight: 620; }
+
+.root :global(.control-panel) {
+  margin-top: 22px;
+  padding: 24px;
+  border: 1px solid var(--control-line);
+  border-radius: 12px;
+  background: var(--control-panel);
+  scroll-margin-top: 92px;
+}
+.root :global(.control-section-head) {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--control-line);
+}
+.root :global(.control-section-head h2) { margin: 4px 0 0; font-size: 24px; letter-spacing: -.025em; }
+.root :global(.panel-count) {
+  min-width: 34px;
+  padding: 6px 9px;
+  border: 1px solid var(--control-line-strong);
+  border-radius: 999px;
+  color: var(--control-text-soft);
+  text-align: center;
+  font-size: 11px;
+}
+.root :global(.panel-copy) { max-width: 780px; color: var(--control-text-soft); line-height: 1.55; }
+
+.root :global(.control-list), .root :global(.compact-list) { display: grid; gap: 8px; margin-top: 16px; }
+.root :global(.control-row), .root :global(.compact-row) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 22px;
+  min-width: 0;
+  padding: 14px 15px;
+  border: 1px solid var(--control-line);
+  border-radius: 9px;
+  background: var(--control-panel-2);
+}
+.root :global(.control-row-main), .root :global(.compact-row > div:first-child) { min-width: 0; }
+.root :global(.control-row-main) { display: grid; gap: 7px; }
+.root :global(.control-row-title) { flex-wrap: wrap; }
+.root :global(.control-row small), .root :global(.compact-row small) { color: var(--control-text-soft); }
+.root :global(.control-row p), .root :global(.compact-row p) { margin: 0; color: #b7c0bc; line-height: 1.45; }
+.root :global(.compact-row strong), .root :global(.compact-row small) { display: block; }
+.root :global(.compact-row strong) { margin-bottom: 4px; font-size: 13px; }
+.root :global(.compact-row small) { font-size: 11px; }
+.root :global(.align-right) { text-align: right; }
+.root :global(.align-right span) { display: block; margin-bottom: 4px; font-size: 12px; }
+.root :global(.spaced-list) { margin-top: 18px; }
+
+.root :global(.status-badge) {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 4px 7px;
+  border: 1px solid rgba(114,223,169,.22);
+  border-radius: 999px;
+  color: var(--control-good);
+  background: rgba(114,223,169,.04);
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.root :global(.status-muted), .root :global(.status-pending), .root :global(.status-queued), .root :global(.status-registered) { color: #b9c2be; border-color: var(--control-line-strong); background: rgba(255,255,255,.02); }
+.root :global(.status-reviewing), .root :global(.status-running), .root :global(.status-retrying), .root :global(.status-canary), .root :global(.status-waiting) { color: var(--control-warn); border-color: rgba(228,189,116,.26); background: rgba(228,189,116,.04); }
+.root :global(.status-approved), .root :global(.status-active), .root :global(.status-completed), .root :global(.status-production), .root :global(.status-ready), .root :global(.status-verified) { color: var(--control-good); border-color: rgba(114,223,169,.24); }
+.root :global(.status-rejected), .root :global(.status-failed), .root :global(.status-cancelled), .root :global(.status-timed_out) { color: var(--control-bad); border-color: rgba(239,143,143,.28); background: rgba(239,143,143,.04); }
+
+.root :global(.onboarding-track) { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 4px; }
+.root :global(.onboarding-track span) { padding: 5px 8px; border: 1px solid var(--control-line); border-radius: 6px; color: #77817d; font-size: 10px; }
+.root :global(.onboarding-track span.done) { color: var(--control-good); border-color: rgba(114,223,169,.2); }
+
+.root :global(.control-split) { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px; margin-top: 18px; }
+.root :global(.control-split h3) { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+.root :global(.empty-state) { margin: 16px 0 0; color: var(--control-text-soft); font-size: 13px; line-height: 1.5; }
+
+.root :global(.control-form) {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--control-line);
+  border-radius: 9px;
+  background: #0a0f11;
+}
+.root :global(.control-form label) { display: grid; gap: 6px; min-width: 0; }
+.root :global(.control-form label > span) { color: var(--control-text-soft); font-size: 11px; }
+.root :global(.control-form input), .root :global(.control-form select), .root :global(.control-form textarea) {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--control-line-strong);
+  border-radius: 8px;
+  padding: 11px 12px;
+  background: var(--control-panel-2);
+  color: #f1f5f3;
+}
+.root :global(.control-form textarea) { min-height: 96px; resize: vertical; }
+.root :global(.model-routing-form) { grid-template-columns: minmax(150px,.6fr) minmax(260px,1.4fr) auto; align-items: end; }
+.root :global(.operation-form) { grid-template-columns: minmax(180px,.6fr) minmax(280px,1.4fr) auto; align-items: end; }
+.root :global(.quick-operation) { grid-template-columns: 1fr auto; align-items: end; }
+.root :global(.lab-form) { grid-template-columns: repeat(3,minmax(0,1fr)); align-items: end; }
+.root :global(.wide-field) { grid-column: 1 / -1; }
+
+.root :global(.alias-grid), .root :global(.provider-grid) { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; margin-top: 18px; }
+.root :global(.alias-grid article), .root :global(.provider-grid article) { display: grid; gap: 6px; padding: 14px; border: 1px solid var(--control-line); border-radius: 9px; background: var(--control-panel-2); }
+.root :global(.alias-grid span) { color: var(--control-text-soft); font-size: 10px; text-transform: uppercase; letter-spacing: .1em; }
+.root :global(.alias-grid strong) { font-size: 16px; }
+.root :global(.alias-grid small), .root :global(.provider-grid p) { margin: 0; color: var(--control-text-soft); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.root :global(.provider-grid article > div) { justify-content: space-between; }
+
+.root :global(.usage-json) { max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c0cac5; font-size: 10px; }
+
+@media (max-width: 1180px) {
+  .root :global(.control-metrics) { grid-template-columns: repeat(3,minmax(0,1fr)); }
+  .root :global(.alias-grid), .root :global(.provider-grid) { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+
+@media (max-width: 860px) {
+  .root :global(.control-layout) { display: block; }
+  .root :global(.control-sidebar) { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--control-line); padding: 16px 20px; overflow-x: auto; }
+  .root :global(.control-sidebar-title), .root :global(.control-sidebar-note) { display: none; }
+  .root :global(.control-sidebar nav) { display: flex; width: max-content; }
+  .root :global(.control-sidebar nav a) { white-space: nowrap; }
+  .root :global(.control-content) { padding: 30px 18px 80px; }
+  .root :global(.control-header) { display: grid; }
+  .root :global(.control-health) { width: 100%; flex-basis: auto; }
+  .root :global(.control-split) { grid-template-columns: 1fr; }
+  .root :global(.model-routing-form), .root :global(.operation-form), .root :global(.quick-operation), .root :global(.lab-form) { grid-template-columns: 1fr; }
+  .root :global(.wide-field) { grid-column: auto; }
+}
+
+@media (max-width: 620px) {
+  .root :global(.control-topbar) { align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+  .root :global(.control-top-actions) { width: 100%; margin: 0; }
+  .root :global(.control-top-actions .button) { flex: 1; text-align: center; }
+  .root :global(.control-metrics) { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .root :global(.alias-grid), .root :global(.provider-grid) { grid-template-columns: 1fr; }
+  .root :global(.control-row), .root :global(.compact-row) { align-items: flex-start; flex-direction: column; }
+  .root :global(.align-right) { text-align: left; }
+  .root :global(.row-actions) { width: 100%; }
+  .root :global(.row-actions .button) { flex: 1; }
+  .root :global(.usage-json) { max-width: 100%; }
+}

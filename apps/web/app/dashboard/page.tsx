@@ -14,22 +14,36 @@ export default async function DashboardPage() {
     if (assurance?.currentLevel !== "aal2") redirect("/mfa");
   }
 
-  const [{ data: workspaces }, { data: profile }] = await Promise.all([
-    supabase.from("workspaces").select("id,name").limit(1),
-    supabase.from("profiles").select("display_name").eq("user_id", user.id).maybeSingle()
-  ]);
-  const workspace = workspaces?.[0] ?? null;
+  const { data: profile } = await supabase.from("profiles").select("display_name").eq("user_id", user.id).maybeSingle();
 
-  if (!isSuperadmin && !workspace) redirect("/auth/accepted");
+  let workspace: { id: string; name: string } | null = null;
+  if (isSuperadmin) {
+    const { data: internalOrganization } = await supabase.from("organizations").select("id").eq("slug", "div3rsa-internal").maybeSingle();
+    if (internalOrganization) {
+      const { data: internalWorkspaces } = await supabase
+        .from("workspaces")
+        .select("id,name")
+        .eq("organization_id", internalOrganization.id)
+        .order("created_at", { ascending: true })
+        .limit(1);
+      workspace = internalWorkspaces?.[0] ?? null;
+    }
+  } else {
+    const { data: workspaces } = await supabase.from("workspaces").select("id,name").order("created_at", { ascending: true }).limit(1);
+    workspace = workspaces?.[0] ?? null;
+  }
+
+  if (!workspace) {
+    if (isSuperadmin) redirect("/superadmin");
+    redirect("/auth/accepted");
+  }
 
   return <main className="shell">
-    <nav className="nav">
-      <span className="brand">DIV3RSA</span>
-      <span className="eyebrow">general-prod · Q8</span>
-      <span className="muted">{profile?.display_name ?? user.email}</span>
-      {isSuperadmin ? <Link href="/superadmin">Control plane</Link> : null}
-      <form action="/auth/signout" method="post"><button className="button" type="submit">Logga ut</button></form>
+    <nav className="nav dashboard-nav">
+      <div className="dashboard-brand"><span className="brand">DIV3RSA</span><span className="workspace-chip">{workspace.name}</span></div>
+      <div className="dashboard-account"><span className="muted">{profile?.display_name ?? user.email}</span>{isSuperadmin ? <span className="status-badge">superadmin</span> : null}</div>
+      <div className="dashboard-nav-actions">{isSuperadmin ? <Link className="button" href="/superadmin">Control plane</Link> : null}<form action="/auth/signout" method="post"><button className="button" type="submit">Logga ut</button></form></div>
     </nav>
-    <AgentConsole workspaceId={workspace?.id ?? null} />
+    <AgentConsole workspaceId={workspace.id} />
   </main>;
 }
