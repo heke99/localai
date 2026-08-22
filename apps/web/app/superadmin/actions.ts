@@ -113,7 +113,52 @@ export async function enqueueOperation(formData: FormData) {
   const allowed = new Set(["knowledge-ingestion", "repository-index", "eval", "training", "gpu-reconcile", "rollback"]);
   if (!allowed.has(queue) || !resource || resource.length > 2048) throw new Error("invalid_operation");
   const operationKey = `${queue}:${resource}`;
-  const { error } = await supabase.rpc("superadmin_enqueue_operation", { target_queue: queue, operation_payload: { resource, requestedAt: new Date().toISOString() }, operation_key: operationKey });
+  const { error } = await supabase.rpc("superadmin_enqueue_operation", {
+    target_queue: queue,
+    operation_payload: { resource, requestedAt: new Date().toISOString() },
+    operation_key: operationKey
+  });
+  if (error) throw new Error(error.message);
+  revalidatePath("/superadmin");
+}
+
+export async function setModelAlias(formData: FormData) {
+  const supabase = await requireSuperadmin();
+  const alias = String(formData.get("alias") ?? "");
+  const modelVersionId = String(formData.get("modelVersionId") ?? "");
+  const allowedAliases = new Set(["general-prod", "code-prod", "lab-prod", "research-prod", "reasoner-prod", "verifier-prod"]);
+  if (!allowedAliases.has(alias) || !/^[0-9a-f-]{36}$/i.test(modelVersionId)) throw new Error("invalid_model_alias_change");
+
+  const { error } = await supabase.rpc("superadmin_set_model_alias", {
+    target_alias: alias,
+    target_model_version_id: modelVersionId
+  });
+  if (error) throw new Error(error.message);
+  revalidatePath("/superadmin");
+  revalidatePath("/dashboard");
+}
+
+export async function createLabAuthorization(formData: FormData) {
+  const supabase = await requireSuperadmin();
+  const organizationId = String(formData.get("organizationId") ?? "");
+  const projectId = String(formData.get("projectId") ?? "").trim();
+  const target = String(formData.get("target") ?? "").trim();
+  const scope = String(formData.get("scope") ?? "").trim();
+  const validHours = Number(formData.get("validHours") ?? 24);
+
+  if (!/^[0-9a-f-]{36}$/i.test(organizationId)) throw new Error("invalid_lab_organization");
+  if (projectId && !/^[0-9a-f-]{36}$/i.test(projectId)) throw new Error("invalid_lab_project");
+  if (!target || target.length > 1024 || !scope || scope.length > 4000 || !Number.isInteger(validHours) || validHours < 1 || validHours > 720) {
+    throw new Error("invalid_lab_authorization");
+  }
+
+  const { error } = await supabase.rpc("superadmin_create_lab_authorization", {
+    target_organization_id: organizationId,
+    target_project_id: projectId || null,
+    target_target: target,
+    target_scope: scope,
+    valid_hours: validHours
+  });
   if (error) throw new Error(error.message);
   revalidatePath("/superadmin");
 }
