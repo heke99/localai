@@ -35,6 +35,17 @@ export function SetPasswordClient() {
       return setError("Lösenordet kunde inte sparas. Välj ett starkare lösenord och försök igen.");
     }
 
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
+      setBusy(false);
+      return setError("Lösenordet är sparat men kontot kunde inte verifieras. Logga in igen.");
+    }
+
+    if (user.app_metadata.system_role === "superadmin") {
+      window.location.replace("/mfa");
+      return;
+    }
+
     const { error: completeError } = await supabase.rpc("complete_user_onboarding");
     if (completeError) {
       setBusy(false);
