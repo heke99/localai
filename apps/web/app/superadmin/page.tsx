@@ -68,8 +68,8 @@ export default async function SuperadminPage() {
   if (!user) redirect("/sign-in");
   if (user.app_metadata.system_role !== "superadmin") redirect("/dashboard");
 
-  const { data: assurance } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-  if (assurance?.currentLevel !== "aal2") redirect("/mfa");
+  const { data: stepUp, error: stepUpError } = await supabase.rpc("superadmin_email_step_up_status");
+  if (stepUpError || !(stepUp as { verified?: boolean } | null)?.verified) redirect("/verify-email");
 
   const [{ data: snapshotData, error: snapshotError }, { data: requests, error: requestError }] = await Promise.all([
     supabase.rpc("superadmin_control_snapshot"),
@@ -94,7 +94,7 @@ export default async function SuperadminPage() {
     <nav className="nav control-topbar">
       <div>
         <span className="brand">DIV3RSA CONTROL</span>
-        <span className="control-role">Superadmin · AAL2</span>
+        <span className="control-role">Superadmin · verifierad session</span>
       </div>
       <div className="control-top-actions">
         <Link className="button primary" href="/dashboard">Open user dashboard</Link>
