@@ -1,0 +1,16 @@
+id: large_96gb
+minimum_vram_gb: 90
+initial_workers: 1
+maximum_burst_workers: 4
+request_classes:
+  - INTERACTIVE_HIGH
+  - AGENT_NORMAL
+  - BACKGROUND_LOW
+preferred_hardware:
+  - RTX PRO 6000 Blackwell 96GB
+  - H100 94GB
+  - H200 141GB
+providers:
+  - hyperstack
+  - runpod
+stateless: true
