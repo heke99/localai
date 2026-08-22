@@ -1,0 +1,28 @@
+version: 1
+policy:
+  auto_install: false
+  require_commit_pin: true
+  require_license_review: true
+  require_human_review: true
+  require_behavior_eval: true
+sources:
+  - repo: agentskills/agentskills
+    role: format-specification
+    license_note: Apache-2.0 code; documentation terms upstream
+    status: reviewed-reference
+  - repo: obra/superpowers
+    commit: b36e0829c6d0140e93cfef2ca599b1b07d4a7797
+    role: engineering-process-patterns
+    license_note: MIT
+    status: reviewed-reference
+  - repo: supabase/agent-skills
+    role: supabase-postgres-patterns
+    status: reviewed-reference
+  - repo: vercel-labs/agent-skills
+    role: nextjs-vercel-performance-patterns
+    license_note: MIT
+    status: reviewed-reference
+  - repo: trailofbits/skills
+    role: security-audit-patterns
+    license_note: CC-BY-SA-4.0 upstream; LocalAI does not vendor upstream text here
+    status: reviewed-reference
