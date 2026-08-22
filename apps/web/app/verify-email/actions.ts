@@ -29,8 +29,8 @@ export async function sendVerificationCode() {
 
 export async function verifyEmailCode(formData: FormData) {
   const supabase = await requirePrivilegedSession();
-  const code = String(formData.get("code") ?? "").replace(/\D/g, "");
-  if (code.length !== 6) redirect("/verify-email?error=invalid_code");
+  const code = String(formData.get("code") ?? "").trim();
+  if (!/^[0-9]{6}$/.test(code)) redirect("/verify-email?error=invalid_code");
 
   const { data, error } = await supabase.rpc("superadmin_verify_email_code", { code });
   if (error) redirect("/verify-email?error=verification_failed");
