@@ -1,0 +1,13 @@
+@supports selector(:has(*)) {
+  div:has(> aside:first-child + main:last-child) {
+    grid-template-columns: 216px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1080px) {
+  @supports selector(:has(*)) {
+    div:has(> aside:first-child + main:last-child) {
+      grid-template-columns: 76px minmax(0, 1fr);
+    }
+  }
+}
