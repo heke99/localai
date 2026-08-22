@@ -2,6 +2,13 @@ import type { EmailOtpType } from "@supabase/supabase-js";
 import { NextResponse, type NextRequest } from "next/server";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
 
+const ALLOWED_EMAIL_OTP_TYPES = new Set<EmailOtpType>([
+  "invite",
+  "recovery",
+  "email",
+  "email_change"
+]);
+
 function safeNext(request: NextRequest, rawNext: string | null) {
   if (!rawNext) return "/";
   try {
@@ -13,20 +20,33 @@ function safeNext(request: NextRequest, rawNext: string | null) {
   }
 }
 
+function noStoreRedirect(url: URL) {
+  const response = NextResponse.redirect(url, 303);
+  response.headers.set("Cache-Control", "no-store, max-age=0");
+  response.headers.set("Pragma", "no-cache");
+  return response;
+}
+
 export async function GET(request: NextRequest) {
   const tokenHash = request.nextUrl.searchParams.get("token_hash");
-  const type = request.nextUrl.searchParams.get("type") as EmailOtpType | null;
+  const rawType = request.nextUrl.searchParams.get("type");
+  const type = rawType as EmailOtpType | null;
   const next = safeNext(request, request.nextUrl.searchParams.get("next"));
 
-  if (!tokenHash || !type) {
-    return NextResponse.redirect(new URL("/auth/accepted?error=missing_token", request.url), 303);
+  if (!tokenHash || !type || !ALLOWED_EMAIL_OTP_TYPES.has(type)) {
+    return noStoreRedirect(new URL("/auth/accepted?error=missing_token", request.url));
   }
 
+  // Cross-device by design: verification is based only on the signed one-time token in the
+  // email. No existing browser session, localStorage value, PKCE verifier or originating
+  // device cookie is required, so a link requested on desktop may safely be opened on mobile
+  // (and vice versa). Successful verification establishes the session on the device that
+  // actually opened the link.
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type });
   if (error) {
-    return NextResponse.redirect(new URL("/auth/accepted?error=invalid_token", request.url), 303);
+    return noStoreRedirect(new URL("/auth/accepted?error=invalid_token", request.url));
   }
 
-  return NextResponse.redirect(new URL(next, request.url), 303);
+  return noStoreRedirect(new URL(next, request.url));
 }

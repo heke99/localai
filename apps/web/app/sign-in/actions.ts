@@ -9,10 +9,23 @@ export async function signIn(form: FormData) {
   if (!email.includes("@") || password.length < 8) redirect("/sign-in?error=credentials");
 
   const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) redirect("/sign-in?error=credentials");
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error || !data.user) redirect("/sign-in?error=credentials");
 
-  const { data: assurance } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-  if (assurance?.nextLevel === "aal2" && assurance.currentLevel !== "aal2") redirect("/mfa");
+  if (data.user.app_metadata.system_role === "superadmin") {
+    const { data: status } = await supabase.rpc("superadmin_email_step_up_status");
+    if ((status as { locked_until?: string | null } | null)?.locked_until) redirect("/verify-email?error=locked");
+
+    const { error: codeError } = await supabase.auth.reauthenticate();
+    if (codeError) redirect("/verify-email?error=send");
+
+    const { data: begun, error: beginError } = await supabase.rpc("superadmin_begin_email_step_up");
+    if (beginError) redirect("/verify-email?error=send");
+    const beginResult = begun as { started?: boolean; reason?: string } | null;
+    if (!beginResult?.started) redirect(beginResult?.reason === "locked" ? "/verify-email?error=locked" : "/verify-email?error=send");
+
+    redirect("/verify-email?sent=1");
+  }
+
   redirect("/dashboard");
 }

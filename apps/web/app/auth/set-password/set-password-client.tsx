@@ -83,7 +83,25 @@ export function SetPasswordClient({ mode }: { mode: PasswordMode }) {
     }
 
     if (user.app_metadata.system_role === "superadmin") {
-      window.location.replace("/mfa");
+      const { data: status } = await supabase.rpc("superadmin_email_step_up_status");
+      if ((status as { locked_until?: string | null } | null)?.locked_until) {
+        window.location.replace("/verify-email?error=locked");
+        return;
+      }
+
+      const { error: codeError } = await supabase.auth.reauthenticate();
+      if (codeError) {
+        window.location.replace("/verify-email?error=send");
+        return;
+      }
+
+      const { data: begun, error: beginError } = await supabase.rpc("superadmin_begin_email_step_up");
+      const beginResult = begun as { started?: boolean; reason?: string } | null;
+      window.location.replace(
+        beginError || !beginResult?.started
+          ? beginResult?.reason === "locked" ? "/verify-email?error=locked" : "/verify-email?error=send"
+          : "/verify-email?sent=1"
+      );
       return;
     }
 
