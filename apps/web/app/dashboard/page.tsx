@@ -1,7 +1,6 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "../../lib/supabase/server";
-import { AgentConsole } from "./agent-console";
+import { WorkspaceShell } from "./workspace-shell";
 
 export default async function DashboardPage() {
   const supabase = await createSupabaseServerClient();
@@ -38,16 +37,15 @@ export default async function DashboardPage() {
     redirect("/auth/accepted");
   }
 
-  return <main className="shell">
-    <nav className="nav dashboard-nav">
-      <div className="dashboard-brand"><span className="brand">DIV3RSA</span><span className="workspace-chip">{workspace.name}</span></div>
-      <div className="dashboard-account"><span className="muted">{profile?.display_name ?? user.email}</span>{isSuperadmin ? <span className="status-badge">superadmin</span> : null}</div>
-      <div className="dashboard-nav-actions">
-        <Link className="button" href="/auth/set-password?mode=change">Ändra lösenord</Link>
-        {isSuperadmin ? <Link className="button" href="/superadmin">Control plane</Link> : null}
-        <form action="/auth/signout" method="post"><button className="button" type="submit">Logga ut</button></form>
-      </div>
-    </nav>
-    <AgentConsole workspaceId={workspace.id} />
-  </main>;
+  const { data: snapshotData } = await supabase.rpc("workspace_dashboard_snapshot", { target_workspace_id: workspace.id });
+  const snapshot = (snapshotData ?? {}) as Parameters<typeof WorkspaceShell>[0]["snapshot"];
+
+  return <WorkspaceShell
+    workspaceId={workspace.id}
+    workspaceName={workspace.name}
+    displayName={profile?.display_name ?? user.email?.split("@")[0] ?? "Konto"}
+    email={user.email ?? ""}
+    isSuperadmin={isSuperadmin}
+    snapshot={snapshot}
+  />;
 }
