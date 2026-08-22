@@ -83,7 +83,8 @@ export function SetPasswordClient({ mode }: { mode: PasswordMode }) {
     }
 
     if (user.app_metadata.system_role === "superadmin") {
-      window.location.replace("/mfa");
+      const { error: codeError } = await supabase.auth.reauthenticate();
+      window.location.replace(codeError ? "/verify-email?error=send" : "/verify-email?sent=1");
       return;
     }
 
