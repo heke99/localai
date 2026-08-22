@@ -7,6 +7,12 @@ type StepUpResult = {
   verified?: boolean;
   reason?: "invalid_code" | "expired" | "locked" | "not_authorized";
   remaining_attempts?: number;
+  locked_until?: string | null;
+};
+
+type BeginResult = {
+  started?: boolean;
+  reason?: "locked" | "not_authorized";
 };
 
 async function requirePrivilegedSession() {
@@ -20,10 +26,18 @@ async function requirePrivilegedSession() {
 export async function sendVerificationCode() {
   const supabase = await requirePrivilegedSession();
   const { data: status } = await supabase.rpc("superadmin_email_step_up_status");
-  if ((status as { verified?: boolean } | null)?.verified) redirect("/superadmin");
+  const current = status as StepUpResult | null;
+  if (current?.verified) redirect("/superadmin");
+  if (current?.locked_until) redirect("/verify-email?error=locked");
 
   const { error } = await supabase.auth.reauthenticate();
   if (error) redirect("/verify-email?error=send");
+
+  const { data: begun, error: beginError } = await supabase.rpc("superadmin_begin_email_step_up");
+  if (beginError) redirect("/verify-email?error=send");
+  const beginResult = begun as BeginResult | null;
+  if (!beginResult?.started) redirect(beginResult?.reason === "locked" ? "/verify-email?error=locked" : "/verify-email?error=send");
+
   redirect("/verify-email?sent=1");
 }
 
