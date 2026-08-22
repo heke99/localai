@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { createSupabaseBrowserClient } from "../../../lib/supabase/client";
+import { hydrateSessionFromAuthUrl } from "../../../lib/supabase/session-from-url";
 
 export function SetPasswordClient() {
   const [password, setPassword] = useState("");
@@ -15,16 +16,16 @@ export function SetPasswordClient() {
     if (password.length < 12) return setError("Lösenordet måste vara minst 12 tecken.");
     if (password !== confirmPassword) return setError("Lösenorden matchar inte.");
 
-    let supabase;
-    try {
-      supabase = createSupabaseBrowserClient();
-    } catch {
-      return setError("Inloggningskonfiguration saknas. Kontakta administratören.");
-    }
-
+    const supabase = createSupabaseBrowserClient();
     setBusy(true);
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !session) {
+
+    try {
+      const session = await hydrateSessionFromAuthUrl(supabase);
+      if (!session) {
+        setBusy(false);
+        return setError("Lösenordslänken är ogiltig eller har gått ut. Begär en ny länk via administratören.");
+      }
+    } catch {
       setBusy(false);
       return setError("Lösenordslänken är ogiltig eller har gått ut. Begär en ny länk via administratören.");
     }
