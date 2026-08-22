@@ -23,7 +23,7 @@ export async function POST() {
   if (grant.password_email_sent_at) return NextResponse.json({ sent: true, alreadySent: true });
 
   const { error: emailError } = await admin.auth.resetPasswordForEmail(grant.email, {
-    redirectTo: `${getAppUrl()}/auth/set-password`
+    redirectTo: `${getAppUrl()}/auth/set-password?mode=onboarding`
   });
   if (emailError) return NextResponse.json({ error: "password_email_failed" }, { status: 502 });
 
