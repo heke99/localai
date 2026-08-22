@@ -7,7 +7,19 @@ Production sender for all Supabase Auth emails:
 - Site URL: `https://system.div3rsa.com`
 - SMTP provider: Resend
 
-The application owns the token exchange endpoint at `/auth/confirm`. Auth emails should use `TokenHash` and send users through that endpoint so the server establishes the Supabase session before redirecting.
+The application owns the token exchange endpoint at `/auth/confirm`. Auth emails use `TokenHash` and send users through that endpoint so the server verifies the one-time token and establishes the Supabase session before redirecting.
+
+## Cross-device requirement
+
+All email verification links are device-independent by design:
+
+- a link requested on desktop may be opened on mobile, tablet or another computer
+- no originating browser cookie, localStorage value, PKCE verifier or previous session is required
+- the signed one-time `TokenHash` in the email is the verification credential
+- a successful verification creates the authenticated session on the device that opened the link
+- links always use the canonical HTTPS production origin `https://system.div3rsa.com`
+- verification responses are `no-store` so token-bearing URLs are not cached by the application
+- every mail includes both a clickable action and a visible fallback URL so restrictive mobile mail clients do not make the flow unusable
 
 ## Invite user
 
@@ -26,6 +38,8 @@ HTML:
     Bekräfta e-postadress
   </a>
 </p>
+<p>Om knappen inte fungerar kan du öppna den här länken:</p>
+<p>{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=invite&next=/auth/accepted</p>
 <p>Om du inte förväntade dig den här inbjudan kan du ignorera mailet.</p>
 ```
 
@@ -47,6 +61,8 @@ HTML:
     Välj nytt lösenord
   </a>
 </p>
+<p>Om knappen inte fungerar kan du öppna den här länken:</p>
+<p>{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next={{ .RedirectTo }}</p>
 <p>Om du inte begärde detta kan du ignorera mailet.</p>
 ```
 
@@ -72,6 +88,8 @@ HTML:
     Bekräfta e-postadress
   </a>
 </p>
+<p>Om knappen inte fungerar kan du öppna den här länken:</p>
+<p>{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email&next=/auth/accepted</p>
 ```
 
 ## Reauthentication / privileged email verification
@@ -101,6 +119,8 @@ Application security for this code:
 - consumed after successful verification
 - privileged step-up expires after 12 hours or when the underlying auth session ends
 - failed and successful verification attempts are audited without storing the plaintext code
+
+The six-digit privileged step-up code intentionally remains session-bound. If a superadmin starts the password sign-in on desktop, that six-digit code must be entered on that signed-in desktop session. Email verification and password-reset links, in contrast, are explicitly cross-device and may be opened on another device.
 
 ## Supabase URL configuration
 
