@@ -13,8 +13,18 @@ export async function signIn(form: FormData) {
   if (error || !data.user) redirect("/sign-in?error=credentials");
 
   if (data.user.app_metadata.system_role === "superadmin") {
+    const { data: status } = await supabase.rpc("superadmin_email_step_up_status");
+    if ((status as { locked_until?: string | null } | null)?.locked_until) redirect("/verify-email?error=locked");
+
     const { error: codeError } = await supabase.auth.reauthenticate();
-    redirect(codeError ? "/verify-email?error=send" : "/verify-email?sent=1");
+    if (codeError) redirect("/verify-email?error=send");
+
+    const { data: begun, error: beginError } = await supabase.rpc("superadmin_begin_email_step_up");
+    if (beginError) redirect("/verify-email?error=send");
+    const beginResult = begun as { started?: boolean; reason?: string } | null;
+    if (!beginResult?.started) redirect(beginResult?.reason === "locked" ? "/verify-email?error=locked" : "/verify-email?error=send");
+
+    redirect("/verify-email?sent=1");
   }
 
   redirect("/dashboard");
