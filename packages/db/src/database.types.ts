@@ -507,6 +507,22 @@ export type Database = {
           run_id: string
         }[]
       }
+      superadmin_enqueue_operation: {
+        Args: {
+          operation_key: string
+          operation_payload: Json
+          target_queue: string
+        }
+        Returns: string
+      }
+      superadmin_overview: { Args: never; Returns: Json }
+      superadmin_review_access_request: {
+        Args: {
+          decision: Database["public"]["Enums"]["access_request_status"]
+          target_id: string
+        }
+        Returns: boolean
+      }
       worker_claim_agent_run: {
         Args: { worker_id: string }
         Returns: {
