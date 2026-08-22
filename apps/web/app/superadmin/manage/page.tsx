@@ -19,8 +19,8 @@ export default async function SuperadminManagePage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/sign-in");
   if (user.app_metadata.system_role !== "superadmin") redirect("/dashboard");
-  const { data: assurance } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-  if (assurance?.currentLevel !== "aal2") redirect("/mfa");
+  const { data: stepUp, error: stepUpError } = await supabase.rpc("superadmin_email_step_up_status");
+  if (stepUpError || !(stepUp as { verified?: boolean } | null)?.verified) redirect("/verify-email");
 
   const [{ data: snapshotData, error: snapshotError }, { data: memberships, error: membershipError }] = await Promise.all([
     supabase.rpc("superadmin_control_snapshot"),
@@ -36,13 +36,13 @@ export default async function SuperadminManagePage() {
 
   return <main className="shell control-shell">
     <nav className="nav control-topbar">
-      <div><span className="brand">DIV3RSA CONTROL</span><span className="control-role">Management · AAL2</span></div>
+      <div><span className="brand">DIV3RSA CONTROL</span><span className="control-role">Management · verifierad session</span></div>
       <div className="control-top-actions"><Link className="button" href="/superadmin">Control center</Link><Link className="button primary" href="/dashboard">User dashboard</Link></div>
     </nav>
 
     <section className="control-content" style={{ maxWidth: 1220, margin: "0 auto" }}>
       <header className="control-header">
-        <div><p className="eyebrow">Direct controls</p><h1>Management</h1><p className="lead">High-impact controls that change user access, active policy, GPU provider state, Lab scopes and the runtime skill registry. Every mutation is AAL2-gated and audited.</p></div>
+        <div><p className="eyebrow">Direct controls</p><h1>Management</h1><p className="lead">High-impact controls that change user access, active policy, GPU provider state, Lab scopes and the runtime skill registry. Every mutation requires a verified privileged session and is audited.</p></div>
       </header>
 
       <section className="control-panel">
