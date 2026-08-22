@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createSupabaseBrowserClient } from "../../../lib/supabase/client";
+import { hydrateSessionFromAuthUrl } from "../../../lib/supabase/session-from-url";
 
 type State = "checking" | "sending" | "sent" | "error";
 
@@ -16,16 +17,7 @@ export function AcceptedClient() {
     let unsubscribe = () => {};
 
     const start = async () => {
-      let supabase;
-      try {
-        supabase = createSupabaseBrowserClient();
-      } catch {
-        if (active) {
-          setState("error");
-          setMessage("Inloggningskonfiguration saknas. Kontakta administratören.");
-        }
-        return;
-      }
+      const supabase = createSupabaseBrowserClient();
 
       const sendPasswordEmail = async () => {
         if (!active || requested.current) return;
@@ -54,8 +46,15 @@ export function AcceptedClient() {
           : "Det gick inte att skicka lösenordsmejlet. Försök igen.");
       };
 
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) void sendPasswordEmail();
+      try {
+        const session = await hydrateSessionFromAuthUrl(supabase);
+        if (session) void sendPasswordEmail();
+      } catch {
+        if (active) {
+          setState("error");
+          setMessage("Inbjudningslänken kunde inte verifieras eller har gått ut.");
+        }
+      }
 
       const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
         if (nextSession) window.setTimeout(() => void sendPasswordEmail(), 0);
