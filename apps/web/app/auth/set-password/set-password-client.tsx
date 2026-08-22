@@ -1,10 +1,9 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useState } from "react";
 import { createSupabaseBrowserClient } from "../../../lib/supabase/client";
 
 export function SetPasswordClient() {
-  const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -15,6 +14,13 @@ export function SetPasswordClient() {
     setError(null);
     if (password.length < 12) return setError("Lösenordet måste vara minst 12 tecken.");
     if (password !== confirmPassword) return setError("Lösenorden matchar inte.");
+
+    let supabase;
+    try {
+      supabase = createSupabaseBrowserClient();
+    } catch {
+      return setError("Inloggningskonfiguration saknas. Kontakta administratören.");
+    }
 
     setBusy(true);
     const { data: { session }, error: sessionError } = await supabase.auth.getSession();
