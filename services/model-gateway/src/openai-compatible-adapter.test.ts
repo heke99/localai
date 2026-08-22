@@ -19,4 +19,18 @@ describe("OpenAiCompatibleAdapter", () => {
     const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
     await expect(adapter.generate({ requestId: "req-2", alias: "general-prod", messages: [] })).rejects.toThrow("no choices");
   });
+
+  it("parses fragmented SSE streaming responses", async () => {
+    const chunks = [
+      'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+      'data: [DONE]\n\n'
+    ];
+    const stream = new ReadableStream({ start(controller) { chunks.forEach((chunk) => controller.enqueue(new TextEncoder().encode(chunk))); controller.close(); } });
+    const fetcher = vi.fn(async () => new Response(stream, { status: 200 }));
+    const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);
+    const output: string[] = [];
+    for await (const chunk of adapter.stream({ requestId: "req-stream", alias: "general-prod", messages: [{ role: "user", content: "Hi" }] })) output.push(chunk);
+    expect(output.join("")).toBe("Hello");
+  });
 });

@@ -15,9 +15,15 @@
     "baseUrl": ".",
     "paths": {
       "@div3rsa/model-sdk": ["packages/model-sdk/src/index.ts"],
-      "@div3rsa/providers": ["packages/providers/src/index.ts"]
+      "@div3rsa/providers": ["packages/providers/src/index.ts"],
+      "@div3rsa/agent-runtime": ["packages/agent-runtime/src/index.ts"],
+      "@div3rsa/platform-core": ["packages/platform-core/src/index.ts"],
+      "@div3rsa/db": ["packages/db/src/database.types.ts"],
+      "@div3rsa/model-gateway": ["services/model-gateway/src/index.ts"],
+      "@div3rsa/skill-engine": ["packages/skill-engine/src/index.ts"],
+      "@div3rsa/learning-runtime": ["packages/learning-runtime/src/index.ts"]
     }
   },
-  "include": ["apps/**/*.ts", "apps/**/*.tsx", "packages/**/*.ts", "services/**/*.ts", "vitest.config.ts"],
+  "include": ["apps/**/*.ts", "apps/**/*.tsx", "packages/**/*.ts", "services/**/*.ts", "workers/**/*.ts", "vitest.config.ts"],
   "exclude": ["node_modules", ".next", "dist"]
 }

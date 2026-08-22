@@ -32,9 +32,18 @@ h1 { max-width: 850px; margin: 20px 0; font-size: clamp(46px, 7vw, 88px); line-h
 .dashboard { display: grid; grid-template-columns: 230px 1fr; min-height: calc(100vh - 65px); }
 .sidebar { padding: 26px; border-right: 1px solid var(--line); }
 .modes { display: grid; gap: 8px; }
-.mode { padding: 11px 12px; border-radius: 8px; color: var(--muted); }
+.mode { width: 100%; padding: 11px 12px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; text-align: left; cursor: pointer; display: grid; gap: 3px; }
+.mode small { font-size: 11px; font-weight: 400; }
 .mode.active { color: var(--text); background: var(--panel); }
-.workspace { padding: 36px; }
+.workspace { padding: 36px; display: flex; flex-direction: column; align-items: center; gap: 18px; }
 .composer { max-width: 850px; margin: 12vh auto 0; }
 .composer textarea { width: 100%; min-height: 130px; resize: vertical; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+.authorization-input { width: 100%; margin-bottom: 10px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.composer .actions { align-items: center; }
+.muted { color: var(--muted); font-size: 12px; margin-right: auto; }
+.run-card { display: flex; align-items: center; gap: 14px; max-width: 850px; width: 100%; padding: 14px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.run-card small { color: var(--muted); margin-right: auto; }
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.error { color: #fca5a5; }
+.assistant-output { max-width: 850px; width: 100%; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); white-space: pre-wrap; line-height: 1.55; }
 @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } .dashboard { grid-template-columns: 1fr; } .sidebar { display: none; } .navlinks { display: none; } }
