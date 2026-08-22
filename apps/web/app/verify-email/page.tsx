@@ -65,10 +65,10 @@ export default async function VerifyEmailPage({
         <button className="button primary" type="submit">Verifiera</button>
       </form>
 
-      <form action={sendVerificationCode} className="actions">
-        <button className="button" type="submit">Skicka ny kod</button>
-        <Link href="/auth/signout">Avbryt</Link>
-      </form>
+      <div className="actions">
+        <form action={sendVerificationCode}><button className="button" type="submit">Skicka ny kod</button></form>
+        <form action="/auth/signout" method="post"><button className="button" type="submit">Avbryt</button></form>
+      </div>
     </section>
   </main>;
 }
