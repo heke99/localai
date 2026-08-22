@@ -13,6 +13,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
       <form className="form" action={signIn}>
         <label className="field">E-post<input name="email" type="email" autoComplete="email" required /></label>
         <label className="field">Lösenord<input name="password" type="password" autoComplete="current-password" required minLength={8} /></label>
+        <div className="actions"><Link href="/forgot-password">Glömt lösenord?</Link></div>
         <button className="button primary" type="submit">Logga in</button>
       </form>
       <div className="actions"><Link href="/request-access">Saknar du inbjudan?</Link></div>
