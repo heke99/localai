@@ -11,3 +11,9 @@
     }
   }
 }
+
+@media (max-width: 780px) {
+  nav[aria-label="Workspace navigation"] > button:nth-last-of-type(2) {
+    display: grid !important;
+  }
+}
