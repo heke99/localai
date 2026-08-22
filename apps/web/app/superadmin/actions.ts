@@ -9,9 +9,9 @@ import { createSupabaseServerClient } from "../../lib/supabase/server";
 async function requireSuperadmin() {
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
-  const { data: assurance } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
   if (!user || user.app_metadata.system_role !== "superadmin") redirect("/dashboard");
-  if (assurance?.currentLevel !== "aal2") redirect("/mfa");
+  const { data: stepUp, error: stepUpError } = await supabase.rpc("superadmin_email_step_up_status");
+  if (stepUpError || !(stepUp as { verified?: boolean } | null)?.verified) redirect("/verify-email");
   return supabase;
 }
 
