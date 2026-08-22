@@ -9,10 +9,13 @@ export async function signIn(form: FormData) {
   if (!email.includes("@") || password.length < 8) redirect("/sign-in?error=credentials");
 
   const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) redirect("/sign-in?error=credentials");
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error || !data.user) redirect("/sign-in?error=credentials");
 
-  const { data: assurance } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-  if (assurance?.nextLevel === "aal2" && assurance.currentLevel !== "aal2") redirect("/mfa");
+  if (data.user.app_metadata.system_role === "superadmin") {
+    const { error: codeError } = await supabase.auth.reauthenticate();
+    redirect(codeError ? "/verify-email?error=send" : "/verify-email?sent=1");
+  }
+
   redirect("/dashboard");
 }
