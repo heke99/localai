@@ -27,6 +27,8 @@ skills:
   - {name: evals-benchmarking, path: skills/models/evals-benchmarking/SKILL.md, category: models}
   - {name: policy-access-control, path: skills/security/policy-access-control/SKILL.md, category: security}
   - {name: sandbox-execution, path: skills/security/sandbox-execution/SKILL.md, category: security}
+  - {name: network-egress-control, path: skills/security/network-egress-control/SKILL.md, category: security}
+  - {name: secrets-handling, path: skills/security/secrets-handling/SKILL.md, category: security}
   - {name: prompt-injection-defense, path: skills/security/prompt-injection-defense/SKILL.md, category: security}
   - {name: data-poisoning-defense, path: skills/security/data-poisoning-defense/SKILL.md, category: security}
   - {name: authorized-pentest, path: skills/security/authorized-pentest/SKILL.md, category: security}
@@ -36,6 +38,7 @@ skills:
   - {name: property-based-testing, path: skills/security/property-based-testing/SKILL.md, category: security}
   - {name: insecure-defaults, path: skills/security/insecure-defaults/SKILL.md, category: security}
   - {name: sharp-edges, path: skills/security/sharp-edges/SKILL.md, category: security}
+  - {name: agentic-ci-security, path: skills/security/agentic-ci-security/SKILL.md, category: security}
   - {name: observability, path: skills/ops/observability/SKILL.md, category: ops}
   - {name: incident-recovery, path: skills/ops/incident-recovery/SKILL.md, category: ops}
   - {name: performance-profiling, path: skills/ops/performance-profiling/SKILL.md, category: ops}
