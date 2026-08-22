@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./dashboard-layout.css";
 import controlStyles from "./superadmin/control-center.module.css";
 
 export const metadata: Metadata = {
