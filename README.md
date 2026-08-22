@@ -15,6 +15,17 @@ The repository keeps **skills, memory, policy, credentials, model weights and GP
 - Security and code execution happen inside scoped sandboxes.
 - Tool permissions are resolved independently from the model.
 
+## Implemented foundation
+
+- Next.js 16 product shell with invitation-only access request and simple Chat/Code/Lab/Research dashboard.
+- Supabase control plane in project `Ai local`, split into `public`, `internal`, `training` and `audit` schemas.
+- Tenant-aware RLS and MFA-gated superadmin review paths.
+- Immutable Qwen3.8-27B-OBLITERATED **V2 Q8_0** manifest and model aliases.
+- Stable `ModelAdapter` and `GpuProvider` contracts so app logic is independent from Qwen, llama.cpp, RTX PRO 6000 and a specific GPU provider.
+- Model worker compose profile, resumable checksum-verified artifact download and a `large_96gb` capacity profile.
+
+The exact system specification is committed at `docs/CANONICAL-SYSTEM-SPEC.md`. Work continues in the phase order documented there; a model is not considered production deployed merely because it is registered.
+
 ## Layout
 
 ```text
@@ -24,6 +35,12 @@ skills/upstream.lock.yaml reviewed upstream influences
 docs/                  runtime and skill contracts
 scripts/               validation utilities
 AGENTS.md              repo-wide agent rules
+apps/web/              public product and authenticated shell
+packages/              stable DB, model and provider contracts
+services/              model gateway and future control-plane services
+supabase/              canonical migrations and database assertions
+models/                immutable model manifests
+infra/                 GPU and model-worker profiles
 ```
 
 ## Initial upstream foundations
@@ -41,3 +58,16 @@ LocalAI's original skills are informed by the open Agent Skills standard, obra/s
 7. Verify the observable outcome.
 8. Persist audit data, artifacts and explicitly approved knowledge.
 9. Send measurable outcomes to evals; training data requires separate curation.
+
+## Verify
+
+```bash
+npm install
+npm run verify
+```
+
+The 29 GB Q8 model is intentionally not committed. A GPU worker downloads and verifies the pinned V2 artifact with:
+
+```bash
+DIV3RSA_MODEL_DIR=/models/qwen-v2 npm run model:fetch:q8
+```

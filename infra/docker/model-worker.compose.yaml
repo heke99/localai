@@ -1,0 +1,37 @@
+services:
+  qwen-v2-q8:
+    image: "${LLAMA_CPP_IMAGE:?Set an immutable llama.cpp image reference with @sha256 digest}"
+    restart: unless-stopped
+    command:
+      - --model
+      - /models/Qwen3.8-27B-OBLITERATED-Q8_0.gguf
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --ctx-size
+      - "32768"
+      - --n-gpu-layers
+      - "999"
+      - --jinja
+    volumes:
+      - "${DIV3RSA_MODEL_DIR:?Set the verified model directory}:/models:ro"
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g,noexec,nosuid
