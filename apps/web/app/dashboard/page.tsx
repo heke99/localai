@@ -10,8 +10,8 @@ export default async function DashboardPage() {
 
   const isSuperadmin = user.app_metadata.system_role === "superadmin";
   if (isSuperadmin) {
-    const { data: assurance } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-    if (assurance?.currentLevel !== "aal2") redirect("/mfa");
+    const { data: stepUp, error: stepUpError } = await supabase.rpc("superadmin_email_step_up_status");
+    if (stepUpError || !(stepUp as { verified?: boolean } | null)?.verified) redirect("/verify-email");
   }
 
   const { data: profile } = await supabase.from("profiles").select("display_name").eq("user_id", user.id).maybeSingle();
