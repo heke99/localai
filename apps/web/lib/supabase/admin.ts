@@ -1,15 +1,12 @@
 import "server-only";
 import { createClient } from "@supabase/supabase-js";
+import { SUPABASE_URL } from "./config";
 
 export function createSupabaseAdminClient() {
-  const url = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
   const secretKey = process.env.SUPABASE_SECRET_KEY;
+  if (!secretKey) throw new Error("SUPABASE_SECRET_KEY is missing");
 
-  if (!url || !secretKey) {
-    throw new Error("Supabase server configuration is missing");
-  }
-
-  return createClient(url, secretKey, {
+  return createClient(SUPABASE_URL, secretKey, {
     auth: {
       autoRefreshToken: false,
       detectSessionInUrl: false,
