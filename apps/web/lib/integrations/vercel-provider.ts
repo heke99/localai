@@ -36,6 +36,7 @@ export function vercelAuthorizationUrl(state: string, codeChallenge: string) {
     client_id: requiredProviderEnv("vercel", "CLIENT_ID"),
     redirect_uri: providerCallbackUrl("vercel"),
     response_type: "code",
+    prompt: "login",
     state,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
@@ -160,7 +161,7 @@ export async function discoverVercel(
   }
 
   if ((teamsPermissionDenied || projectPermissionDenials > 0) && projectPermissionSuccesses === 0) {
-    throw new Error("vercel_app_installation_required");
+    throw new Error("vercel_project_discovery_unavailable");
   }
 
   for (const group of projectGroups) {
@@ -197,9 +198,7 @@ export async function discoverVercel(
     };
   });
 
-  // Identity-only OAuth is not enough for DIV3RSA. A zero-scope response must
-  // not be shown as a fully connected Vercel integration.
-  if (!teams.length && !resources.length) throw new Error("vercel_app_installation_required");
+  if (!teams.length && !resources.length) throw new Error("vercel_project_discovery_unavailable");
 
   const accountName = user.preferred_username || user.email || user.name || String(accountId);
   const teamMetadata = teams.map((team) => ({ id: team.id, slug: team.slug ?? null, name: team.name ?? null }));
