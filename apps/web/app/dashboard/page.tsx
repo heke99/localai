@@ -8,6 +8,17 @@ export default async function DashboardPage() {
   if (error || !user) redirect("/sign-in");
 
   const isSuperadmin = user.app_metadata.system_role === "superadmin";
+  if (!isSuperadmin) {
+    const { data: lifecycle, error: lifecycleError } = await supabase
+      .from("profiles")
+      .select("account_status")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    // Rolling-deploy compatible: an older DB without the lifecycle column stays
+    // usable until its migration is applied; once present, paused access is hard-blocked.
+    if (!lifecycleError && lifecycle?.account_status === "paused") redirect("/account-paused");
+  }
+
   if (isSuperadmin) {
     const { data: stepUp, error: stepUpError } = await supabase.rpc("superadmin_email_step_up_status");
     if (stepUpError || !(stepUp as { verified?: boolean } | null)?.verified) redirect("/verify-email");
