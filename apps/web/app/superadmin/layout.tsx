@@ -1,5 +1,4 @@
 import Link from "next/link";
-import "./superadmin-cleanup.css";
 
 export default function SuperadminLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return <>
