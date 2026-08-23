@@ -4,6 +4,7 @@ import { OpenAiCompatibleAdapter } from "@div3rsa/model-gateway";
 import { AgentWorkerProcessor } from "./processor";
 import { SupabaseAgentQueue } from "./supabase-queue";
 import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
+import { RemoteProviderToolExecutor } from "./remote-provider-executor";
 import { SkillEngine, type SkillManifest } from "@div3rsa/skill-engine";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -22,9 +23,16 @@ const repositoryRoot = process.env.DIV3RSA_REPOSITORY_ROOT ?? process.cwd();
 const manifest = JSON.parse(await readFile(resolve(repositoryRoot, "skills/runtime-manifest.json"), "utf8")) as SkillManifest;
 const skillEngine = new SkillEngine(manifest, { read: (path) => readFile(resolve(repositoryRoot, path), "utf8") });
 
-// Provider executors are registered when their OAuth/credential connector is provisioned.
-// An empty registry means no external tool is exposed to the model, even if resource metadata exists in the database.
-const toolRuntime = new PermissionedIntegrationToolRuntime(supabase as unknown as ConstructorParameters<typeof PermissionedIntegrationToolRuntime>[0], new Map());
+// The worker never receives provider OAuth tokens. It gets a short-lived one-time execution grant
+// and sends only that grant plus tool arguments to the server-side integration gateway.
+const gatewayUrl = process.env.DIV3RSA_INTEGRATION_GATEWAY_URL?.trim() || "https://system.div3rsa.com/api/internal/integrations/execute";
+const remoteExecutor = new RemoteProviderToolExecutor(gatewayUrl);
+const executors = new Map([
+  ["github", remoteExecutor],
+  ["supabase", remoteExecutor],
+  ["vercel", remoteExecutor]
+]);
+const toolRuntime = new PermissionedIntegrationToolRuntime(supabase as unknown as ConstructorParameters<typeof PermissionedIntegrationToolRuntime>[0], executors);
 const processor = new AgentWorkerProcessor(queue, { resolve: () => adapter }, workerId, {
   prepare: async (mode, prompt) => {
     const loaded = await skillEngine.load(skillEngine.select(mode, prompt));
