@@ -25,6 +25,12 @@ function organizationSlug(value: string, userId: string) {
   return `${normalized.slice(0, 50).replace(/-+$/g, "")}-${userId.slice(0, 8)}`;
 }
 
+function revalidateApplicationPaths(targetId: string) {
+  revalidatePath("/superadmin");
+  revalidatePath("/superadmin/applications");
+  revalidatePath(`/superadmin/applications/${targetId}`);
+}
+
 export async function reviewAccessRequest(formData: FormData) {
   const supabase = await requireSuperadmin();
   const targetId = String(formData.get("requestId") ?? "");
@@ -32,7 +38,7 @@ export async function reviewAccessRequest(formData: FormData) {
   if (!/^[0-9a-f-]{36}$/i.test(targetId) || !["reviewing", "rejected"].includes(decision)) throw new Error("invalid_access_review");
   const { error } = await supabase.rpc("superadmin_review_access_request", { target_id: targetId, decision: decision as "reviewing" | "rejected" });
   if (error) throw new Error(error.message);
-  revalidatePath("/superadmin");
+  revalidateApplicationPaths(targetId);
 }
 
 export async function grantAccess(formData: FormData) {
@@ -48,7 +54,7 @@ export async function grantAccess(formData: FormData) {
   if (requestError || !request) throw new Error("access_request_not_found");
   if (request.status === "rejected") throw new Error("access_request_rejected");
   if (request.status === "approved" && request.invited_user_id && request.organization_id && request.workspace_id) {
-    revalidatePath("/superadmin");
+    revalidateApplicationPaths(targetId);
     return;
   }
 
@@ -103,7 +109,7 @@ export async function grantAccess(formData: FormData) {
   });
   if (provisionError) throw new Error(provisionError.message);
 
-  revalidatePath("/superadmin");
+  revalidateApplicationPaths(targetId);
 }
 
 export async function enqueueOperation(formData: FormData) {
