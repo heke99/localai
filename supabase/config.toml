@@ -1,0 +1,3 @@
+# Local Supabase CLI configuration. Remote project selection is never stored here;
+# CI links explicitly to the expected production ref using protected secrets.
+project_id = "localai"
