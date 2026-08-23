@@ -1,4 +1,4 @@
-import type { ModelToolCall } from "@div3rsa/model-sdk";
+import type { ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import { integrationToolByName, integrationToolsForResources, type IntegrationToolDefinition } from "@div3rsa/integrations";
 import type { ClaimedRun, WorkerToolRuntime } from "./processor";
 
@@ -21,14 +21,64 @@ export interface ProviderToolExecutor {
   execute(input: { run: ClaimedRun; authorization: ToolAuthorization; tool: IntegrationToolDefinition; arguments: Record<string, unknown> }): Promise<unknown>;
 }
 
+const LIST_PROJECT_RESOURCES = "div3rsa_list_project_resources";
+const REMEMBER_RESOURCE_LINK = "div3rsa_remember_resource_link";
+
+const projectMemoryTools: ModelToolDefinition[] = [
+  {
+    name: LIST_PROJECT_RESOURCES,
+    description: "List the resources and remembered relationships in the current DIV3RSA project. Use this when the user refers to a repo, database, deployment, service or other plugin resource that is not already obvious from the selected context.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} }
+  },
+  {
+    name: REMEMBER_RESOURCE_LINK,
+    description: "Permanently remember that two resources in the current project belong together. Use only when the user explicitly states or confirms the relationship. This never grants permissions.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["resourceOneId", "resourceTwoId"],
+      properties: {
+        resourceOneId: { type: "string", description: "First resource id returned by the project resource directory." },
+        resourceTwoId: { type: "string", description: "Second resource id returned by the project resource directory." },
+        relation: { type: "string", description: "Stable relation key, normally same_application.", default: "same_application" },
+        note: { type: "string", description: "Short user-grounded explanation of the relationship." }
+      }
+    }
+  }
+];
+
 export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
   constructor(private readonly client: RpcClient, private readonly executors: ReadonlyMap<string, ProviderToolExecutor>) {}
 
   async list(run: ClaimedRun) {
-    return integrationToolsForResources(run.resourceContext, new Set(this.executors.keys()));
+    const providerTools = integrationToolsForResources(run.resourceContext, new Set(this.executors.keys()));
+    return [...projectMemoryTools, ...providerTools];
   }
 
   async execute(run: ClaimedRun, call: ModelToolCall): Promise<unknown> {
+    if (call.name === LIST_PROJECT_RESOURCES) {
+      const { data, error } = await this.client.rpc<unknown>("worker_project_resource_directory", { target_run_id: run.runId });
+      if (error || !data) throw new Error(error?.message ?? "project_resource_directory_failed");
+      return data;
+    }
+
+    if (call.name === REMEMBER_RESOURCE_LINK) {
+      const one = typeof call.input.resourceOneId === "string" ? call.input.resourceOneId : "";
+      const two = typeof call.input.resourceTwoId === "string" ? call.input.resourceTwoId : "";
+      const relation = typeof call.input.relation === "string" && call.input.relation.trim() ? call.input.relation.trim() : "same_application";
+      const note = typeof call.input.note === "string" ? call.input.note.trim().slice(0, 2000) : null;
+      if (!one || !two || one === two) throw new Error("resource_link_requires_two_resources");
+      const { data, error } = await this.client.rpc<unknown>("worker_remember_resource_link", {
+        target_run_id: run.runId,
+        target_resource_one_id: one,
+        target_resource_two_id: two,
+        target_relation_key: relation,
+        target_note: note
+      });
+      if (error || !data) throw new Error(error?.message ?? "resource_link_memory_failed");
+      return data;
+    }
+
     const tool = integrationToolByName(call.name);
     if (!tool) throw new Error("unknown_integration_tool");
     const resourceId = typeof call.input.resourceId === "string" ? call.input.resourceId : "";
