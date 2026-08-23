@@ -1,31 +1,24 @@
 do $$
 declare
-  first_id uuid;
-  duplicate_id uuid;
+  anon_insert_policy_count integer;
 begin
-  if not has_function_privilege('anon', 'public.submit_access_request(text,text,text,text)', 'execute') then
-    raise exception 'anon cannot submit access request';
+  if has_table_privilege('anon', 'public.access_requests', 'insert') then
+    raise exception 'anon can insert access requests directly';
   end if;
-  if not has_function_privilege('authenticated', 'public.submit_access_request(text,text,text,text)', 'execute') then
-    raise exception 'authenticated cannot submit access request';
-  end if;
-
-  first_id := public.submit_access_request(
-    'Access Request Test',
-    'access-request-test@div3rsa.example',
-    'DIV3RSA QA',
-    'Database invariant test for the public access request submission flow.'
-  );
-  duplicate_id := public.submit_access_request(
-    'Access Request Test',
-    'ACCESS-REQUEST-TEST@DIV3RSA.EXAMPLE',
-    'DIV3RSA QA',
-    'Database invariant test for the public access request submission flow.'
-  );
-
-  if first_id is null or duplicate_id is distinct from first_id then
-    raise exception 'access request submission is not idempotent';
+  if has_table_privilege('authenticated', 'public.access_requests', 'insert') then
+    raise exception 'authenticated can insert access requests directly';
   end if;
 
-  delete from public.access_requests where id = first_id;
+  select count(*) into anon_insert_policy_count
+  from pg_policies
+  where schemaname = 'public'
+    and tablename = 'access_requests'
+    and policyname = 'access_requests_anon_insert';
+  if anon_insert_policy_count <> 0 then
+    raise exception 'legacy anonymous access request insert policy still exists';
+  end if;
+
+  if to_regprocedure('public.submit_access_request(text,text,text,text)') is not null then
+    raise exception 'public access request definer RPC should not exist';
+  end if;
 end $$;
