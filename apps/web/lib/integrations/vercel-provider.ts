@@ -116,7 +116,7 @@ async function listProjects(token: string, team?: VercelTeam) {
 
 export async function discoverVercel(
   credential: StoredCredential,
-  _callback: VercelCallbackContext = {}
+  callback: VercelCallbackContext = {}
 ): Promise<{ externalAccountId: string; externalAccountName: string; metadata: Record<string,unknown>; capabilities: string[]; resources: DiscoveredResource[] }> {
   const user = await fetchJson<VercelUserInfoResponse>("https://api.vercel.com/login/oauth/userinfo", {
     method: "POST",
@@ -134,6 +134,8 @@ export async function discoverVercel(
     if (!isProviderResourceDenied(error)) throw error;
     teamsPermissionDenied = true;
   }
+
+  if (callback.teamId && !teams.some((team) => team.id === callback.teamId)) teams = [...teams, { id: callback.teamId }];
 
   const projectGroups: Array<Array<{ project: VercelProject; team?: VercelTeam }>> = [];
   let projectPermissionSuccesses = 0;
@@ -159,6 +161,12 @@ export async function discoverVercel(
 
   if ((teamsPermissionDenied || projectPermissionDenials > 0) && projectPermissionSuccesses === 0) {
     throw new Error("vercel_app_installation_required");
+  }
+
+  for (const group of projectGroups) {
+    for (const item of group) {
+      if (!item.team && item.project.accountId) item.team = teams.find((team) => team.id === item.project.accountId);
+    }
   }
 
   const deduped = new Map<string, { project: VercelProject; team?: VercelTeam }>();
@@ -189,14 +197,25 @@ export async function discoverVercel(
     };
   });
 
+  // Identity-only OAuth is not enough for DIV3RSA. A zero-scope response must
+  // not be shown as a fully connected Vercel integration.
+  if (!teams.length && !resources.length) throw new Error("vercel_app_installation_required");
+
+  const accountName = user.preferred_username || user.email || user.name || String(accountId);
+  const teamMetadata = teams.map((team) => ({ id: team.id, slug: team.slug ?? null, name: team.name ?? null }));
   return {
     externalAccountId: String(accountId),
-    externalAccountName: user.preferred_username || user.email || user.name || String(accountId),
+    externalAccountName: accountName,
     metadata: {
       accessModel: "vercel_app_oauth_team_installation",
       username: user.preferred_username ?? null,
       email: user.email ?? null,
       teamIds: teams.map((team) => team.id),
+      teams: teamMetadata,
+      identity: {
+        account: { id: String(accountId), name: accountName, email: user.email ?? null },
+        scopes: teamMetadata.map((team) => ({ type: "team", ...team }))
+      },
       accessibleProjectCount: resources.length,
       permissionDenialsObserved: projectPermissionDenials
     },
