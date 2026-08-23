@@ -20,6 +20,8 @@ DIV3RSA uses one provider-independent connection flow:
 
 ## Vercel environment variables
 
+After adding or changing provider environment variables in Vercel, redeploy production before testing a connection so the new server-side configuration is loaded.
+
 ### GitHub App
 
 - `GITHUB_INTEGRATION_APP_ID`
