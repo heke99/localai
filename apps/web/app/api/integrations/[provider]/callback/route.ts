@@ -46,7 +46,11 @@ export async function GET(request: Request, context: { params: Promise<{ provide
     }
     if (!code) throw new Error("authorization_code_missing");
     const codeVerifier = stringField(session, "codeVerifier") || null;
-    const discovered = await exchangeAndDiscover(rawProvider, code, codeVerifier, user.id);
+    const discovered = await exchangeAndDiscover(rawProvider, code, codeVerifier, user.id, rawProvider === "vercel" ? {
+      teamId: requestUrl.searchParams.get("teamId"),
+      configurationId: requestUrl.searchParams.get("configurationId"),
+      source: requestUrl.searchParams.get("source")
+    } : {});
     const completed = await completeOAuthConnection({
       oauthSessionId,
       provider: rawProvider,
