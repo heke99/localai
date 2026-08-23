@@ -7,10 +7,11 @@ export async function updateSession(request: NextRequest) {
   const supabase = createServerClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
     cookies: {
       getAll: () => request.cookies.getAll(),
-      setAll: (entries) => {
+      setAll: (entries, headers) => {
         entries.forEach(({ name, value }) => request.cookies.set(name, value));
         response = NextResponse.next({ request });
         entries.forEach(({ name, value, options }) => response.cookies.set(name, value, options));
+        Object.entries(headers ?? {}).forEach(([key, value]) => response.headers.set(key, value));
       }
     }
   });
