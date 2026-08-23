@@ -13,6 +13,43 @@ function asObject(value: unknown): Record<string,unknown> {
   return value as Record<string,unknown>;
 }
 
+function objectOrEmpty(value: unknown): Record<string,unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string,unknown> : {};
+}
+
+async function syncResources(connectionId: string, resources: DiscoveredResource[]) {
+  const { error: prepareError } = await adminRpc().rpc("service_prepare_integration_resource_sync", { target_connection_id: connectionId });
+  if (prepareError) throw new Error(prepareError.message);
+  try {
+    for (const resource of resources.slice(0,10000)) {
+      const { data: resourceId, error: resourceError } = await adminRpc().rpc("sync_integration_resource", {
+        target_connection_id: connectionId,
+        target_resource_type: resource.resourceType,
+        target_external_resource_id: resource.externalId,
+        target_display_name: resource.displayName,
+        target_metadata: resource.metadata
+      });
+      if (resourceError || typeof resourceId !== "string") throw new Error(resourceError?.message ?? "integration_resource_sync_failed");
+      for (const identifier of resource.identifiers.slice(0,20)) {
+        const { error: identifierError } = await adminRpc().rpc("sync_integration_resource_identifier", {
+          target_resource_id: resourceId,
+          target_kind: identifier.kind,
+          target_value: identifier.value,
+          target_source_kind: "provider",
+          target_confidence: identifier.confidence,
+          target_linkable: identifier.linkable
+        });
+        if (identifierError) throw new Error(identifierError.message);
+      }
+    }
+    const { error: finalizeError } = await adminRpc().rpc("service_finalize_integration_resource_sync", { target_connection_id: connectionId, target_error_code: null });
+    if (finalizeError) throw new Error(finalizeError.message);
+  } catch (error) {
+    await adminRpc().rpc("service_finalize_integration_resource_sync", { target_connection_id: connectionId, target_error_code: "resource_sync_failed" });
+    throw error;
+  }
+}
+
 export async function getOAuthSession(provider: ProviderKey, state: string, actorUserId: string) {
   const { data, error } = await adminRpc().rpc("service_get_integration_oauth_session", { target_provider: provider, target_state: state, target_actor_user_id: actorUserId });
   if (error || !data) throw new Error(error?.message ?? "oauth_session_not_found");
@@ -54,38 +91,48 @@ export async function completeOAuthConnection(input: {
   const result = asObject(completed);
   const connectionId = String(result.id ?? "");
   if (!connectionId) throw new Error("integration_connection_id_missing");
-
-  const { error: prepareError } = await adminRpc().rpc("service_prepare_integration_resource_sync", { target_connection_id: connectionId });
-  if (prepareError) throw new Error(prepareError.message);
-  try {
-    for (const resource of input.resources.slice(0,1000)) {
-      const { data: resourceId, error: resourceError } = await adminRpc().rpc("sync_integration_resource", {
-        target_connection_id: connectionId,
-        target_resource_type: resource.resourceType,
-        target_external_resource_id: resource.externalId,
-        target_display_name: resource.displayName,
-        target_metadata: resource.metadata
-      });
-      if (resourceError || typeof resourceId !== "string") throw new Error(resourceError?.message ?? "integration_resource_sync_failed");
-      for (const identifier of resource.identifiers.slice(0,20)) {
-        const { error: identifierError } = await adminRpc().rpc("sync_integration_resource_identifier", {
-          target_resource_id: resourceId,
-          target_kind: identifier.kind,
-          target_value: identifier.value,
-          target_source_kind: "provider",
-          target_confidence: identifier.confidence,
-          target_linkable: identifier.linkable
-        });
-        if (identifierError) throw new Error(identifierError.message);
-      }
-    }
-    const { error: finalizeError } = await adminRpc().rpc("service_finalize_integration_resource_sync", { target_connection_id: connectionId, target_error_code: null });
-    if (finalizeError) throw new Error(finalizeError.message);
-  } catch (error) {
-    await adminRpc().rpc("service_finalize_integration_resource_sync", { target_connection_id: connectionId, target_error_code: "resource_sync_failed" });
-    throw error;
-  }
+  await syncResources(connectionId, input.resources);
   return { connectionId, returnPath: typeof result.returnPath === "string" ? result.returnPath : "/dashboard?section=integrations" };
+}
+
+export interface GithubWebhookConnection {
+  connectionId: string;
+  organizationId: string;
+  externalAccountId: string;
+  externalAccountName: string;
+  metadata: Record<string,unknown>;
+}
+
+export async function findGithubWebhookConnections(installationId: number, senderId: string | null): Promise<GithubWebhookConnection[]> {
+  const { data, error } = await adminRpc().rpc("service_find_github_connections_for_webhook", {
+    target_installation_id: installationId,
+    target_sender_id: senderId
+  });
+  if (error) throw new Error(error.message);
+  if (!Array.isArray(data)) return [];
+  return data.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const row = item as Record<string,unknown>;
+    const connectionId = typeof row.connectionId === "string" ? row.connectionId : "";
+    if (!connectionId) return [];
+    return [{
+      connectionId,
+      organizationId: typeof row.organizationId === "string" ? row.organizationId : "",
+      externalAccountId: typeof row.externalAccountId === "string" ? row.externalAccountId : "",
+      externalAccountName: typeof row.externalAccountName === "string" ? row.externalAccountName : "",
+      metadata: objectOrEmpty(row.metadata)
+    }];
+  });
+}
+
+export async function resyncGithubConnection(input: { connectionId: string; metadata: Record<string,unknown>; capabilities: string[]; resources: DiscoveredResource[] }) {
+  const { error } = await adminRpc().rpc("service_update_integration_connection_discovery", {
+    target_connection_id: input.connectionId,
+    target_metadata: input.metadata,
+    target_capabilities: input.capabilities
+  });
+  if (error) throw new Error(error.message);
+  await syncResources(input.connectionId, input.resources);
 }
 
 export async function readCredential(connectionId: string) {
@@ -95,7 +142,7 @@ export async function readCredential(connectionId: string) {
   const credential = record.credential;
   return {
     provider: String(record.provider ?? ""),
-    metadata: record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata) ? record.metadata as Record<string,unknown> : {},
+    metadata: objectOrEmpty(record.metadata),
     credential: credential && typeof credential === "object" && !Array.isArray(credential) ? credential as Record<string,unknown> : null
   };
 }
