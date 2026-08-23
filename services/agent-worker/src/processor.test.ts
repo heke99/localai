@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ModelAdapter } from "@div3rsa/model-sdk";
 import { AgentWorkerProcessor, type AgentQueue, type ClaimedRun } from "./processor";
 
-const run: ClaimedRun = { jobId: "job", runId: "run", mode: "code", modelAlias: "code-prod", prompt: "implement feature", requestId: "request", traceId: "trace" };
+const run: ClaimedRun = { jobId: "job", runId: "run", mode: "code", modelAlias: "code-prod", prompt: "implement feature", requestId: "request", traceId: "trace", resourceContext: [] };
 const adapter: ModelAdapter = {
   generate: vi.fn(async () => ({ modelVersionId: "model", content: "done", finishReason: "stop" as const, usage: { inputTokens: 2, outputTokens: 1, cachedTokens: 0 } })),
   async *stream() { yield "done"; }, estimateTokens: async () => 1, getCapabilities: () => new Set(["coding"]), healthCheck: async () => ({ ok: true, latencyMs: 1 })
@@ -18,6 +18,18 @@ describe("AgentWorkerProcessor", () => {
     await expect(new AgentWorkerProcessor(jobs, { resolve: () => adapter }, "worker-1").processOnce()).resolves.toBe(true);
     expect(jobs.complete).toHaveBeenCalledOnce();
     expect(jobs.step.mock.calls.map((call) => call[1])).toContain("verify");
+  });
+
+  it("executes structured tool calls before completing", async () => {
+    const jobs = queue({ ...run, resourceContext: [{ resourceId: "repo-1", connectionId: "c-1", provider: "github", resourceType: "repository", externalResourceId: "heke99/localai", displayName: "localai", capabilities: ["github.contents.read"] }] });
+    const generate = vi.fn()
+      .mockResolvedValueOnce({ modelVersionId: "model", content: "", finishReason: "tool_call", toolCalls: [{ id: "call-1", name: "github_read_file", input: { resourceId: "repo-1", path: "README.md" } }], usage: { inputTokens: 2, outputTokens: 1, cachedTokens: 0 } })
+      .mockResolvedValueOnce({ modelVersionId: "model", content: "read complete", finishReason: "stop", usage: { inputTokens: 3, outputTokens: 2, cachedTokens: 0 } });
+    const toolRuntime = { list: vi.fn(async () => [{ name: "github_read_file", description: "Read file", inputSchema: { type: "object" } }]), execute: vi.fn(async () => ({ content: "hello" })) };
+    await new AgentWorkerProcessor(jobs, { resolve: () => ({ ...adapter, generate }) }, "worker-1", undefined, toolRuntime).processOnce();
+    expect(toolRuntime.execute).toHaveBeenCalledOnce();
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(jobs.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ content: "read complete" }));
   });
 
   it("classifies transient model errors as retryable", async () => {

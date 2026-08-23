@@ -60,3 +60,5 @@ export class VaultCredentialIssuer implements CredentialIssuer {
     await jsonRequest(this.config.fetcher ?? fetch, `${this.baseUrl}/v1/sys/leases/revoke`, { method: "PUT", headers: { "Content-Type": "application/json", "X-Vault-Token": this.config.token }, body: JSON.stringify({ lease_id: leaseId }) });
   }
 }
+
+export * from "./tools";

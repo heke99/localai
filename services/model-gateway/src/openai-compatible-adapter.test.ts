@@ -14,6 +14,26 @@ describe("OpenAiCompatibleAdapter", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
+  it("sends tool definitions and parses structured tool calls", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body)) as { tools?: unknown[] };
+      expect(payload.tools).toHaveLength(1);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: null, tool_calls: [{ id: "call-1", type: "function", function: { name: "github_read_file", arguments: '{"resourceId":"repo-1","path":"README.md"}' } }] }, finish_reason: "tool_calls" }],
+        usage: { prompt_tokens: 5, completion_tokens: 3 }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
+    const result = await adapter.generate({
+      requestId: "req-tools",
+      alias: "code-prod",
+      messages: [{ role: "user", content: "read the repo" }],
+      tools: [{ name: "github_read_file", description: "Read a file", inputSchema: { type: "object", required: ["resourceId", "path"] } }]
+    });
+    expect(result.finishReason).toBe("tool_call");
+    expect(result.toolCalls).toEqual([{ id: "call-1", name: "github_read_file", input: { resourceId: "repo-1", path: "README.md" } }]);
+  });
+
   it("fails closed when the worker has no valid choice", async () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify({ choices: [] }), { status: 200 }));
     const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
