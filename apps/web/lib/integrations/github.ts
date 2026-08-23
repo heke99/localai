@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { configuredCapabilities, fetchJson, providerCallbackUrl, requiredProviderEnv, type StoredCredential } from "./oauth";
 
 interface GitHubUser { id: number; login: string; }
-interface GitHubInstallation { id: number; account?: { id?: number; login?: string }; permissions?: Record<string,string>; repository_selection?: string; }
+interface GitHubInstallation { id: number; account?: { id?: number; login?: string }; permissions?: Record<string,string>; repository_selection?: string; suspended_at?: string | null; }
 interface GitHubRepository { id: number; node_id?: string; name: string; full_name: string; private: boolean; html_url: string; default_branch: string; owner: { login: string; id: number }; }
 
 export interface DiscoveredResource {
@@ -12,6 +12,12 @@ export interface DiscoveredResource {
   displayName: string;
   metadata: Record<string, unknown>;
   identifiers: Array<{ kind: string; value: string; confidence: number; linkable: boolean }>;
+}
+
+export interface GitHubInstallationDiscovery {
+  metadata: Record<string,unknown>;
+  capabilities: string[];
+  resources: DiscoveredResource[];
 }
 
 export function githubAuthorizationUrl(state: string) {
@@ -44,7 +50,7 @@ function permissionAtLeast(value: string | undefined, wanted: "read" | "write") 
 
 function capabilitiesFromInstallations(installations: GitHubInstallation[]) {
   const permissions: Record<string,string> = {};
-  for (const installation of installations) {
+  for (const installation of installations.filter((item) => !item.suspended_at)) {
     for (const [key, value] of Object.entries(installation.permissions ?? {})) {
       if (value === "write" || permissions[key] !== "write") permissions[key] = value;
     }
@@ -58,41 +64,60 @@ function capabilitiesFromInstallations(installations: GitHubInstallation[]) {
   if (permissionAtLeast(permissions.actions, "read")) allowed.add("github.actions.read");
   if (permissionAtLeast(permissions.actions, "write")) allowed.add("github.actions.run");
   if (permissionAtLeast(permissions.workflows, "write")) allowed.add("github.workflow.write");
-  const catalog = configuredCapabilities("github");
-  return catalog.filter((capability) => allowed.size === 0 || allowed.has(capability));
+  return configuredCapabilities("github").filter((capability) => allowed.has(capability));
+}
+
+function repositoryResource(repo: GitHubRepository, installation: GitHubInstallation): DiscoveredResource {
+  return {
+    resourceType: "repository",
+    externalId: String(repo.id),
+    displayName: repo.full_name,
+    metadata: {
+      repositoryId: repo.id,
+      nodeId: repo.node_id ?? null,
+      fullName: repo.full_name,
+      owner: repo.owner.login,
+      name: repo.name,
+      private: repo.private,
+      htmlUrl: repo.html_url,
+      defaultBranch: repo.default_branch,
+      installationId: installation.id,
+      installationAccount: installation.account?.login ?? null
+    },
+    identifiers: [
+      { kind: "github.repository_id", value: String(repo.id), confidence: 1, linkable: true },
+      { kind: "git.repository_url", value: `https://github.com/${repo.full_name.toLowerCase()}`, confidence: 1, linkable: true }
+    ]
+  };
+}
+
+async function userInstallations(accessToken: string) {
+  const installations: GitHubInstallation[] = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const response = await fetchJson<{ installations?: GitHubInstallation[] }>(`https://api.github.com/user/installations?per_page=100&page=${page}`, { headers: githubHeaders(accessToken) });
+    const batch = response.installations ?? [];
+    installations.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return installations;
+}
+
+async function userInstallationRepositories(accessToken: string, installation: GitHubInstallation) {
+  const resources: DiscoveredResource[] = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const response = await fetchJson<{ repositories?: GitHubRepository[] }>(`https://api.github.com/user/installations/${installation.id}/repositories?per_page=100&page=${page}`, { headers: githubHeaders(accessToken) });
+    const batch = response.repositories ?? [];
+    resources.push(...batch.map((repo) => repositoryResource(repo, installation)));
+    if (batch.length < 100) break;
+  }
+  return resources;
 }
 
 export async function discoverGithub(accessToken: string): Promise<{ externalAccountId: string; externalAccountName: string; metadata: Record<string,unknown>; capabilities: string[]; resources: DiscoveredResource[] }> {
   const user = await fetchJson<GitHubUser>("https://api.github.com/user", { headers: githubHeaders(accessToken) });
-  const installationPage = await fetchJson<{ installations: GitHubInstallation[] }>("https://api.github.com/user/installations?per_page=100", { headers: githubHeaders(accessToken) });
-  const installations = installationPage.installations ?? [];
+  const installations = await userInstallations(accessToken);
   const resources: DiscoveredResource[] = [];
-  for (const installation of installations) {
-    const repoPage = await fetchJson<{ repositories: GitHubRepository[] }>(`https://api.github.com/user/installations/${installation.id}/repositories?per_page=100`, { headers: githubHeaders(accessToken) });
-    for (const repo of repoPage.repositories ?? []) {
-      resources.push({
-        resourceType: "repository",
-        externalId: String(repo.id),
-        displayName: repo.full_name,
-        metadata: {
-          repositoryId: repo.id,
-          nodeId: repo.node_id ?? null,
-          fullName: repo.full_name,
-          owner: repo.owner.login,
-          name: repo.name,
-          private: repo.private,
-          htmlUrl: repo.html_url,
-          defaultBranch: repo.default_branch,
-          installationId: installation.id,
-          installationAccount: installation.account?.login ?? null
-        },
-        identifiers: [
-          { kind: "github.repository_id", value: String(repo.id), confidence: 1, linkable: true },
-          { kind: "git.repository_url", value: `https://github.com/${repo.full_name.toLowerCase()}`, confidence: 1, linkable: true }
-        ]
-      });
-    }
-  }
+  for (const installation of installations.filter((item) => !item.suspended_at)) resources.push(...await userInstallationRepositories(accessToken, installation));
   return {
     externalAccountId: String(user.id),
     externalAccountName: user.login,
@@ -119,6 +144,42 @@ async function installationToken(installationId: number) {
     headers: githubHeaders(githubAppJwt())
   });
   return result.token;
+}
+
+async function appInstallation(installationId: number) {
+  return fetchJson<GitHubInstallation>(`https://api.github.com/app/installations/${installationId}`, { headers: githubHeaders(githubAppJwt()) });
+}
+
+async function appInstallationRepositories(installation: GitHubInstallation) {
+  if (installation.suspended_at) return [];
+  const token = await installationToken(installation.id);
+  const resources: DiscoveredResource[] = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const response = await fetchJson<{ repositories?: GitHubRepository[] }>(`https://api.github.com/installation/repositories?per_page=100&page=${page}`, { headers: githubHeaders(token) });
+    const batch = response.repositories ?? [];
+    resources.push(...batch.map((repo) => repositoryResource(repo, installation)));
+    if (batch.length < 100) break;
+  }
+  return resources;
+}
+
+export async function discoverGithubInstallations(installationIds: readonly number[]): Promise<GitHubInstallationDiscovery> {
+  const ids = [...new Set(installationIds.filter((id) => Number.isInteger(id) && id > 0))].sort((a,b) => a-b);
+  const installations: GitHubInstallation[] = [];
+  const resources: DiscoveredResource[] = [];
+  for (const id of ids) {
+    const installation = await appInstallation(id);
+    installations.push(installation);
+    resources.push(...await appInstallationRepositories(installation));
+  }
+  return {
+    metadata: {
+      installationIds: installations.map((item) => item.id),
+      installationAccounts: installations.map((item) => ({ id: item.account?.id ?? null, login: item.account?.login ?? null }))
+    },
+    capabilities: capabilitiesFromInstallations(installations),
+    resources
+  };
 }
 
 function repositoryCoordinates(metadata: Record<string,unknown>) {
