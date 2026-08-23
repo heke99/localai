@@ -8,9 +8,29 @@ const run: ClaimedRun = {
 };
 
 describe("PermissionedIntegrationToolRuntime", () => {
-  it("only exposes tools for providers with an executor", async () => {
+  it("always exposes project-memory tools but no provider tools without executors", async () => {
     const runtime = new PermissionedIntegrationToolRuntime({ rpc: vi.fn() }, new Map());
-    expect(await runtime.list(run)).toEqual([]);
+    expect((await runtime.list(run)).map((tool) => tool.name)).toEqual(["div3rsa_list_project_resources", "div3rsa_remember_resource_link"]);
+  });
+
+  it("lists the project directory without granting provider access", async () => {
+    const rpc = vi.fn(async () => ({ data: { projectId: "project", resources: [], links: [] }, error: null }));
+    const runtime = new PermissionedIntegrationToolRuntime({ rpc }, new Map());
+    await expect(runtime.execute(run, { id: "memory-list", name: "div3rsa_list_project_resources", input: {} })).resolves.toEqual({ projectId: "project", resources: [], links: [] });
+    expect(rpc).toHaveBeenCalledWith("worker_project_resource_directory", { target_run_id: "run" });
+  });
+
+  it("persists a user-grounded resource relationship through the protected worker RPC", async () => {
+    const rpc = vi.fn(async () => ({ data: { id: "link" }, error: null }));
+    const runtime = new PermissionedIntegrationToolRuntime({ rpc }, new Map());
+    await runtime.execute(run, { id: "memory-save", name: "div3rsa_remember_resource_link", input: { resourceOneId: "repo-1", resourceTwoId: "db-1", relation: "same_application", note: "User confirmed these belong together" } });
+    expect(rpc).toHaveBeenCalledWith("worker_remember_resource_link", {
+      target_run_id: "run",
+      target_resource_one_id: "repo-1",
+      target_resource_two_id: "db-1",
+      target_relation_key: "same_application",
+      target_note: "User confirmed these belong together"
+    });
   });
 
   it("JIT authorizes the exact resource and capability before execution", async () => {
