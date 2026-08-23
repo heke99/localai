@@ -28,10 +28,9 @@ export function providerCallbackUrl(provider: ProviderKey) {
 
 export function generateOAuthSecurity(provider: ProviderKey): OAuthSecurity {
   const state = crypto.randomBytes(32).toString("base64url");
-  // GitHub App authorization and Vercel External Integration installation both
-  // protect the callback with state, but do not use the Sign in with Vercel
-  // OIDC/PKCE flow. Supabase OAuth still requires PKCE.
-  if (provider !== "supabase") return { state, codeVerifier: null, codeChallenge: null };
+  // GitHub App installation protects its callback with state. Supabase OAuth
+  // and the current Vercel App authorization server require PKCE (S256).
+  if (provider === "github") return { state, codeVerifier: null, codeChallenge: null };
   const codeVerifier = crypto.randomBytes(48).toString("base64url");
   const codeChallenge = crypto.createHash("sha256").update(codeVerifier).digest("base64url");
   return { state, codeVerifier, codeChallenge };
