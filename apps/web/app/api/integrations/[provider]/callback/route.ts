@@ -46,7 +46,7 @@ export async function GET(request: Request, context: { params: Promise<{ provide
     }
     if (!code) throw new Error("authorization_code_missing");
     const codeVerifier = stringField(session, "codeVerifier") || null;
-    const discovered = await exchangeAndDiscover(rawProvider, code, codeVerifier);
+    const discovered = await exchangeAndDiscover(rawProvider, code, codeVerifier, user.id);
     const completed = await completeOAuthConnection({
       oauthSessionId,
       provider: rawProvider,
