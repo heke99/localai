@@ -58,7 +58,6 @@ export default async function AccountPage() {
     if (data && typeof data === "object" && !Array.isArray(data)) subscription = data as SubscriptionSnapshot;
   }
 
-  const isSuperadmin = user.app_metadata.system_role === "superadmin";
   const status = subscription.status ?? "inactive";
   const canPauseSubscription = Boolean(subscription.configured && ["active", "trialing"].includes(status));
   const canResumeSubscription = Boolean(subscription.configured && status === "paused");
@@ -73,12 +72,12 @@ export default async function AccountPage() {
 
       <div className="form">
         <div className="field"><span>Konto</span><strong>{profile?.display_name ?? user.email?.split("@")[0] ?? "Konto"}</strong><small>{user.email ?? ""}</small></div>
-        <div className="field"><span>Status</span><strong>{accountStatus === "paused" ? "Pausat" : "Aktivt"}</strong><small>{lifecycleReady ? "Kontostatus styr åtkomst på databasskiktet." : "Lifecycle-migrationen är ännu inte aktiv i den här miljön."}</small></div>
+        <div className="field"><span>Status</span><strong>{accountStatus === "paused" ? "Pausat" : "Aktivt"}</strong><small>{lifecycleReady ? "Kontostatus styr åtkomst på databasskiktet, även för superadmin." : "Lifecycle-migrationen är ännu inte aktiv i den här miljön."}</small></div>
         <div className="actions"><Link className="button" href="/auth/set-password?mode=change">Ändra lösenord</Link></div>
-        {!isSuperadmin && lifecycleReady ? <form action={pauseMyAccount}>
+        {lifecycleReady ? <form action={pauseMyAccount}>
           <button className="button" type="submit">Pausa konto</button>
-          <p className="muted">Paus stoppar åtkomst men behåller projekt, chattar, integrationer och medlemskap för en exakt återaktivering.</p>
-        </form> : isSuperadmin ? <p className="muted">Superadmin-kontot kan inte självpausas för att undvika administrativ lockout.</p> : null}
+          <p className="muted">Paus stoppar åtkomst men behåller projekt, chattar, integrationer och medlemskap för en exakt återaktivering. Detta gäller även superadmin.</p>
+        </form> : null}
       </div>
 
       <div className="form">
