@@ -36,7 +36,6 @@ export function vercelAuthorizationUrl(state: string, codeChallenge: string) {
     client_id: requiredProviderEnv("vercel", "CLIENT_ID"),
     redirect_uri: providerCallbackUrl("vercel"),
     response_type: "code",
-    prompt: "login",
     state,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
@@ -120,7 +119,6 @@ export async function discoverVercel(
   callback: VercelCallbackContext = {}
 ): Promise<{ externalAccountId: string; externalAccountName: string; metadata: Record<string,unknown>; capabilities: string[]; resources: DiscoveredResource[] }> {
   const user = await fetchJson<VercelUserInfoResponse>("https://api.vercel.com/login/oauth/userinfo", {
-    method: "POST",
     headers: headers(credential.accessToken)
   });
   const accountId = user.sub || user.email || user.preferred_username;
@@ -160,10 +158,6 @@ export async function discoverVercel(
     }
   }
 
-  if ((teamsPermissionDenied || projectPermissionDenials > 0) && projectPermissionSuccesses === 0) {
-    throw new Error("vercel_project_discovery_unavailable");
-  }
-
   for (const group of projectGroups) {
     for (const item of group) {
       if (!item.team && item.project.accountId) item.team = teams.find((team) => team.id === item.project.accountId);
@@ -198,15 +192,15 @@ export async function discoverVercel(
     };
   });
 
-  if (!teams.length && !resources.length) throw new Error("vercel_project_discovery_unavailable");
-
+  const projectAccessGranted = projectPermissionSuccesses > 0;
   const accountName = user.preferred_username || user.email || user.name || String(accountId);
   const teamMetadata = teams.map((team) => ({ id: team.id, slug: team.slug ?? null, name: team.name ?? null }));
   return {
     externalAccountId: String(accountId),
     externalAccountName: accountName,
     metadata: {
-      accessModel: "vercel_app_oauth_team_installation",
+      accessModel: projectAccessGranted ? "vercel_app_oauth_team_installation" : "vercel_identity_oauth",
+      projectAccess: projectAccessGranted ? "granted" : "installation_required",
       username: user.preferred_username ?? null,
       email: user.email ?? null,
       teamIds: teams.map((team) => team.id),
@@ -216,9 +210,12 @@ export async function discoverVercel(
         scopes: teamMetadata.map((team) => ({ type: "team", ...team }))
       },
       accessibleProjectCount: resources.length,
-      permissionDenialsObserved: projectPermissionDenials
+      permissionDenialsObserved: projectPermissionDenials,
+      teamsPermissionDenied,
+      callbackTeamId: callback.teamId ?? null,
+      callbackConfigurationId: callback.configurationId ?? null
     },
-    capabilities: configuredCapabilities("vercel"),
+    capabilities: projectAccessGranted ? configuredCapabilities("vercel") : [],
     resources
   };
 }

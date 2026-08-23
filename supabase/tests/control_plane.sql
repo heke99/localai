@@ -8,8 +8,8 @@ begin
   where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity;
   if exposed_without_rls <> 0 then raise exception 'public tables without RLS: %', exposed_without_rls; end if;
 
-  if not has_table_privilege('anon', 'public.access_requests', 'insert') then
-    raise exception 'anon cannot insert access requests';
+  if has_table_privilege('anon', 'public.access_requests', 'insert') then
+    raise exception 'anon can insert access requests directly';
   end if;
   if has_table_privilege('anon', 'public.access_requests', 'select') then
     raise exception 'anon can read access requests';
