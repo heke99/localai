@@ -33,10 +33,12 @@ export async function GET(request: Request, context: { params: Promise<{ provide
   if (!user) return NextResponse.redirect(new URL("/sign-in?error=integration_session_required", requestUrl.origin), 303);
 
   let oauthSessionId: string | null = null;
+  let workspaceId = "";
   let returnPath = "/dashboard?section=integrations";
   try {
     const session = await getOAuthSession(rawProvider, state, user.id);
     oauthSessionId = stringField(session, "oauthSessionId");
+    workspaceId = stringField(session, "workspaceId");
     returnPath = safeReturnPath(stringField(session, "returnPath"));
     if (providerError) {
       const providerErrorCode = `provider_${providerError}`;
@@ -72,6 +74,7 @@ export async function GET(request: Request, context: { params: Promise<{ provide
     if (rawProvider === "vercel" && errorCode === "vercel_app_installation_required") {
       const setupUrl = new URL("/integrations/vercel/setup", requestUrl.origin);
       setupUrl.searchParams.set("returnPath", returnPath);
+      if (workspaceId) setupUrl.searchParams.set("workspaceId", workspaceId);
       const response = NextResponse.redirect(setupUrl, 303);
       response.headers.set("Cache-Control", "no-store, max-age=0");
       return response;
