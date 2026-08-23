@@ -49,7 +49,19 @@ Recommended GitHub App repository permissions: Metadata read, Contents read/writ
 - `SUPABASE_INTEGRATION_CLIENT_SECRET`
 - optional `SUPABASE_INTEGRATION_CAPABILITIES` comma-separated override
 
-Configure the Supabase OAuth App itself with the maximum scopes DIV3RSA should ever be able to use. The per-project DIV3RSA grants remain a second, narrower authorization layer.
+Configure the Supabase OAuth App itself with the maximum scopes DIV3RSA should ever be able to use. For the tools currently implemented, enable:
+
+- Projects: Read
+- Organizations: Read (recommended for account/project display metadata)
+- Database: Read + Write
+- Analytics: Read
+- Edge Functions: Read + Write
+
+The database migration Management API endpoint is restricted by Supabase to selected partner OAuth apps. DIV3RSA can expose migration execution only when the Supabase OAuth app is entitled to that endpoint.
+
+Supabase's Management API `/v1/profile` endpoint currently rejects OAuth access tokens. DIV3RSA therefore identifies a Supabase connection by the authenticated DIV3RSA actor and uses provider-owned organization/project IDs for discovery and resource authorization. This avoids depending on an unsupported profile call while keeping provider credentials isolated in Vault.
+
+The per-project DIV3RSA grants remain a second, narrower authorization layer.
 
 ### Vercel App / OAuth
 
