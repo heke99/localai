@@ -69,10 +69,14 @@ export async function GET(request: Request, context: { params: Promise<{ provide
     const errorCode = safeOAuthErrorCode(error);
     console.error("integration_oauth_callback_failed", { provider: rawProvider, errorCode });
     await failOAuthSession(oauthSessionId, errorCode);
-    const publicError = rawProvider === "vercel" && errorCode === "vercel_app_installation_required"
-      ? "vercel_installation_required"
-      : "oauth_callback_failed";
-    const response = NextResponse.redirect(new URL(`${returnPath}${returnPath.includes("?") ? "&" : "?"}integrationError=${publicError}&provider=${rawProvider}`, requestUrl.origin), 303);
+    if (rawProvider === "vercel" && errorCode === "vercel_app_installation_required") {
+      const setupUrl = new URL("/integrations/vercel/setup", requestUrl.origin);
+      setupUrl.searchParams.set("returnPath", returnPath);
+      const response = NextResponse.redirect(setupUrl, 303);
+      response.headers.set("Cache-Control", "no-store, max-age=0");
+      return response;
+    }
+    const response = NextResponse.redirect(new URL(`${returnPath}${returnPath.includes("?") ? "&" : "?"}integrationError=oauth_callback_failed&provider=${rawProvider}`, requestUrl.origin), 303);
     response.headers.set("Cache-Control", "no-store, max-age=0");
     return response;
   }
