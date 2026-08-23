@@ -23,7 +23,7 @@ export default async function SetPasswordPage({
       ? {
           eyebrow: "Account security",
           title: "Ändra lösenord.",
-          lead: "Bekräfta ditt nuvarande lösenord och välj ett nytt lösenord för kontot."
+          lead: "Bekräfta ditt nuvarande lösenord och välj ett nytt lösenord för kontot. Andra aktiva sessioner avslutas efter bytet."
         }
       : {
           eyebrow: "Account recovery",
@@ -38,7 +38,7 @@ export default async function SetPasswordPage({
       <h1>{copy.title}</h1>
       <p className="lead">{copy.lead}</p>
       <SetPasswordClient mode={mode} />
-      <div className="actions"><Link href={mode === "change" ? "/dashboard" : "/sign-in"}>{mode === "change" ? "Tillbaka till dashboard" : "Till inloggning"}</Link></div>
+      <div className="actions">{mode === "change" ? <><Link href="/account">Konto och abonnemang</Link><Link href="/dashboard?section=settings">Tillbaka till dashboard</Link></> : <Link href="/sign-in">Till inloggning</Link>}</div>
     </section>
   </main>;
 }

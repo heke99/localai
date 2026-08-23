@@ -1,9 +1,9 @@
 # Provider OAuth setup
 
-DIV3RSA uses one provider-independent connection flow:
+DIV3RSA uses one provider-independent connection surface with provider-specific authorization mechanisms:
 
 1. authenticated user starts `/api/integrations/{provider}/connect`
-2. the server creates a 15-minute OAuth session with hashed state and PKCE where supported
+2. the server creates a 15-minute authorization session with hashed state; PKCE is used where the provider requires it
 3. provider redirects back to `/api/integrations/{provider}/callback`
 4. credentials are stored server-side in Supabase Vault; the browser and model never receive them
 5. provider resources are synced into `internal.integration_resources`
@@ -15,7 +15,7 @@ DIV3RSA uses one provider-independent connection flow:
 - GitHub callback: `https://system.div3rsa.com/api/integrations/github/callback`
 - GitHub webhook: `https://system.div3rsa.com/api/integrations/github/webhook`
 - Supabase callback: `https://system.div3rsa.com/api/integrations/supabase/callback`
-- Vercel callback: `https://system.div3rsa.com/api/integrations/vercel/callback`
+- Vercel Redirect URL: `https://system.div3rsa.com/api/integrations/vercel/callback`
 - Agent tool gateway: `https://system.div3rsa.com/api/internal/integrations/execute`
 
 ## Vercel environment variables
@@ -63,16 +63,45 @@ Supabase's Management API `/v1/profile` endpoint currently rejects OAuth access 
 
 The per-project DIV3RSA grants remain a second, narrower authorization layer.
 
-### Vercel App / OAuth
+### Vercel External Integration
+
+Vercel resource access must use an **External Integration installation**, not the **Sign in with Vercel** OIDC flow. `openid email profile offline_access` only identifies the user and does not grant access to teams/projects.
+
+Environment variables:
 
 - `VERCEL_INTEGRATION_CLIENT_ID`
 - `VERCEL_INTEGRATION_CLIENT_SECRET`
-- optional `VERCEL_INTEGRATION_CAPABILITIES` comma-separated override
-- optional `VERCEL_INTEGRATION_AUTHORIZE_URL` (default `https://vercel.com/oauth/authorize`)
-- optional `VERCEL_INTEGRATION_TOKEN_URL` (connector has current-token endpoint fallback when unset)
-- optional `VERCEL_INTEGRATION_OAUTH_SCOPES` (default `openid email profile offline_access`)
+- `VERCEL_INTEGRATION_SLUG` — the URL Slug from Vercel Integration Console
+- optional `VERCEL_INTEGRATION_INSTALL_URL` — defaults to `https://vercel.com/integrations/<slug>/new`
+- optional `VERCEL_INTEGRATION_TOKEN_URL` — defaults to `https://api.vercel.com/v2/oauth/access_token`
+- optional `VERCEL_INTEGRATION_CAPABILITIES` comma-separated local capability override
 
-Configure the Vercel App installation with project/deployment/log permissions and restrict project access at Vercel when appropriate. DIV3RSA then narrows access again per local project/resource capability.
+Vercel Integration Console requirements:
+
+- Integration type: External / connectable account integration with Vercel REST API access
+- Redirect URL exactly: `https://system.div3rsa.com/api/integrations/vercel/callback`
+- use the Integration's Client ID and Client Secret in the environment variables above
+- configure API scopes for what DIV3RSA may perform; for the current tool surface use at minimum:
+  - `project`: Read + Write
+  - `deployment`: Read + Write
+  - `team`: Read
+  - `user`: Read
+  - `global-project-env-vars`: Read + Write when environment-variable tools are enabled
+  - `domain`: Read + Write when domain tools are enabled
+  - `integration-configuration`: Read (recommended for installation metadata/configuration management)
+
+Connection flow:
+
+1. DIV3RSA creates a hashed-state authorization session.
+2. `Connect Vercel` opens `https://vercel.com/integrations/<slug>/new?state=...`.
+3. Vercel asks the user to choose a team/personal account and which projects the integration may access.
+4. Vercel redirects to the configured Redirect URL with `code`, `configurationId`, optional `teamId`, `source`, and the original `state`.
+5. DIV3RSA validates `state` and exchanges `code` at `POST /v2/oauth/access_token` using the Integration Client ID/Secret and exact Redirect URL.
+6. The returned installation credential is long-lived and stored only in Supabase Vault. It is not a Sign in with Vercel refresh-token credential.
+7. DIV3RSA lists projects with the installation token and `teamId` when present. Vercel's installation scope determines which projects are visible.
+8. Only those visible projects are synchronized to DIV3RSA. Local project/resource grants narrow access further.
+
+If Vercel permissions or project selection are changed, reconnect/reinstall as required by Vercel and resync the connection. Never fall back to `/oauth/authorize` to obtain project access.
 
 ### Worker
 
@@ -84,10 +113,11 @@ The worker only receives a short-lived one-time execution grant from Supabase.
 
 ## Security properties
 
-- OAuth state is stored hashed.
-- Supabase and Vercel use PKCE.
+- authorization state is stored hashed.
+- Supabase uses PKCE; Vercel External Integration installation uses state and a one-time installation code.
 - GitHub uses the GitHub App installation + user authorization flow and server-held client secret.
-- customer OAuth tokens are stored in Supabase Vault and referenced by UUID only.
+- customer provider tokens are stored in Supabase Vault and referenced by UUID only.
+- Vercel team/project scope is enforced first by the Vercel installation and then narrowed again by DIV3RSA resource/capability grants.
 - execution grants are single use and expire after two minutes.
 - relation discovery never grants capabilities.
 - every provider execution is re-authorized JIT and audit logged.

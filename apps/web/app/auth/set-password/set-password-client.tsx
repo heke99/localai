@@ -58,7 +58,7 @@ export function SetPasswordClient({ mode }: { mode: PasswordMode }) {
     }
 
     const passwordAttributes = mode === "change"
-      ? { password, currentPassword }
+      ? { password, current_password: currentPassword }
       : { password };
     const { error: passwordError } = await supabase.auth.updateUser(passwordAttributes);
     if (passwordError) {
@@ -66,6 +66,16 @@ export function SetPasswordClient({ mode }: { mode: PasswordMode }) {
       return setError(mode === "change"
         ? "Lösenordet kunde inte ändras. Kontrollera ditt nuvarande lösenord och välj ett starkt nytt lösenord."
         : "Lösenordet kunde inte sparas. Välj ett starkare lösenord eller begär en ny återställningslänk.");
+    }
+
+    // A password change/recovery is a security boundary. Revoke every other
+    // refresh-token session while keeping this verified session alive.
+    if (mode !== "onboarding") {
+      const { error: revokeError } = await supabase.auth.signOut({ scope: "others" });
+      if (revokeError) {
+        setBusy(false);
+        return setError("Lösenordet är ändrat, men andra inloggade sessioner kunde inte avslutas. Logga ut alla enheter och logga in igen.");
+      }
     }
 
     const { data: { user }, error: userError } = await supabase.auth.getUser();

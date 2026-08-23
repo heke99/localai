@@ -1,6 +1,19 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
+import { createSupabaseServerClient } from "../../lib/supabase/server";
 
-export default function SuperadminLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default async function SuperadminLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const supabase = await createSupabaseServerClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (user) {
+    const { data: lifecycle, error } = await supabase
+      .from("profiles")
+      .select("account_status")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (!error && lifecycle?.account_status === "paused") redirect("/account-paused");
+  }
+
   return <>
     {children}
     <Link

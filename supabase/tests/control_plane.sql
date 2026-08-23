@@ -17,12 +17,28 @@ begin
   if has_schema_privilege('authenticated', 'internal', 'usage') then
     raise exception 'authenticated role can access internal schema';
   end if;
-  if not has_function_privilege('authenticated', 'public.start_agent_run(uuid,uuid,text,text,text,text,uuid)', 'execute') then
+
+  if not exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.proname = 'start_agent_run'
+      and has_function_privilege('authenticated', p.oid, 'execute')
+  ) then
     raise exception 'authenticated cannot start agent runs';
   end if;
-  if has_function_privilege('anon', 'public.start_agent_run(uuid,uuid,text,text,text,text,uuid)', 'execute') then
+  if exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.proname = 'start_agent_run'
+      and has_function_privilege('anon', p.oid, 'execute')
+  ) then
     raise exception 'anon can start agent runs';
   end if;
+
   if has_function_privilege('authenticated', 'public.worker_claim_agent_run(text)', 'execute') then
     raise exception 'authenticated can claim worker jobs';
   end if;
