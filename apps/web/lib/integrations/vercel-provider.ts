@@ -9,7 +9,7 @@ interface VercelTokenResponse {
   expires_in?: number;
   scope?: string;
 }
-interface VercelUserResponse { user?: { id?: string; uid?: string; username?: string; email?: string }; }
+interface VercelUserInfoResponse { sub: string; email?: string; name?: string; preferred_username?: string; picture?: string; }
 interface VercelTeam { id: string; slug?: string; name?: string; }
 interface VercelTeamsResponse { teams?: VercelTeam[]; }
 interface VercelProject {
@@ -118,9 +118,11 @@ export async function discoverVercel(
   credential: StoredCredential,
   _callback: VercelCallbackContext = {}
 ): Promise<{ externalAccountId: string; externalAccountName: string; metadata: Record<string,unknown>; capabilities: string[]; resources: DiscoveredResource[] }> {
-  const userResponse = await fetchJson<VercelUserResponse>("https://api.vercel.com/v2/user", { headers: headers(credential.accessToken) });
-  const user = userResponse.user ?? {};
-  const accountId = user.id || user.uid || user.email || user.username;
+  const user = await fetchJson<VercelUserInfoResponse>("https://api.vercel.com/login/oauth/userinfo", {
+    method: "POST",
+    headers: headers(credential.accessToken)
+  });
+  const accountId = user.sub || user.email || user.preferred_username;
   if (!accountId) throw new Error("vercel_profile_identity_missing");
 
   let teams: VercelTeam[] = [];
@@ -155,10 +157,6 @@ export async function discoverVercel(
     }
   }
 
-  // Vercel identity OAuth can succeed while team/project APIs answer 401/403/404
-  // until the Vercel App has been installed with API permissions. Treat all of
-  // those resource-level denials as installation-required rather than looping
-  // the user through the already-approved identity consent flow.
   if ((teamsPermissionDenied || projectPermissionDenials > 0) && projectPermissionSuccesses === 0) {
     throw new Error("vercel_app_installation_required");
   }
@@ -193,10 +191,10 @@ export async function discoverVercel(
 
   return {
     externalAccountId: String(accountId),
-    externalAccountName: user.username || user.email || String(accountId),
+    externalAccountName: user.preferred_username || user.email || user.name || String(accountId),
     metadata: {
       accessModel: "vercel_app_oauth_team_installation",
-      username: user.username ?? null,
+      username: user.preferred_username ?? null,
       email: user.email ?? null,
       teamIds: teams.map((team) => team.id),
       accessibleProjectCount: resources.length,
