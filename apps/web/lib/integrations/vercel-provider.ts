@@ -103,8 +103,8 @@ function headers(token: string): HeadersInit {
   return { Authorization: `Bearer ${token}`, Accept: "application/json" };
 }
 
-function isProviderForbidden(error: unknown) {
-  return error instanceof Error && error.message.startsWith("provider_http_403:");
+function isProviderResourceDenied(error: unknown) {
+  return error instanceof Error && /^provider_http_(401|403|404):/.test(error.message);
 }
 
 async function listProjects(token: string, team?: VercelTeam) {
@@ -124,13 +124,13 @@ export async function discoverVercel(
   if (!accountId) throw new Error("vercel_profile_identity_missing");
 
   let teams: VercelTeam[] = [];
-  let teamsForbidden = false;
+  let teamsPermissionDenied = false;
   try {
     const teamResponse = await fetchJson<VercelTeamsResponse>("https://api.vercel.com/v2/teams?limit=100", { headers: headers(credential.accessToken) });
     teams = teamResponse.teams ?? [];
   } catch (error) {
-    if (!isProviderForbidden(error)) throw error;
-    teamsForbidden = true;
+    if (!isProviderResourceDenied(error)) throw error;
+    teamsPermissionDenied = true;
   }
 
   const projectGroups: Array<Array<{ project: VercelProject; team?: VercelTeam }>> = [];
@@ -141,7 +141,7 @@ export async function discoverVercel(
     projectGroups.push(await listProjects(credential.accessToken));
     projectPermissionSuccesses += 1;
   } catch (error) {
-    if (!isProviderForbidden(error)) throw error;
+    if (!isProviderResourceDenied(error)) throw error;
     projectPermissionDenials += 1;
   }
 
@@ -150,15 +150,16 @@ export async function discoverVercel(
       projectGroups.push(await listProjects(credential.accessToken, team));
       projectPermissionSuccesses += 1;
     } catch (error) {
-      if (!isProviderForbidden(error)) throw error;
+      if (!isProviderResourceDenied(error)) throw error;
       projectPermissionDenials += 1;
     }
   }
 
-  // OAuth proves identity only. Team/project API access comes from a Vercel App
-  // installation with explicit permissions. Never treat identity-only consent as
-  // a connected project integration.
-  if ((teamsForbidden || projectPermissionDenials > 0) && projectPermissionSuccesses === 0) {
+  // Vercel identity OAuth can succeed while team/project APIs answer 401/403/404
+  // until the Vercel App has been installed with API permissions. Treat all of
+  // those resource-level denials as installation-required rather than looping
+  // the user through the already-approved identity consent flow.
+  if ((teamsPermissionDenied || projectPermissionDenials > 0) && projectPermissionSuccesses === 0) {
     throw new Error("vercel_app_installation_required");
   }
 
