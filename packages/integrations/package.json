@@ -1,1 +1,1 @@
-{"name":"@div3rsa/integrations","version":"0.1.0","private":true,"type":"module","exports":"./src/index.ts","dependencies":{"@div3rsa/platform-core":"0.1.0"}}
+{"name":"@div3rsa/integrations","version":"0.1.0","private":true,"type":"module","exports":"./src/index.ts","dependencies":{"@div3rsa/model-sdk":"0.1.0","@div3rsa/platform-core":"0.1.0"}}

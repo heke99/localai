@@ -1,6 +1,18 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@div3rsa/db";
-import type { AgentQueue, ClaimedRun } from "./processor";
+import type { AgentQueue, AgentResourceContext, ClaimedRun } from "./processor";
+
+function parseResourceContext(value: Json | undefined): AgentResourceContext[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || Array.isArray(entry) || typeof entry !== "object") return [];
+    const item = entry as Record<string, Json | undefined>;
+    if (typeof item.resourceId !== "string" || typeof item.connectionId !== "string" || typeof item.provider !== "string" || typeof item.resourceType !== "string" || typeof item.externalResourceId !== "string" || typeof item.displayName !== "string") return [];
+    const capabilities = Array.isArray(item.capabilities) ? item.capabilities.filter((capability): capability is string => typeof capability === "string") : [];
+    const metadata = item.metadata && !Array.isArray(item.metadata) && typeof item.metadata === "object" ? item.metadata as Record<string, unknown> : undefined;
+    return [{ resourceId: item.resourceId, connectionId: item.connectionId, provider: item.provider, resourceType: item.resourceType, externalResourceId: item.externalResourceId, displayName: item.displayName, capabilities, metadata }];
+  });
+}
 
 export class SupabaseAgentQueue implements AgentQueue {
   constructor(private readonly client: SupabaseClient<Database>) {}
@@ -9,7 +21,9 @@ export class SupabaseAgentQueue implements AgentQueue {
     const { data, error } = await this.client.rpc("worker_claim_agent_run", { worker_id: workerId });
     if (error) throw error;
     const row = data?.[0];
-    return row ? { jobId: row.job_id, runId: row.run_id, mode: row.mode as ClaimedRun["mode"], modelAlias: row.model_alias as ClaimedRun["modelAlias"], prompt: row.prompt, requestId: row.request_id, traceId: row.trace_id } : null;
+    if (!row) return null;
+    const extended = row as typeof row & { resource_context?: Json };
+    return { jobId: row.job_id, runId: row.run_id, mode: row.mode as ClaimedRun["mode"], modelAlias: row.model_alias as ClaimedRun["modelAlias"], prompt: row.prompt, requestId: row.request_id, traceId: row.trace_id, resourceContext: parseResourceContext(extended.resource_context) };
   }
 
   async step(runId: string, kind: string, status: string, summary: string, state: Record<string, unknown> = {}): Promise<void> {

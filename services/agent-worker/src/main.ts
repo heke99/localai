@@ -3,6 +3,7 @@ import type { Database } from "@div3rsa/db";
 import { OpenAiCompatibleAdapter } from "@div3rsa/model-gateway";
 import { AgentWorkerProcessor } from "./processor";
 import { SupabaseAgentQueue } from "./supabase-queue";
+import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
 import { SkillEngine, type SkillManifest } from "@div3rsa/skill-engine";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -20,12 +21,16 @@ const workerId = process.env.DIV3RSA_WORKER_ID ?? `agent-worker-${process.pid}`;
 const repositoryRoot = process.env.DIV3RSA_REPOSITORY_ROOT ?? process.cwd();
 const manifest = JSON.parse(await readFile(resolve(repositoryRoot, "skills/runtime-manifest.json"), "utf8")) as SkillManifest;
 const skillEngine = new SkillEngine(manifest, { read: (path) => readFile(resolve(repositoryRoot, path), "utf8") });
+
+// Provider executors are registered when their OAuth/credential connector is provisioned.
+// An empty registry means no external tool is exposed to the model, even if resource metadata exists in the database.
+const toolRuntime = new PermissionedIntegrationToolRuntime(supabase as unknown as ConstructorParameters<typeof PermissionedIntegrationToolRuntime>[0], new Map());
 const processor = new AgentWorkerProcessor(queue, { resolve: () => adapter }, workerId, {
   prepare: async (mode, prompt) => {
     const loaded = await skillEngine.load(skillEngine.select(mode, prompt));
     return { names: loaded.map((skill) => skill.metadata.name), instructions: loaded.map((skill) => `## ${skill.metadata.name}@${skill.metadata.version}\n${skill.instructions}`).join("\n\n") };
   }
-});
+}, toolRuntime);
 let stopping = false;
 
 process.on("SIGTERM", () => { stopping = true; });

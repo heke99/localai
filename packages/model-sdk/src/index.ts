@@ -1,19 +1,40 @@
 export type ModelCapability = "general" | "reasoning" | "coding" | "security" | "research" | "long_context" | "tool_use" | "verification";
 export type ModelAlias = "general-prod" | "code-prod" | "lab-prod" | "reasoner-prod" | "research-prod" | "verifier-prod";
 
+export interface ModelToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface ModelToolCall {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface ModelMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  toolCallId?: string;
+  name?: string;
+  toolCalls?: ModelToolCall[];
+}
+
 export interface GenerateRequest {
   requestId: string;
   alias: ModelAlias;
-  messages: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string }>;
+  messages: ModelMessage[];
   maxOutputTokens?: number;
   temperature?: number;
-  tools?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
+  tools?: ModelToolDefinition[];
 }
 
 export interface GenerateResult {
   modelVersionId: string;
   content: string;
   finishReason: "stop" | "length" | "tool_call" | "error";
+  toolCalls?: ModelToolCall[];
   usage: { inputTokens: number; outputTokens: number; cachedTokens: number };
 }
 
