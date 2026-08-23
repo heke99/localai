@@ -36,10 +36,16 @@ begin
     raise exception 'authenticated cannot update display_name';
   end if;
   if not has_function_privilege('authenticated', 'public.set_my_account_status(text)', 'execute') then
-    raise exception 'authenticated cannot use account lifecycle RPC';
+    raise exception 'authenticated cannot use self account lifecycle RPC';
   end if;
   if has_function_privilege('anon', 'public.set_my_account_status(text)', 'execute') then
-    raise exception 'anon can use account lifecycle RPC';
+    raise exception 'anon can use self account lifecycle RPC';
+  end if;
+  if not has_function_privilege('authenticated', 'public.superadmin_set_account_status(uuid,text)', 'execute') then
+    raise exception 'authenticated superadmin sessions cannot invoke guarded lifecycle RPC';
+  end if;
+  if has_function_privilege('anon', 'public.superadmin_set_account_status(uuid,text)', 'execute') then
+    raise exception 'anon can invoke superadmin lifecycle RPC';
   end if;
 
   if to_regclass('public.organization_subscriptions') is null then
@@ -69,10 +75,10 @@ begin
   if not has_function_privilege('authenticated', 'public.request_my_subscription_action(uuid,text)', 'execute') then
     raise exception 'authenticated cannot request subscription lifecycle action';
   end if;
-  if has_function_privilege('authenticated', 'public.service_confirm_subscription_status(uuid,text,text,timestamptz,text,text)', 'execute') then
+  if has_function_privilege('authenticated', 'public.service_confirm_subscription_status(uuid,text,text,timestamptz,text,timestamptz,text)', 'execute') then
     raise exception 'authenticated can forge provider subscription confirmation';
   end if;
-  if not has_function_privilege('service_role', 'public.service_confirm_subscription_status(uuid,text,text,timestamptz,text,text)', 'execute') then
+  if not has_function_privilege('service_role', 'public.service_confirm_subscription_status(uuid,text,text,timestamptz,text,timestamptz,text)', 'execute') then
     raise exception 'service role cannot confirm provider subscription status';
   end if;
 
