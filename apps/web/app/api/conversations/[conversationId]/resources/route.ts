@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "../../../../../lib/supabase/server";
+import { inferConversationRelationships } from "../../../../../lib/integrations/relationship-inference";
 
 type RpcClient = { rpc: <T>(name: string, args: Record<string, unknown>) => Promise<{ data: T | null; error: { message: string } | null }> };
 
@@ -27,5 +28,6 @@ export async function POST(request: Request, context: { params: Promise<{ conver
     return NextResponse.json({ error: denied ? "resource_or_access_denied" : "resource_selection_failed" }, { status: denied ? 403 : 500 });
   }
 
+  if (resourceIds.length) await inferConversationRelationships(conversationId);
   return NextResponse.json({ selection: data });
 }
