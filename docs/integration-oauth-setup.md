@@ -30,7 +30,16 @@ DIV3RSA uses one provider-independent connection flow:
 - `GITHUB_INTEGRATION_WEBHOOK_SECRET`
 - optional `GITHUB_INTEGRATION_CAPABILITIES` comma-separated override
 
-Recommended GitHub App repository permissions: Metadata read, Contents read/write, Pull requests read/write, Actions read/write, Workflows read/write. Add other provider permissions only when the corresponding DIV3RSA capability is intentionally supported.
+GitHub App registration requirements:
+
+- enable **Request user authorization (OAuth) during installation**
+- set the callback URL exactly to `https://system.div3rsa.com/api/integrations/github/callback`
+- keep wildcard callback matching disabled
+- set the webhook URL exactly to `https://system.div3rsa.com/api/integrations/github/webhook`
+- use the same strong webhook secret as `GITHUB_INTEGRATION_WEBHOOK_SECRET`
+- subscribe to `installation` and `installation_repositories`
+
+Recommended GitHub App repository permissions: Metadata read, Contents read/write, Pull requests read/write, Actions read/write, Workflows read/write. Add other provider permissions only when the corresponding DIV3RSA capability is intentionally supported. Runtime capability derivation is fail-closed: if GitHub does not report a permission, DIV3RSA does not expose its matching capability.
 
 ### Supabase OAuth App
 
@@ -69,3 +78,4 @@ The worker only receives a short-lived one-time execution grant from Supabase.
 - relation discovery never grants capabilities.
 - every provider execution is re-authorized JIT and audit logged.
 - removing a resource/capability blocks subsequent agent calls even within an existing run.
+- GitHub webhook payloads are HMAC-SHA256 verified before resource resync.
