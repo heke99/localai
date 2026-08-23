@@ -1,0 +1,6 @@
+/* Lab uses the same project/plugin permission model as Chat, Code and Research.
+   The legacy authorization-scope control surface is intentionally removed from the UI. */
+a[href="#lab"],
+section#lab {
+  display: none !important;
+}
