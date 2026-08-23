@@ -7,8 +7,8 @@ import type { OAuthSecurity, ProviderKey, StoredCredential } from "./oauth";
 
 export function providerAuthorizationUrl(provider: ProviderKey, security: OAuthSecurity) {
   if (provider === "github") return githubAuthorizationUrl(security.state);
-  if (provider === "vercel") return vercelAuthorizationUrl(security.state);
   if (!security.codeChallenge) throw new Error("pkce_challenge_required");
+  if (provider === "vercel") return vercelAuthorizationUrl(security.state, security.codeChallenge);
   return supabaseAuthorizationUrl(security.state, security.codeChallenge);
 }
 
@@ -30,7 +30,8 @@ export async function exchangeAndDiscover(
     const discovered = await discoverSupabase(credential, actorUserId);
     return { ...discovered, credential };
   }
-  const exchanged = await exchangeVercelCode(code);
-  const discovered = await discoverVercel(exchanged.credential, callbackContext, exchanged.tokenContext);
-  return { ...discovered, credential: exchanged.credential };
+  if (!codeVerifier) throw new Error("pkce_verifier_missing");
+  const credential = await exchangeVercelCode(code, codeVerifier);
+  const discovered = await discoverVercel(credential, callbackContext);
+  return { ...discovered, credential };
 }
