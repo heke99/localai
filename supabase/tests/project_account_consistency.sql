@@ -86,4 +86,28 @@ begin
      or has_function_privilege('anon', 'internal.is_workspace_member(uuid)', 'execute') then
     raise exception 'anon can execute membership policy helpers';
   end if;
+
+  if not has_function_privilege('authenticated', 'public.disconnect_integration_connection(uuid,uuid)', 'execute') then
+    raise exception 'authenticated cannot disconnect integration';
+  end if;
+  if has_function_privilege('anon', 'public.disconnect_integration_connection(uuid,uuid)', 'execute') then
+    raise exception 'anon can disconnect integration';
+  end if;
+  if has_function_privilege('authenticated', 'public.service_complete_integration_oauth_session(uuid,text,text,jsonb,timestamptz,jsonb,text[])', 'execute') then
+    raise exception 'authenticated can complete provider oauth as service';
+  end if;
+  if not has_function_privilege('service_role', 'public.service_complete_integration_oauth_session(uuid,text,text,jsonb,timestamptz,jsonb,text[])', 'execute') then
+    raise exception 'service role cannot complete provider oauth';
+  end if;
+  if not exists (
+    select 1 from pg_indexes
+    where schemaname='internal' and tablename='integration_connections'
+      and indexname='integration_connections_one_active_provider_idx'
+  ) then
+    raise exception 'single-active-provider connection index missing';
+  end if;
+  if position('external_account_name' in pg_get_functiondef('public.workspace_dashboard_snapshot(uuid)'::regprocedure)) = 0
+     or position('ic.metadata' in pg_get_functiondef('public.workspace_dashboard_snapshot(uuid)'::regprocedure)) = 0 then
+    raise exception 'dashboard integration identity fields missing';
+  end if;
 end $$;
