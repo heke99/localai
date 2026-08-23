@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { integrationToolByName } from "@div3rsa/integrations";
 import { consumeExecutionGrant, finishExecutionGrant, updateCredential } from "../../../../../lib/integrations/broker";
 import { executeGithubTool } from "../../../../../lib/integrations/github";
 import { executeSupabaseTool, refreshSupabaseCredential } from "../../../../../lib/integrations/supabase-provider";
 import { executeVercelTool, refreshVercelCredential } from "../../../../../lib/integrations/vercel-provider";
 import type { StoredCredential } from "../../../../../lib/integrations/oauth";
+import { gatewayToolByName } from "../../../../../lib/integrations/tool-catalog";
 
 export const runtime = "nodejs";
 
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
     const toolName = typeof body.toolName === "string" ? body.toolName : "";
     const args = body.args && typeof body.args === "object" && !Array.isArray(body.args) ? body.args as Record<string,unknown> : {};
     if (!/^[0-9a-f-]{36}$/i.test(grantId) || !toolName) return NextResponse.json({ error: "invalid_execution_request" }, { status: 400 });
-    const tool = integrationToolByName(toolName);
+    const tool = gatewayToolByName(toolName);
     if (!tool) return NextResponse.json({ error: "unknown_integration_tool" }, { status: 404 });
 
     const grant = await consumeExecutionGrant(grantId, toolName);
