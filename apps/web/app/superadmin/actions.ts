@@ -36,8 +36,14 @@ export async function reviewAccessRequest(formData: FormData) {
   const targetId = String(formData.get("requestId") ?? "");
   const decision = String(formData.get("decision") ?? "");
   if (!/^[0-9a-f-]{36}$/i.test(targetId) || !["reviewing", "rejected"].includes(decision)) throw new Error("invalid_access_review");
-  const { error } = await supabase.rpc("superadmin_review_access_request", { target_id: targetId, decision: decision as "reviewing" | "rejected" });
+
+  const { data: reviewed, error } = await supabase.rpc("superadmin_review_access_request", {
+    target_id: targetId,
+    decision: decision as "reviewing" | "rejected"
+  });
   if (error) throw new Error(error.message);
+  if (reviewed !== true) throw new Error("access_request_not_reviewable");
+
   revalidateApplicationPaths(targetId);
 }
 
@@ -59,13 +65,32 @@ export async function grantAccess(formData: FormData) {
   }
 
   if (request.status === "pending") {
-    const { error: reviewingError } = await supabase.rpc("superadmin_review_access_request", { target_id: targetId, decision: "reviewing" });
+    const { data: reviewed, error: reviewingError } = await supabase.rpc("superadmin_review_access_request", {
+      target_id: targetId,
+      decision: "reviewing"
+    });
     if (reviewingError) throw new Error(reviewingError.message);
+    if (reviewed !== true) throw new Error("access_request_not_reviewable");
   }
 
   const admin = createSupabaseAdminClient();
   let invitedUserId = request.invited_user_id as string | null;
   let invitedUserMetadata: Record<string, unknown> = {};
+  let createdInviteUser = false;
+
+  const rollbackCreatedInvite = async () => {
+    if (!createdInviteUser || !invitedUserId) return;
+
+    const rollbackUserId = invitedUserId;
+    await admin
+      .from("access_requests")
+      .update({ invited_user_id: null, invited_at: null })
+      .eq("id", targetId)
+      .eq("invited_user_id", rollbackUserId)
+      .eq("status", "reviewing");
+
+    await admin.auth.admin.deleteUser(rollbackUserId);
+  };
 
   if (invitedUserId) {
     const { data, error } = await admin.auth.admin.getUserById(invitedUserId);
@@ -81,15 +106,24 @@ export async function grantAccess(formData: FormData) {
       }
     });
     if (error || !data.user) throw new Error(error?.message ?? "invite_email_failed");
+
     invitedUserId = data.user.id;
     invitedUserMetadata = data.user.app_metadata ?? {};
+    createdInviteUser = true;
 
-    const { error: associationError } = await admin
+    const { data: association, error: associationError } = await admin
       .from("access_requests")
       .update({ invited_user_id: invitedUserId, invited_at: new Date().toISOString() })
       .eq("id", targetId)
-      .is("invited_user_id", null);
-    if (associationError) throw new Error(associationError.message);
+      .eq("status", "reviewing")
+      .is("invited_user_id", null)
+      .select("id")
+      .maybeSingle();
+
+    if (associationError || !association) {
+      await rollbackCreatedInvite();
+      throw new Error(associationError?.message ?? "access_request_invite_race");
+    }
   }
 
   const { error: metadataError } = await admin.auth.admin.updateUserById(invitedUserId, {
@@ -99,7 +133,10 @@ export async function grantAccess(formData: FormData) {
       onboarding_access_request_id: targetId
     }
   });
-  if (metadataError) throw new Error(metadataError.message);
+  if (metadataError) {
+    await rollbackCreatedInvite();
+    throw new Error(metadataError.message);
+  }
 
   const slug = organizationSlug(request.organization_name || request.name, invitedUserId);
   const { error: provisionError } = await supabase.rpc("superadmin_provision_access_grant", {
@@ -107,7 +144,10 @@ export async function grantAccess(formData: FormData) {
     target_user_id: invitedUserId,
     target_slug: slug
   });
-  if (provisionError) throw new Error(provisionError.message);
+  if (provisionError) {
+    await rollbackCreatedInvite();
+    throw new Error(provisionError.message);
+  }
 
   revalidateApplicationPaths(targetId);
 }
