@@ -8,6 +8,17 @@ function stringField(record: Record<string,unknown>, key: string) {
   return typeof record[key] === "string" ? record[key] as string : "";
 }
 
+function safeOAuthErrorCode(error: unknown) {
+  const message = error instanceof Error ? error.message : "oauth_callback_failed";
+  const normalized = message
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, "url")
+    .replace(/[^a-z0-9:_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 160);
+  return normalized || "oauth_callback_failed";
+}
+
 export async function GET(request: Request, context: { params: Promise<{ provider: string }> }) {
   const { provider: rawProvider } = await context.params;
   const requestUrl = new URL(request.url);
@@ -28,7 +39,9 @@ export async function GET(request: Request, context: { params: Promise<{ provide
     oauthSessionId = stringField(session, "oauthSessionId");
     returnPath = safeReturnPath(stringField(session, "returnPath"));
     if (providerError) {
-      await failOAuthSession(oauthSessionId, `provider_${providerError}`);
+      const providerErrorCode = `provider_${providerError}`;
+      await failOAuthSession(oauthSessionId, providerErrorCode);
+      console.warn("integration_oauth_provider_denied", { provider: rawProvider, errorCode: providerErrorCode });
       return NextResponse.redirect(new URL(`${returnPath}${returnPath.includes("?") ? "&" : "?"}integrationError=access_denied&provider=${rawProvider}`, requestUrl.origin), 303);
     }
     if (!code) throw new Error("authorization_code_missing");
@@ -48,8 +61,10 @@ export async function GET(request: Request, context: { params: Promise<{ provide
     const response = NextResponse.redirect(new URL(`${target}${target.includes("?") ? "&" : "?"}connected=${rawProvider}`, requestUrl.origin), 303);
     response.headers.set("Cache-Control", "no-store, max-age=0");
     return response;
-  } catch {
-    await failOAuthSession(oauthSessionId, "oauth_callback_failed");
+  } catch (error) {
+    const errorCode = safeOAuthErrorCode(error);
+    console.error("integration_oauth_callback_failed", { provider: rawProvider, errorCode });
+    await failOAuthSession(oauthSessionId, errorCode);
     const response = NextResponse.redirect(new URL(`${returnPath}${returnPath.includes("?") ? "&" : "?"}integrationError=oauth_callback_failed&provider=${rawProvider}`, requestUrl.origin), 303);
     response.headers.set("Cache-Control", "no-store, max-age=0");
     return response;
