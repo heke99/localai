@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "../../lib/supabase/server";
-import { WorkspaceShell } from "./workspace-shell";
+import { WorkspaceShellV2 } from "./workspace-shell-v2";
 
 export default async function DashboardPage() {
   const supabase = await createSupabaseServerClient();
@@ -19,12 +19,7 @@ export default async function DashboardPage() {
   if (isSuperadmin) {
     const { data: internalOrganization } = await supabase.from("organizations").select("id").eq("slug", "div3rsa-internal").maybeSingle();
     if (internalOrganization) {
-      const { data: internalWorkspaces } = await supabase
-        .from("workspaces")
-        .select("id,name")
-        .eq("organization_id", internalOrganization.id)
-        .order("created_at", { ascending: true })
-        .limit(1);
+      const { data: internalWorkspaces } = await supabase.from("workspaces").select("id,name").eq("organization_id", internalOrganization.id).order("created_at", { ascending: true }).limit(1);
       workspace = internalWorkspaces?.[0] ?? null;
     }
   } else {
@@ -37,10 +32,11 @@ export default async function DashboardPage() {
     redirect("/auth/accepted");
   }
 
-  const { data: snapshotData } = await supabase.rpc("workspace_dashboard_snapshot", { target_workspace_id: workspace.id });
-  const snapshot = (snapshotData ?? {}) as Parameters<typeof WorkspaceShell>[0]["snapshot"];
+  const { data: snapshotData, error: snapshotError } = await supabase.rpc("workspace_dashboard_snapshot", { target_workspace_id: workspace.id });
+  if (snapshotError) throw new Error(snapshotError.message);
+  const snapshot = (snapshotData ?? {}) as Parameters<typeof WorkspaceShellV2>[0]["snapshot"];
 
-  return <WorkspaceShell
+  return <WorkspaceShellV2
     workspaceId={workspace.id}
     workspaceName={workspace.name}
     displayName={profile?.display_name ?? user.email?.split("@")[0] ?? "Konto"}
