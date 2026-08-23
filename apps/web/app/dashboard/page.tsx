@@ -2,40 +2,54 @@ import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "../../lib/supabase/server";
 import { WorkspaceShellV4 } from "./workspace-shell-v4";
 
+type AuthClaims = {
+  sub?: string;
+  email?: string;
+  app_metadata?: { system_role?: string };
+};
+
+type Profile = { display_name: string | null; account_status: string | null };
+type Workspace = { id: string; name: string };
+
 export default async function DashboardPage() {
   const supabase = await createSupabaseServerClient();
-  const { data: { user }, error } = await supabase.auth.getUser();
-  if (error || !user) redirect("/sign-in");
+  const { data: claimsData, error } = await supabase.auth.getClaims();
+  const claims = claimsData?.claims as AuthClaims | undefined;
+  const userId = claims?.sub;
+  if (error || !userId) redirect("/sign-in");
 
-  const isSuperadmin = user.app_metadata.system_role === "superadmin";
-  if (!isSuperadmin) {
-    const { data: lifecycle, error: lifecycleError } = await supabase
-      .from("profiles")
-      .select("account_status")
-      .eq("user_id", user.id)
-      .maybeSingle();
-    // Rolling-deploy compatible: an older DB without the lifecycle column stays
-    // usable until its migration is applied; once present, paused access is hard-blocked.
-    if (!lifecycleError && lifecycle?.account_status === "paused") redirect("/account-paused");
-  }
+  const isSuperadmin = claims.app_metadata?.system_role === "superadmin";
+  let profile: Profile | null = null;
+  let workspace: Workspace | null = null;
 
   if (isSuperadmin) {
-    const { data: stepUp, error: stepUpError } = await supabase.rpc("superadmin_email_step_up_status");
+    const [{ data: stepUp, error: stepUpError }, { data: profileData }, { data: internalOrganization }] = await Promise.all([
+      supabase.rpc("superadmin_email_step_up_status"),
+      supabase.from("profiles").select("display_name,account_status").eq("user_id", userId).maybeSingle(),
+      supabase.from("organizations").select("id").eq("slug", "div3rsa-internal").maybeSingle()
+    ]);
+
     if (stepUpError || !(stepUp as { verified?: boolean } | null)?.verified) redirect("/verify-email");
-  }
+    profile = profileData as Profile | null;
 
-  const { data: profile } = await supabase.from("profiles").select("display_name").eq("user_id", user.id).maybeSingle();
-
-  let workspace: { id: string; name: string } | null = null;
-  if (isSuperadmin) {
-    const { data: internalOrganization } = await supabase.from("organizations").select("id").eq("slug", "div3rsa-internal").maybeSingle();
     if (internalOrganization) {
-      const { data: internalWorkspaces } = await supabase.from("workspaces").select("id,name").eq("organization_id", internalOrganization.id).order("created_at", { ascending: true }).limit(1);
-      workspace = internalWorkspaces?.[0] ?? null;
+      const { data: internalWorkspaces } = await supabase
+        .from("workspaces")
+        .select("id,name")
+        .eq("organization_id", internalOrganization.id)
+        .order("created_at", { ascending: true })
+        .limit(1);
+      workspace = (internalWorkspaces?.[0] ?? null) as Workspace | null;
     }
   } else {
-    const { data: workspaces } = await supabase.from("workspaces").select("id,name").order("created_at", { ascending: true }).limit(1);
-    workspace = workspaces?.[0] ?? null;
+    const [{ data: profileData, error: profileError }, { data: workspaces }] = await Promise.all([
+      supabase.from("profiles").select("display_name,account_status").eq("user_id", userId).maybeSingle(),
+      supabase.from("workspaces").select("id,name").order("created_at", { ascending: true }).limit(1)
+    ]);
+
+    profile = profileData as Profile | null;
+    if (!profileError && profile?.account_status === "paused") redirect("/account-paused");
+    workspace = (workspaces?.[0] ?? null) as Workspace | null;
   }
 
   if (!workspace) {
@@ -50,8 +64,8 @@ export default async function DashboardPage() {
   return <WorkspaceShellV4
     workspaceId={workspace.id}
     workspaceName={workspace.name}
-    displayName={profile?.display_name ?? user.email?.split("@")[0] ?? "Konto"}
-    email={user.email ?? ""}
+    displayName={profile?.display_name ?? claims.email?.split("@")[0] ?? "Konto"}
+    email={claims.email ?? ""}
     isSuperadmin={isSuperadmin}
     snapshot={snapshot}
   />;
