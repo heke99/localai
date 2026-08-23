@@ -20,7 +20,7 @@ permissions:
 
 concurrency:
   group: database-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
