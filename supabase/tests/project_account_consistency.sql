@@ -1,6 +1,7 @@
 do $$
 declare
   immutable_trigger_count integer;
+  subscription_policy_count integer;
 begin
   if not exists (
     select 1
@@ -39,5 +40,44 @@ begin
   end if;
   if has_function_privilege('anon', 'public.set_my_account_status(text)', 'execute') then
     raise exception 'anon can use account lifecycle RPC';
+  end if;
+
+  if to_regclass('public.organization_subscriptions') is null then
+    raise exception 'organization_subscriptions missing';
+  end if;
+  if has_table_privilege('authenticated', 'public.organization_subscriptions', 'insert')
+     or has_table_privilege('authenticated', 'public.organization_subscriptions', 'update')
+     or has_table_privilege('authenticated', 'public.organization_subscriptions', 'delete') then
+    raise exception 'authenticated can mutate subscriptions directly';
+  end if;
+  if not has_table_privilege('authenticated', 'public.organization_subscriptions', 'select') then
+    raise exception 'authenticated cannot read subscription state';
+  end if;
+
+  select count(*) into subscription_policy_count
+  from pg_policies
+  where schemaname='public'
+    and tablename='organization_subscriptions'
+    and policyname='organization_subscriptions_member_select';
+  if subscription_policy_count <> 1 then
+    raise exception 'subscription member select policy missing';
+  end if;
+
+  if not has_function_privilege('authenticated', 'public.my_subscription_snapshot(uuid)', 'execute') then
+    raise exception 'authenticated cannot read subscription snapshot';
+  end if;
+  if not has_function_privilege('authenticated', 'public.request_my_subscription_action(uuid,text)', 'execute') then
+    raise exception 'authenticated cannot request subscription lifecycle action';
+  end if;
+  if has_function_privilege('authenticated', 'public.service_confirm_subscription_status(uuid,text,text,timestamptz,text,text)', 'execute') then
+    raise exception 'authenticated can forge provider subscription confirmation';
+  end if;
+  if not has_function_privilege('service_role', 'public.service_confirm_subscription_status(uuid,text,text,timestamptz,text,text)', 'execute') then
+    raise exception 'service role cannot confirm provider subscription status';
+  end if;
+
+  if has_function_privilege('anon', 'internal.is_org_member(uuid)', 'execute')
+     or has_function_privilege('anon', 'internal.is_workspace_member(uuid)', 'execute') then
+    raise exception 'anon can execute membership policy helpers';
   end if;
 end $$;
