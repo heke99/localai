@@ -12,7 +12,7 @@ export function providerAuthorizationUrl(provider: ProviderKey, security: OAuthS
   return vercelAuthorizationUrl(security.state, security.codeChallenge);
 }
 
-export async function exchangeAndDiscover(provider: ProviderKey, code: string, codeVerifier: string | null) {
+export async function exchangeAndDiscover(provider: ProviderKey, code: string, codeVerifier: string | null, actorUserId: string) {
   if (provider === "github") {
     const token = await exchangeGithubCode(code);
     const discovered = await discoverGithub(token.access_token);
@@ -21,7 +21,7 @@ export async function exchangeAndDiscover(provider: ProviderKey, code: string, c
   if (!codeVerifier) throw new Error("pkce_verifier_missing");
   if (provider === "supabase") {
     const credential = await exchangeSupabaseCode(code, codeVerifier);
-    const discovered = await discoverSupabase(credential);
+    const discovered = await discoverSupabase(credential, actorUserId);
     return { ...discovered, credential };
   }
   const credential = await exchangeVercelCode(code, codeVerifier);

@@ -3,7 +3,7 @@ import { configuredCapabilities, credentialExpiry, fetchJson, providerCallbackUr
 import type { DiscoveredResource } from "./github";
 
 interface SupabaseTokenResponse { access_token: string; refresh_token?: string; token_type?: string; expires_in?: number; scope?: string; }
-interface SupabaseProfile { id?: string; email?: string; username?: string; }
+interface SupabaseOrganization { id?: string; slug?: string; name?: string; }
 interface SupabaseProject { id?: string; ref?: string; name?: string; organization_id?: string; organization_slug?: string; region?: string; status?: string; database?: { host?: string }; }
 
 export function supabaseAuthorizationUrl(state: string, codeChallenge: string) {
@@ -28,6 +28,7 @@ export async function exchangeSupabaseCode(code: string, codeVerifier: string) {
     headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded", Authorization: basicAuth() },
     body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: providerCallbackUrl("supabase"), code_verifier: codeVerifier })
   });
+  if (!result?.access_token) throw new Error("supabase_oauth_access_token_missing");
   return toStoredCredential(result);
 }
 
@@ -52,19 +53,22 @@ export async function refreshSupabaseCredential(credential: StoredCredential) {
     headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded", Authorization: basicAuth() },
     body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: credential.refreshToken })
   });
+  if (!result?.access_token) throw new Error("supabase_oauth_access_token_missing");
   const next = toStoredCredential(result);
   if (!next.refreshToken) next.refreshToken = credential.refreshToken;
   return next;
 }
 
-export async function discoverSupabase(credential: StoredCredential): Promise<{ externalAccountId: string; externalAccountName: string; metadata: Record<string,unknown>; capabilities: string[]; resources: DiscoveredResource[] }> {
-  const [profile, projects] = await Promise.all([
-    fetchJson<SupabaseProfile>("https://api.supabase.com/v1/profile", { headers: supabaseHeaders(credential.accessToken) }),
-    fetchJson<SupabaseProject[]>("https://api.supabase.com/v1/projects", { headers: supabaseHeaders(credential.accessToken) })
+export async function discoverSupabase(credential: StoredCredential, actorUserId: string): Promise<{ externalAccountId: string; externalAccountName: string; metadata: Record<string,unknown>; capabilities: string[]; resources: DiscoveredResource[] }> {
+  if (!actorUserId) throw new Error("supabase_actor_identity_missing");
+  const [projects, organizations] = await Promise.all([
+    fetchJson<SupabaseProject[]>("https://api.supabase.com/v1/projects", { headers: supabaseHeaders(credential.accessToken) }),
+    fetchJson<SupabaseOrganization[]>("https://api.supabase.com/v1/organizations", { headers: supabaseHeaders(credential.accessToken) }).catch(() => [] as SupabaseOrganization[])
   ]);
-  const accountId = profile.id || profile.email || profile.username;
-  if (!accountId) throw new Error("supabase_profile_identity_missing");
-  const resources: DiscoveredResource[] = (Array.isArray(projects) ? projects : []).flatMap((project) => {
+
+  const projectList = Array.isArray(projects) ? projects : [];
+  const organizationList = Array.isArray(organizations) ? organizations : [];
+  const resources: DiscoveredResource[] = projectList.flatMap((project) => {
     const ref = project.ref || project.id;
     if (!ref) return [];
     const name = project.name || ref;
@@ -89,10 +93,29 @@ export async function discoverSupabase(credential: StoredCredential): Promise<{ 
       ]
     }];
   });
+
+  const firstOrganization = organizationList.find((organization) => organization.name || organization.slug || organization.id);
+  const fallbackOrganization = projectList.find((project) => project.organization_slug || project.organization_id);
+  const externalAccountName = firstOrganization?.name
+    || firstOrganization?.slug
+    || fallbackOrganization?.organization_slug
+    || fallbackOrganization?.organization_id
+    || "Supabase account";
+
   return {
-    externalAccountId: String(accountId),
-    externalAccountName: profile.email || profile.username || String(accountId),
-    metadata: { email: profile.email ?? null },
+    // The Management API OAuth profile endpoint currently rejects OAuth access tokens.
+    // DIV3RSA therefore keys the provider connection to the authenticated DIV3RSA actor,
+    // while provider-owned organization/project IDs remain in metadata/resources.
+    externalAccountId: `div3rsa-user:${actorUserId}`,
+    externalAccountName: String(externalAccountName),
+    metadata: {
+      identitySource: "div3rsa_actor",
+      organizations: organizationList.map((organization) => ({
+        id: organization.id ?? null,
+        slug: organization.slug ?? null,
+        name: organization.name ?? null
+      }))
+    },
     capabilities: configuredCapabilities("supabase"),
     resources
   };
@@ -110,10 +133,14 @@ function projectRef(metadata: Record<string,unknown>, externalId: string) {
 
 function serviceLogSql(service: string) {
   const normalized = service.toLowerCase();
-  if (normalized === "postgres" || normalized === "database") return "select timestamp,event_message,metadata from postgres_logs order by timestamp desc limit 100";
-  if (normalized === "auth") return "select timestamp,event_message,metadata from auth_logs order by timestamp desc limit 100";
-  if (normalized === "functions" || normalized === "edge") return "select timestamp,event_message,metadata from function_edge_logs order by timestamp desc limit 100";
-  return "select timestamp,event_message,metadata from edge_logs order by timestamp desc limit 100";
+  const source = normalized === "postgres" || normalized === "database"
+    ? "postgres_logs"
+    : normalized === "auth"
+      ? "auth_logs"
+      : normalized === "functions" || normalized === "edge"
+        ? "function_edge_logs"
+        : "edge_logs";
+  return `select timestamp,event_message,severity_text,source from logs where source = '${source}' order by timestamp desc limit 100`;
 }
 
 const crcTable = (() => {
@@ -143,7 +170,7 @@ export async function executeSupabaseTool(toolName: string, args: Record<string,
   if (toolName === "supabase_read_logs") {
     const end = new Date(); const start = new Date(end.getTime()-60*60*1000);
     const params = new URLSearchParams({ sql: serviceLogSql(String(args.service ?? "edge")), iso_timestamp_start: start.toISOString(), iso_timestamp_end: end.toISOString() });
-    return supabaseApi(credential, `/v1/projects/${ref}/analytics/endpoints/logs.all?${params.toString()}`);
+    return supabaseApi(credential, `/v1/projects/${ref}/analytics/endpoints/logs?${params.toString()}`);
   }
   if (toolName === "supabase_deploy_function") {
     const name = String(args.name ?? "").trim();
