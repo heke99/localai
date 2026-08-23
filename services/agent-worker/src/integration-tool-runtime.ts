@@ -2,7 +2,7 @@ import type { ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import { integrationToolByName, integrationToolsForResources, type IntegrationToolDefinition } from "@div3rsa/integrations";
 import type { ClaimedRun, WorkerToolRuntime } from "./processor";
 
-type RpcClient = { rpc: <T>(name: string, args: Record<string, unknown>) => Promise<{ data: T | null; error: { message: string } | null }> };
+type RpcClient = { rpc: (name: string, args: Record<string, unknown>) => Promise<{ data: unknown | null; error: { message: string } | null }> };
 
 export interface ToolAuthorization {
   runId: string;
@@ -47,6 +47,20 @@ const projectMemoryTools: ModelToolDefinition[] = [
   }
 ];
 
+function isToolAuthorization(value: unknown): value is ToolAuthorization {
+  if (!value || Array.isArray(value) || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.runId === "string"
+    && typeof item.actorId === "string"
+    && typeof item.resourceId === "string"
+    && typeof item.connectionId === "string"
+    && typeof item.provider === "string"
+    && typeof item.resourceType === "string"
+    && typeof item.externalResourceId === "string"
+    && typeof item.displayName === "string"
+    && typeof item.capability === "string";
+}
+
 export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
   constructor(private readonly client: RpcClient, private readonly executors: ReadonlyMap<string, ProviderToolExecutor>) {}
 
@@ -57,7 +71,7 @@ export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
 
   async execute(run: ClaimedRun, call: ModelToolCall): Promise<unknown> {
     if (call.name === LIST_PROJECT_RESOURCES) {
-      const { data, error } = await this.client.rpc<unknown>("worker_project_resource_directory", { target_run_id: run.runId });
+      const { data, error } = await this.client.rpc("worker_project_resource_directory", { target_run_id: run.runId });
       if (error || !data) throw new Error(error?.message ?? "project_resource_directory_failed");
       return data;
     }
@@ -68,7 +82,7 @@ export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
       const relation = typeof call.input.relation === "string" && call.input.relation.trim() ? call.input.relation.trim() : "same_application";
       const note = typeof call.input.note === "string" ? call.input.note.trim().slice(0, 2000) : null;
       if (!one || !two || one === two) throw new Error("resource_link_requires_two_resources");
-      const { data, error } = await this.client.rpc<unknown>("worker_remember_resource_link", {
+      const { data, error } = await this.client.rpc("worker_remember_resource_link", {
         target_run_id: run.runId,
         target_resource_one_id: one,
         target_resource_two_id: two,
@@ -88,12 +102,12 @@ export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
     const executor = this.executors.get(tool.provider);
     if (!executor) throw new Error("provider_executor_not_configured");
 
-    const { data, error } = await this.client.rpc<ToolAuthorization>("worker_authorize_tool_call", {
+    const { data, error } = await this.client.rpc("worker_authorize_tool_call", {
       target_run_id: run.runId,
       target_resource_id: resourceId,
       target_capability: tool.capability
     });
-    if (error || !data) throw new Error(error?.message ?? "tool_resource_capability_denied");
+    if (error || !isToolAuthorization(data)) throw new Error(error?.message ?? "tool_resource_capability_denied");
     if (data.resourceId !== resourceId || data.provider !== tool.provider || data.capability !== tool.capability) throw new Error("tool_authorization_mismatch");
     return executor.execute({ run, authorization: data, tool, arguments: call.input });
   }
