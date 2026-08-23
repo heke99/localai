@@ -33,13 +33,13 @@ describe("PermissionedIntegrationToolRuntime", () => {
     });
   });
 
-  it("JIT authorizes the exact resource and capability before execution", async () => {
-    const rpc = vi.fn(async () => ({ data: { runId: "run", actorId: "user", resourceId: "repo-1", connectionId: "connection-1", provider: "github", resourceType: "repository", externalResourceId: "heke99/localai", displayName: "localai", capability: "github.contents.read" }, error: null }));
+  it("issues a one-time JIT grant for the exact resource, capability and tool before execution", async () => {
+    const rpc = vi.fn(async () => ({ data: { runId: "run", actorId: "user", resourceId: "repo-1", connectionId: "connection-1", provider: "github", resourceType: "repository", externalResourceId: "heke99/localai", displayName: "localai", capability: "github.contents.read", executionGrantId: "grant-1" }, error: null }));
     const execute = vi.fn(async () => ({ content: "ok" }));
     const runtime = new PermissionedIntegrationToolRuntime({ rpc }, new Map([["github", { execute }]]));
     const output = await runtime.execute(run, { id: "call-1", name: "github_read_file", input: { resourceId: "repo-1", path: "README.md" } });
     expect(output).toEqual({ content: "ok" });
-    expect(rpc).toHaveBeenCalledWith("worker_authorize_tool_call", { target_run_id: "run", target_resource_id: "repo-1", target_capability: "github.contents.read" });
+    expect(rpc).toHaveBeenCalledWith("worker_create_tool_execution_grant", { target_run_id: "run", target_resource_id: "repo-1", target_capability: "github.contents.read", target_tool_name: "github_read_file" });
     expect(execute).toHaveBeenCalledOnce();
   });
 
