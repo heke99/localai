@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "../../lib/supabase/server";
-import { WorkspaceShellV2 } from "./workspace-shell-v2";
+import { WorkspaceShellV3 } from "./workspace-shell-v3";
 
 export default async function DashboardPage() {
   const supabase = await createSupabaseServerClient();
@@ -34,9 +34,9 @@ export default async function DashboardPage() {
 
   const { data: snapshotData, error: snapshotError } = await supabase.rpc("workspace_dashboard_snapshot", { target_workspace_id: workspace.id });
   if (snapshotError) throw new Error(snapshotError.message);
-  const snapshot = (snapshotData ?? {}) as Parameters<typeof WorkspaceShellV2>[0]["snapshot"];
+  const snapshot = (snapshotData ?? {}) as Parameters<typeof WorkspaceShellV3>[0]["snapshot"];
 
-  return <WorkspaceShellV2
+  return <WorkspaceShellV3
     workspaceId={workspace.id}
     workspaceName={workspace.name}
     displayName={profile?.display_name ?? user.email?.split("@")[0] ?? "Konto"}
