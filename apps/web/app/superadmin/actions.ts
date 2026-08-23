@@ -137,28 +137,3 @@ export async function setModelAlias(formData: FormData) {
   revalidatePath("/superadmin");
   revalidatePath("/dashboard");
 }
-
-export async function createLabAuthorization(formData: FormData) {
-  const supabase = await requireSuperadmin();
-  const organizationId = String(formData.get("organizationId") ?? "");
-  const projectId = String(formData.get("projectId") ?? "").trim();
-  const target = String(formData.get("target") ?? "").trim();
-  const scope = String(formData.get("scope") ?? "").trim();
-  const validHours = Number(formData.get("validHours") ?? 24);
-
-  if (!/^[0-9a-f-]{36}$/i.test(organizationId)) throw new Error("invalid_lab_organization");
-  if (projectId && !/^[0-9a-f-]{36}$/i.test(projectId)) throw new Error("invalid_lab_project");
-  if (!target || target.length > 1024 || !scope || scope.length > 4000 || !Number.isInteger(validHours) || validHours < 1 || validHours > 720) {
-    throw new Error("invalid_lab_authorization");
-  }
-
-  const { error } = await supabase.rpc("superadmin_create_lab_authorization", {
-    target_organization_id: organizationId,
-    target_project_id: projectId || null,
-    target_target: target,
-    target_scope: scope,
-    valid_hours: validHours
-  });
-  if (error) throw new Error(error.message);
-  revalidatePath("/superadmin");
-}
