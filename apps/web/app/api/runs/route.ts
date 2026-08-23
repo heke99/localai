@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
+import { inferConversationRelationships } from "../../../lib/integrations/relationship-inference";
 
 const modes = new Set(["chat", "code", "lab", "research"]);
 type RpcClient = { rpc: <T>(name: string, args: Record<string, unknown>) => Promise<{ data: T | null; error: { message: string } | null }> };
@@ -12,13 +13,28 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => null) as { workspaceId?: string; conversationId?: string; mode?: string; prompt?: string; resourceIds?: string[] } | null;
   const prompt = body?.prompt?.trim() ?? "";
   const resourceIds = Array.isArray(body?.resourceIds) ? [...new Set(body.resourceIds.filter((value): value is string => typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value)))].slice(0, 20) : [];
-  if (!body?.workspaceId || !body.mode || !modes.has(body.mode) || prompt.length < 1 || prompt.length > 100_000) {
+  if (!body?.workspaceId || !body.mode || !modes.has(body.mode) || prompt.length < 1 || prompt.length > 100_000 || (body.conversationId && !/^[0-9a-f-]{36}$/i.test(body.conversationId))) {
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   }
 
   const requestId = crypto.randomUUID();
   const traceId = request.headers.get("x-trace-id") ?? crypto.randomUUID();
   const rpc = supabase as unknown as RpcClient;
+
+  // Persist and enrich the resource graph before the run is queued so the very first
+  // model turn receives strongly-related deployment/database context as well.
+  if (body.conversationId) {
+    const { error: selectionError } = await rpc.rpc<Record<string, unknown>>("set_conversation_resources", {
+      target_conversation_id: body.conversationId,
+      target_resource_ids: resourceIds
+    });
+    if (selectionError) {
+      const denied = /permission_denied|workspace_access_denied|conversation_access_denied|resource_not_available/.test(selectionError.message);
+      return NextResponse.json({ error: denied ? "resource_or_access_denied" : "run_start_failed", requestId }, { status: denied ? 403 : 500 });
+    }
+    if (resourceIds.length) await inferConversationRelationships(body.conversationId);
+  }
+
   const { data, error } = await rpc.rpc<Array<{ run_id: string; resolved_conversation_id: string }>>("start_agent_run", {
     workspace_id: body.workspaceId,
     conversation_id: body.conversationId ?? null,
@@ -26,7 +42,7 @@ export async function POST(request: Request) {
     prompt,
     request_id: requestId,
     trace_id: traceId,
-    resource_ids: resourceIds
+    resource_ids: body.conversationId ? null : resourceIds
   });
 
   if (error) {
