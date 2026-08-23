@@ -1,0 +1,137 @@
+import Link from "next/link";
+import { notFound, redirect } from "next/navigation";
+import { createSupabaseServerClient } from "../../../../lib/supabase/server";
+import { grantAccess, reviewAccessRequest } from "../../actions";
+
+type AccessRequest = {
+  id: string;
+  email: string;
+  name: string;
+  organization_name: string | null;
+  use_case: string;
+  status: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  invited_user_id: string | null;
+  invited_at: string | null;
+  password_email_sent_at: string | null;
+  onboarding_completed_at: string | null;
+  organization_id: string | null;
+  workspace_id: string | null;
+};
+
+function formatDate(value?: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("sv-SE", { dateStyle: "long", timeStyle: "short" }).format(date);
+}
+
+function valueOrDash(value?: string | null) {
+  return value?.trim() || "—";
+}
+
+export default async function SuperadminApplicationDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
+
+  const supabase = await createSupabaseServerClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/sign-in");
+  if (user.app_metadata.system_role !== "superadmin") redirect("/dashboard");
+
+  const { data: stepUp, error: stepUpError } = await supabase.rpc("superadmin_email_step_up_status");
+  if (stepUpError || !(stepUp as { verified?: boolean } | null)?.verified) redirect("/verify-email");
+
+  const { data, error } = await supabase
+    .from("access_requests")
+    .select("id,email,name,organization_name,use_case,status,reviewed_by,reviewed_at,created_at,invited_user_id,invited_at,password_email_sent_at,onboarding_completed_at,organization_id,workspace_id")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  if (!data) notFound();
+  const request = data as AccessRequest;
+  const finished = Boolean(request.onboarding_completed_at);
+
+  return <main className="shell control-shell">
+    <nav className="nav control-topbar">
+      <div><span className="brand">DIV3RSA CONTROL</span><span className="control-role">Application detail</span></div>
+      <div className="control-top-actions">
+        <Link className="button" href="/superadmin/applications">Alla ansökningar</Link>
+        <Link className="button" href="/superadmin">Control center</Link>
+      </div>
+    </nav>
+
+    <section className="control-content" style={{ maxWidth: 1100, margin: "0 auto" }}>
+      <header className="control-header">
+        <div>
+          <p className="eyebrow">Application</p>
+          <h1>{request.name}</h1>
+          <p className="lead">Fullständigt ansökningsunderlag och onboardinghistorik.</p>
+        </div>
+        <span className={`status-badge status-${finished ? "active" : request.status}`}>{finished ? "active" : request.status}</span>
+      </header>
+
+      <section className="control-panel">
+        <div className="control-section-head"><div><p className="eyebrow">Applicant</p><h2>Kontakt & organisation</h2></div></div>
+        <div className="control-split">
+          <div className="compact-list">
+            <div className="compact-row"><div><strong>Namn</strong><small>{request.name}</small></div></div>
+            <div className="compact-row"><div><strong>E-post</strong><small>{request.email}</small></div></div>
+          </div>
+          <div className="compact-list">
+            <div className="compact-row"><div><strong>Organisation</strong><small>{valueOrDash(request.organization_name)}</small></div></div>
+            <div className="compact-row"><div><strong>Ansökte</strong><small>{formatDate(request.created_at)}</small></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section className="control-panel">
+        <div className="control-section-head"><div><p className="eyebrow">Motivation</p><h2>Varför de ansöker</h2></div></div>
+        <p className="panel-copy" style={{ maxWidth: "none", whiteSpace: "pre-wrap", fontSize: 15 }}>{request.use_case}</p>
+      </section>
+
+      <section className="control-panel">
+        <div className="control-section-head"><div><p className="eyebrow">Review</p><h2>Status & beslut</h2></div></div>
+        <div className="control-split">
+          <div className="compact-list">
+            <div className="compact-row"><div><strong>Status</strong><small>{request.status}</small></div></div>
+            <div className="compact-row"><div><strong>Granskad</strong><small>{formatDate(request.reviewed_at)}</small></div></div>
+          </div>
+          <div className="compact-list">
+            <div className="compact-row"><div><strong>Reviewed by</strong><small>{valueOrDash(request.reviewed_by)}</small></div></div>
+            <div className="compact-row"><div><strong>Application ID</strong><small>{request.id}</small></div></div>
+          </div>
+        </div>
+
+        {!finished && request.status !== "approved" && request.status !== "rejected" ? <form className="row-actions" style={{ marginTop: 18 }}>
+          <input type="hidden" name="requestId" value={request.id}/>
+          {request.status === "pending" ? <button formAction={reviewAccessRequest} name="decision" value="reviewing" className="button">Markera under granskning</button> : null}
+          <button formAction={grantAccess} className="button primary">Godkänn & ge åtkomst</button>
+          <button formAction={reviewAccessRequest} name="decision" value="rejected" className="button danger">Avslå</button>
+        </form> : null}
+      </section>
+
+      <section className="control-panel">
+        <div className="control-section-head"><div><p className="eyebrow">Onboarding</p><h2>Åtkomsthistorik</h2></div></div>
+        <div className="onboarding-track" style={{ marginTop: 18 }}>
+          <span className={request.invited_at ? "done" : ""}>Invite · {formatDate(request.invited_at)}</span>
+          <span className={request.password_email_sent_at ? "done" : ""}>Password mail · {formatDate(request.password_email_sent_at)}</span>
+          <span className={request.onboarding_completed_at ? "done" : ""}>Activated · {formatDate(request.onboarding_completed_at)}</span>
+        </div>
+        <div className="control-split spaced-list">
+          <div className="compact-list">
+            <div className="compact-row"><div><strong>User ID</strong><small>{valueOrDash(request.invited_user_id)}</small></div></div>
+            <div className="compact-row"><div><strong>Organization ID</strong><small>{valueOrDash(request.organization_id)}</small></div></div>
+          </div>
+          <div className="compact-list">
+            <div className="compact-row"><div><strong>Workspace ID</strong><small>{valueOrDash(request.workspace_id)}</small></div></div>
+            <div className="compact-row"><div><strong>Onboarding state</strong><small>{finished ? "Completed" : request.status === "approved" ? "Provisioned / waiting for activation" : "Not provisioned"}</small></div></div>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>;
+}
