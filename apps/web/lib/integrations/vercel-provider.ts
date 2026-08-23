@@ -1,92 +1,106 @@
 import "server-only";
-import { configuredCapabilities, credentialExpiry, fetchJson, providerCallbackUrl, requiredProviderEnv, type StoredCredential } from "./oauth";
+import { configuredCapabilities, fetchJson, providerCallbackUrl, requiredProviderEnv, type StoredCredential } from "./oauth";
 import type { DiscoveredResource } from "./github";
 
-interface VercelTokenResponse { access_token: string; refresh_token?: string; token_type?: string; expires_in?: number; scope?: string; }
+interface VercelTokenResponse { access_token: string; token_type?: string; team_id?: string | null; user_id?: string | null; }
 interface VercelUserResponse { user?: { id?: string; uid?: string; username?: string; email?: string }; }
 interface VercelTeam { id: string; slug?: string; name?: string; }
-interface VercelTeamsResponse { teams?: VercelTeam[]; }
 interface VercelProject { id: string; name: string; framework?: string | null; accountId?: string; updatedAt?: number; link?: { type?: string; repoId?: number | string; repo?: string; org?: string; repoOwnerId?: number | string; gitCredentialId?: string }; latestDeployments?: unknown[]; }
 interface VercelProjectsResponse { projects?: VercelProject[]; }
 
-export function vercelAuthorizationUrl(state: string, codeChallenge: string) {
-  const authorizeUrl = process.env.VERCEL_INTEGRATION_AUTHORIZE_URL?.trim() || "https://vercel.com/oauth/authorize";
-  const scope = process.env.VERCEL_INTEGRATION_OAUTH_SCOPES?.trim() || "openid email profile offline_access";
-  const query = new URLSearchParams({
-    client_id: requiredProviderEnv("vercel", "CLIENT_ID"),
-    redirect_uri: providerCallbackUrl("vercel"),
-    response_type: "code",
-    state,
-    code_challenge: codeChallenge,
-    code_challenge_method: "S256",
-    scope
-  });
-  return `${authorizeUrl}?${query.toString()}`;
+export interface VercelCallbackContext {
+  teamId?: string | null;
+  configurationId?: string | null;
+  source?: string | null;
+}
+
+export function vercelAuthorizationUrl(state: string) {
+  const configured = process.env.VERCEL_INTEGRATION_INSTALL_URL?.trim();
+  const slug = process.env.VERCEL_INTEGRATION_SLUG?.trim();
+  if (!configured && !slug) throw new Error("provider_configuration_missing:VERCEL_INTEGRATION_SLUG");
+  const url = new URL(configured || `https://vercel.com/integrations/${encodeURIComponent(slug!)}/new`);
+  url.searchParams.set("state", state);
+  return url.toString();
 }
 
 async function tokenRequest(params: URLSearchParams) {
-  const configured = process.env.VERCEL_INTEGRATION_TOKEN_URL?.trim();
-  const endpoints = configured ? [configured] : ["https://api.vercel.com/login/oauth/token", "https://api.vercel.com/v2/oauth/access_token"];
-  let lastError: Error | null = null;
-  for (const endpoint of endpoints) {
-    const response = await fetch(endpoint, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" }, body: params, cache: "no-store" });
-    const text = await response.text();
-    if (response.ok) {
-      try { return JSON.parse(text) as VercelTokenResponse; } catch { throw new Error("vercel_token_response_invalid"); }
-    }
-    lastError = new Error(`provider_http_${response.status}:vercel_token_exchange_failed`);
+  const endpoint = process.env.VERCEL_INTEGRATION_TOKEN_URL?.trim() || "https://api.vercel.com/v2/oauth/access_token";
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+    body: params,
+    cache: "no-store"
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`provider_http_${response.status}:vercel_integration_token_exchange_failed`);
+  try {
+    const result = JSON.parse(text) as VercelTokenResponse;
+    if (!result.access_token) throw new Error("vercel_installation_access_token_missing");
+    return result;
+  } catch (error) {
+    if (error instanceof Error && error.message === "vercel_installation_access_token_missing") throw error;
+    throw new Error("vercel_token_response_invalid");
   }
-  throw lastError ?? new Error("vercel_token_exchange_failed");
 }
 
 function stored(result: VercelTokenResponse): StoredCredential {
-  return { accessToken: result.access_token, refreshToken: result.refresh_token ?? null, tokenType: result.token_type ?? "bearer", scope: result.scope ?? null, expiresAt: credentialExpiry(result.expires_in) };
+  // External Integration access tokens are long-lived installation credentials.
+  // They are revoked by uninstalling/changing the Vercel integration rather than
+  // refreshed with the Sign in with Vercel refresh-token flow.
+  return { accessToken: result.access_token, refreshToken: null, tokenType: result.token_type ?? "bearer", scope: null, expiresAt: null };
 }
 
-export async function exchangeVercelCode(code: string, codeVerifier: string) {
+export async function exchangeVercelCode(code: string) {
   const result = await tokenRequest(new URLSearchParams({
-    grant_type: "authorization_code",
     client_id: requiredProviderEnv("vercel", "CLIENT_ID"),
     client_secret: requiredProviderEnv("vercel", "CLIENT_SECRET"),
     code,
-    code_verifier: codeVerifier,
     redirect_uri: providerCallbackUrl("vercel")
   }));
-  return stored(result);
+  return { credential: stored(result), tokenContext: { teamId: result.team_id ?? null, userId: result.user_id ?? null } };
 }
 
-export async function refreshVercelCredential(credential: StoredCredential) {
-  if (!credential.refreshToken) throw new Error("vercel_refresh_token_missing");
-  const result = await tokenRequest(new URLSearchParams({
-    grant_type: "refresh_token",
-    client_id: requiredProviderEnv("vercel", "CLIENT_ID"),
-    client_secret: requiredProviderEnv("vercel", "CLIENT_SECRET"),
-    refresh_token: credential.refreshToken
-  }));
-  const next = stored(result); if (!next.refreshToken) next.refreshToken=credential.refreshToken; return next;
+export async function refreshVercelCredential(_credential: StoredCredential): Promise<StoredCredential> {
+  throw new Error("vercel_installation_token_not_refreshable");
 }
 
 function headers(token: string): HeadersInit { return { Authorization: `Bearer ${token}`, Accept: "application/json" }; }
 
-async function listProjects(token: string, team?: VercelTeam) {
+async function listProjects(token: string, teamId: string | null) {
   const params = new URLSearchParams({ limit: "100" });
-  if (team?.id) params.set("teamId", team.id);
+  if (teamId) params.set("teamId", teamId);
   const result = await fetchJson<VercelProjectsResponse>(`https://api.vercel.com/v9/projects?${params.toString()}`, { headers: headers(token) });
-  return (result.projects ?? []).map((project) => ({ project, team }));
+  return result.projects ?? [];
 }
 
-export async function discoverVercel(credential: StoredCredential): Promise<{ externalAccountId: string; externalAccountName: string; metadata: Record<string,unknown>; capabilities: string[]; resources: DiscoveredResource[] }> {
-  const [userResponse, teamResponse] = await Promise.all([
-    fetchJson<VercelUserResponse>("https://api.vercel.com/v2/user", { headers: headers(credential.accessToken) }),
-    fetchJson<VercelTeamsResponse>("https://api.vercel.com/v2/teams?limit=100", { headers: headers(credential.accessToken) }).catch(() => ({ teams: [] }))
+async function readTeam(token: string, teamId: string | null) {
+  if (!teamId) return null;
+  return fetchJson<VercelTeam>(`https://api.vercel.com/v2/teams/${encodeURIComponent(teamId)}`, { headers: headers(token) }).catch(() => null);
+}
+
+async function readUser(token: string) {
+  return fetchJson<VercelUserResponse>("https://api.vercel.com/v2/user", { headers: headers(token) }).catch(() => null);
+}
+
+export async function discoverVercel(
+  credential: StoredCredential,
+  callback: VercelCallbackContext = {},
+  tokenContext: { teamId?: string | null; userId?: string | null } = {}
+): Promise<{ externalAccountId: string; externalAccountName: string; metadata: Record<string,unknown>; capabilities: string[]; resources: DiscoveredResource[] }> {
+  const teamId = callback.teamId || tokenContext.teamId || null;
+  const configurationId = callback.configurationId || null;
+  const [userResponse, team, projects] = await Promise.all([
+    readUser(credential.accessToken),
+    readTeam(credential.accessToken, teamId),
+    listProjects(credential.accessToken, teamId)
   ]);
-  const user = userResponse.user ?? {};
-  const accountId = user.id || user.uid || user.email || user.username;
-  if (!accountId) throw new Error("vercel_profile_identity_missing");
-  const groups = await Promise.all([listProjects(credential.accessToken), ...(teamResponse.teams ?? []).map((team) => listProjects(credential.accessToken, team))]);
-  const deduped = new Map<string,{ project: VercelProject; team?: VercelTeam }>();
-  for (const item of groups.flat()) deduped.set(item.project.id, item);
-  const resources: DiscoveredResource[] = [...deduped.values()].map(({ project, team }) => {
+  const user = userResponse?.user ?? {};
+  const userId = user.id || user.uid || tokenContext.userId || null;
+  const accountId = teamId || userId || configurationId;
+  if (!accountId) throw new Error("vercel_installation_identity_missing");
+  const accountName = team?.name || team?.slug || user.username || user.email || String(accountId);
+
+  const resources: DiscoveredResource[] = projects.map((project) => {
     const identifiers: DiscoveredResource["identifiers"] = [{ kind: "vercel.project_id", value: project.id, confidence: 1, linkable: false }];
     if (project.link?.type === "github") {
       if (project.link.repoId) identifiers.push({ kind: "github.repository_id", value: String(project.link.repoId), confidence: 1, linkable: true });
@@ -101,19 +115,32 @@ export async function discoverVercel(credential: StoredCredential): Promise<{ ex
         name: project.name,
         framework: project.framework ?? null,
         accountId: project.accountId ?? null,
-        teamId: team?.id ?? null,
+        teamId,
         teamSlug: team?.slug ?? null,
         teamName: team?.name ?? null,
+        configurationId,
         link: project.link ?? null,
         updatedAt: project.updatedAt ?? null
       },
       identifiers
     };
   });
+
   return {
     externalAccountId: String(accountId),
-    externalAccountName: user.username || user.email || String(accountId),
-    metadata: { username: user.username ?? null, email: user.email ?? null, teamIds: (teamResponse.teams ?? []).map((team) => team.id) },
+    externalAccountName: accountName,
+    metadata: {
+      accessModel: "vercel_external_integration",
+      configurationId,
+      source: callback.source ?? null,
+      teamId,
+      teamSlug: team?.slug ?? null,
+      teamName: team?.name ?? null,
+      userId,
+      username: user.username ?? null,
+      email: user.email ?? null,
+      accessibleProjectCount: resources.length
+    },
     capabilities: configuredCapabilities("vercel"),
     resources
   };
