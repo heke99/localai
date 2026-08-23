@@ -3,12 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "start": "node --experimental-strip-types src/main.ts"
-  },
+  "scripts": { "start": "node --experimental-strip-types src/main.ts" },
   "dependencies": {
     "@div3rsa/agent-runtime": "0.1.0",
     "@div3rsa/db": "0.1.0",
+    "@div3rsa/integrations": "0.1.0",
     "@div3rsa/model-gateway": "0.1.0",
     "@div3rsa/model-sdk": "0.1.0",
     "@div3rsa/skill-engine": "0.1.0",
