@@ -25,7 +25,7 @@ export function AcceptedClient() {
         setState("sending");
         setMessage("E-posten är bekräftad. Skickar nästa mejl…");
 
-        const response = await fetch("/api/onboarding/password-email", { method: "POST" });
+        const response = await fetch("/api/onboarding/password-email", { method: "POST", cache: "no-store" });
         const body = await response.json().catch(() => ({})) as { sent?: boolean; completed?: boolean; error?: string };
         if (!active) return;
 
@@ -41,9 +41,13 @@ export function AcceptedClient() {
 
         requested.current = false;
         setState("error");
-        setMessage(body.error === "approved_access_grant_required"
-          ? "Din inbjudan är verifierad men access är inte färdigprovisionerad. Kontakta administratören."
-          : "Det gick inte att skicka lösenordsmejlet. Försök igen.");
+        if (body.error === "approved_access_grant_required") {
+          setMessage("Din inbjudan är verifierad men access är inte färdigprovisionerad. Kontakta administratören.");
+        } else if (body.error === "onboarding_completion_failed") {
+          setMessage("Ditt konto är godkänt men den sista aktiveringen kunde inte slutföras. Försök igen eller kontakta administratören.");
+        } else {
+          setMessage("Det gick inte att skicka lösenordsmejlet. Försök igen.");
+        }
       };
 
       try {
