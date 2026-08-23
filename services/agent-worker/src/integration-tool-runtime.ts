@@ -15,6 +15,7 @@ export interface ToolAuthorization {
   displayName: string;
   metadata?: Record<string, unknown>;
   capability: string;
+  executionGrantId: string;
 }
 
 export interface ProviderToolExecutor {
@@ -58,7 +59,8 @@ function isToolAuthorization(value: unknown): value is ToolAuthorization {
     && typeof item.resourceType === "string"
     && typeof item.externalResourceId === "string"
     && typeof item.displayName === "string"
-    && typeof item.capability === "string";
+    && typeof item.capability === "string"
+    && typeof item.executionGrantId === "string";
 }
 
 export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
@@ -102,10 +104,11 @@ export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
     const executor = this.executors.get(tool.provider);
     if (!executor) throw new Error("provider_executor_not_configured");
 
-    const { data, error } = await this.client.rpc("worker_authorize_tool_call", {
+    const { data, error } = await this.client.rpc("worker_create_tool_execution_grant", {
       target_run_id: run.runId,
       target_resource_id: resourceId,
-      target_capability: tool.capability
+      target_capability: tool.capability,
+      target_tool_name: tool.name
     });
     if (error || !isToolAuthorization(data)) throw new Error(error?.message ?? "tool_resource_capability_denied");
     if (data.resourceId !== resourceId || data.provider !== tool.provider || data.capability !== tool.capability) throw new Error("tool_authorization_mismatch");
