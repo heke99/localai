@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
 
+const modes = new Set(["chat", "code", "lab", "research"]);
+
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerClient();
   const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -10,18 +12,21 @@ export async function POST(request: Request) {
     workspaceId?: string;
     name?: string;
     description?: string;
+    mode?: string;
   } | null;
 
   const name = body?.name?.trim() ?? "";
   const description = body?.description?.trim() ?? "";
-  if (!body?.workspaceId || name.length < 1 || name.length > 120 || description.length > 2000) {
+  const mode = body?.mode?.trim().toLowerCase() ?? "";
+  if (!body?.workspaceId || name.length < 1 || name.length > 120 || description.length > 2000 || !modes.has(mode)) {
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   }
 
   const { data, error } = await supabase.rpc("create_project", {
     target_workspace_id: body.workspaceId,
     target_name: name,
-    target_description: description || null
+    target_description: description || null,
+    target_mode: mode
   });
 
   if (error) {
