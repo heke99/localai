@@ -65,10 +65,7 @@ The per-project DIV3RSA grants remain a second, narrower authorization layer.
 
 ### Vercel App
 
-Vercel has two separate authorization layers and DIV3RSA must keep them separate:
-
-1. **OAuth / Sign in with Vercel** proves the user's identity and issues the OAuth access/refresh token. Its scopes are identity scopes such as `openid email profile offline_access`.
-2. **Vercel App installation** grants the app access to a team and to all or selected projects with explicit permissions. OAuth consent by itself does **not** grant team/project access.
+Vercel uses OAuth for the user connection. DIV3RSA keeps the product flow simple: users only see the normal Vercel connect/disconnect process inside Integrationer. There is no separate DIV3RSA Vercel setup/access page.
 
 Environment variables:
 
@@ -79,49 +76,29 @@ Environment variables:
 - optional `VERCEL_INTEGRATION_OAUTH_SCOPES` — defaults to `openid email profile offline_access`
 - optional `VERCEL_INTEGRATION_CAPABILITIES` comma-separated local capability override
 
-Do not configure `VERCEL_INTEGRATION_SLUG` or `VERCEL_INTEGRATION_INSTALL_URL`; the legacy `/integrations/<slug>/new` Marketplace/External Integration route is not the Vercel App installation flow used by this product.
+Do not configure `VERCEL_INTEGRATION_SLUG` or `VERCEL_INTEGRATION_INSTALL_URL`; the legacy `/integrations/<slug>/new` Marketplace/External Integration route is not used by this product.
 
-Vercel App requirements:
+Vercel App requirements for the platform operator:
 
 - register the Vercel App with callback URL exactly `https://system.div3rsa.com/api/integrations/vercel/callback`
 - use the same App Client ID and Client Secret in production
 - OAuth authorization uses PKCE S256
-- install the App on each Vercel team that should expose projects to DIV3RSA
-- grant only the Vercel App permissions needed by the supported tool surface
-- scope the installation to selected project IDs when full-team project access is unnecessary
+- configure the Vercel App so the API calls required by the supported DIV3RSA tool surface are available
+- keep provider permissions no broader than the implemented capability surface
 
-Verified Vercel CLI installation examples:
+User connection flow:
 
-```bash
-# Minimum useful read installation
-vercel oauth-apps install \
-  --client-id <client-id> \
-  --permission read:project \
-  --permission read:deployment \
-  --projects '*'
-
-# Restrict to selected projects instead
-vercel oauth-apps install \
-  --client-id <client-id> \
-  --permission read:project \
-  --permission read:deployment \
-  --projects prj_a,prj_b
-```
-
-Use `vercel oauth-apps list-requests` to inspect pending installation requests when team-owner approval is required. Add write permissions only when the corresponding DIV3RSA write capability is intentionally enabled.
-
-Connection flow:
-
-1. DIV3RSA creates a hashed-state + PKCE authorization session.
-2. `Connect Vercel` opens `https://vercel.com/oauth/authorize` with the Vercel App Client ID, exact callback URL, state and PKCE challenge.
+1. DIV3RSA creates a new hashed-state + PKCE authorization session on every `Anslut` attempt.
+2. `Anslut Vercel` always opens `https://vercel.com/oauth/authorize` with `prompt=login`, so a reconnect goes through Vercel login again instead of silently reusing the previous DIV3RSA connection identity.
 3. Vercel returns an authorization code to the callback.
 4. DIV3RSA validates state and exchanges the code at `https://api.vercel.com/login/oauth/token` using the stored PKCE verifier.
-5. DIV3RSA verifies project access by querying the Vercel API. Identity-only authorization is never enough to mark the integration connected.
-6. If project/team API calls are forbidden because the Vercel App is not installed with project permissions, the user is routed to `/integrations/vercel/setup`; no connection is finalized.
-7. Once the Vercel App installation exists, DIV3RSA syncs only projects that the Vercel API makes visible to that installation/account context.
-8. DIV3RSA project/resource grants narrow that provider access further.
+5. DIV3RSA reads the account identity, teams and projects that Vercel exposes to that OAuth context.
+6. If discovery cannot be completed, the OAuth attempt is failed and the user is returned directly to `Integrationer`; no separate setup/access page is shown and no partial connection is kept.
+7. A new click on `Anslut` starts the same Vercel OAuth process again from a fresh DIV3RSA OAuth session.
+8. Once discovery succeeds, DIV3RSA stores the returned account/team identity for display and syncs only the projects Vercel actually exposes.
+9. DIV3RSA project/resource grants narrow that provider access further.
 
-Never fall back to a Marketplace `/integrations/<slug>/new` URL and never mark Vercel connected solely because OAuth identity authorization succeeded.
+Disconnect is a hard local forget operation: stored credentials, provider identity metadata, resources, project bindings, conversation selections and unconsumed execution grants are removed or disabled. The next connect attempt therefore builds the Vercel identity again from the provider response rather than reusing the previous DIV3RSA connection row.
 
 ### Worker
 
@@ -135,10 +112,10 @@ The worker only receives a short-lived one-time execution grant from Supabase.
 
 - authorization state is stored hashed.
 - Supabase and Vercel App OAuth use PKCE.
+- Vercel reconnect uses `prompt=login` and a fresh DIV3RSA OAuth session.
 - GitHub uses the GitHub App installation + user authorization flow and server-held client secret.
 - customer provider tokens are stored in Supabase Vault and referenced by UUID only.
-- Vercel OAuth identity and Vercel App project permissions are verified separately; both must be valid before project resources are exposed.
-- Vercel project visibility is provider-scoped first and then narrowed again by DIV3RSA resource/capability grants.
+- provider project visibility is provider-scoped first and then narrowed again by DIV3RSA resource/capability grants.
 - execution grants are single use and expire after two minutes.
 - relation discovery never grants capabilities.
 - every provider execution is re-authorized JIT and audit logged.
