@@ -19,6 +19,47 @@ function uuid(value: FormDataEntryValue | null) {
   return text;
 }
 
+export async function setAccountLifecycleStatus(formData: FormData) {
+  const { supabase, user } = await requireSuperadmin();
+  const userId = uuid(formData.get("userId"));
+  const status = String(formData.get("status") ?? "");
+  if (!new Set(["active", "paused"]).has(status)) throw new Error("invalid_account_status");
+
+  const { error } = await supabase.rpc("superadmin_set_account_status", {
+    target_user_id: userId,
+    target_status: status
+  });
+  if (error) throw new Error(error.message);
+
+  if (userId === user.id && status === "paused") {
+    const { error: signOutError } = await supabase.auth.signOut({ scope: "others" });
+    if (signOutError) throw new Error("superadmin_pause_other_sessions_revoke_failed");
+    redirect("/account-paused");
+  }
+
+  revalidatePath("/superadmin");
+  revalidatePath("/superadmin/manage");
+  revalidatePath("/dashboard");
+}
+
+export async function setSubscriptionLifecycleAction(formData: FormData) {
+  const { supabase } = await requireSuperadmin();
+  const workspaceId = uuid(formData.get("workspaceId"));
+  const action = String(formData.get("action") ?? "");
+  if (!new Set(["pause", "resume"]).has(action)) throw new Error("invalid_subscription_action");
+
+  const { error } = await supabase.rpc("request_my_subscription_action", {
+    target_workspace_id: workspaceId,
+    target_action: action
+  });
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/superadmin");
+  revalidatePath("/superadmin/manage");
+  revalidatePath("/account");
+  revalidatePath("/dashboard");
+}
+
 export async function setMembershipStatus(formData: FormData) {
   const { supabase } = await requireSuperadmin();
   const organizationId = uuid(formData.get("organizationId"));
