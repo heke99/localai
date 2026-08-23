@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "../../lib/supabase/server";
-import { createLabAuthorization, enqueueOperation, grantAccess, reviewAccessRequest, setModelAlias } from "./actions";
+import { enqueueOperation, grantAccess, reviewAccessRequest, setModelAlias } from "./actions";
 
 type Snapshot = {
   counts?: Record<string, number>;
@@ -19,7 +19,6 @@ type Snapshot = {
   jobs?: Array<{ id: string; queue: string; status: string; priority: number; attempts: number; maximum_attempts: number; last_error_code: string | null; created_at: string; updated_at: string }>;
   runs?: Array<{ id: string; mode: string; status: string; model_alias: string; failure_code: string | null; active_skill: string | null; created_at: string; started_at: string | null; finished_at: string | null }>;
   usage_monthly?: Array<{ organization_id: string; organization_name: string | null; usage_month: string; totals: Record<string, unknown> }>;
-  lab_authorizations?: Array<{ id: string; organization_id: string; organization_name: string | null; project_id: string | null; target: string; scope: string; valid_from: string; valid_to: string; revoked_at: string | null }>;
   audit?: Array<{ id: string; event_type: string; target_type: string; target_id: string; outcome: string; occurred_at: string; organization_id: string | null }>;
   errors?: Array<{ trace_id: string; service: string; event_name: string; severity: string; duration_ms: number | null; occurred_at: string }>;
 };
@@ -46,7 +45,6 @@ const controlLinks = [
   ["#knowledge", "Knowledge & skills"],
   ["#integrations", "Integrations & policies"],
   ["#operations", "Runs & operations"],
-  ["#lab", "Lab authorization"],
   ["#usage", "Usage"],
   ["#audit", "Audit & errors"]
 ] as const;
@@ -92,10 +90,7 @@ export default async function SuperadminPage() {
 
   return <main className="shell control-shell">
     <nav className="nav control-topbar">
-      <div>
-        <span className="brand">DIV3RSA CONTROL</span>
-        <span className="control-role">Superadmin · verifierad session</span>
-      </div>
+      <div><span className="brand">DIV3RSA CONTROL</span><span className="control-role">Superadmin · verifierad session</span></div>
       <div className="control-top-actions">
         <Link className="button primary" href="/dashboard">Open user dashboard</Link>
         <form action="/auth/signout" method="post"><button className="button" type="submit">Logga ut</button></form>
@@ -144,11 +139,7 @@ export default async function SuperadminPage() {
                 <div className="control-row-title"><strong>{request.name}</strong><span className={`status-badge status-${request.status}`}>{finished ? "active" : request.status}</span></div>
                 <small>{request.email} · {request.organization_name ?? "Independent"} · applied {formatDate(request.created_at)}</small>
                 <p>{request.use_case}</p>
-                {request.status === "approved" ? <div className="onboarding-track">
-                  <span className={request.invited_at ? "done" : ""}>Invite</span>
-                  <span className={request.password_email_sent_at ? "done" : ""}>Password mail</span>
-                  <span className={request.onboarding_completed_at ? "done" : ""}>Activated</span>
-                </div> : null}
+                {request.status === "approved" ? <div className="onboarding-track"><span className={request.invited_at ? "done" : ""}>Invite</span><span className={request.password_email_sent_at ? "done" : ""}>Password mail</span><span className={request.onboarding_completed_at ? "done" : ""}>Activated</span></div> : null}
               </div>
               {!finished && request.status !== "approved" ? <form className="row-actions">
                 <input type="hidden" name="requestId" value={request.id}/>
@@ -198,9 +189,10 @@ export default async function SuperadminPage() {
         <section className="control-panel" id="integrations">
           <div className="control-section-head"><div><p className="eyebrow">Governance</p><h2>Integrations & policies</h2></div><span className="panel-count">{(snapshot.integrations?.length ?? 0) + (snapshot.policies?.length ?? 0)}</span></div>
           <div className="control-split">
-            <div><h3>Connections</h3>{snapshot.integrations?.length ? <div className="compact-list">{snapshot.integrations.map((integration) => <div className="compact-row" key={integration.id}><div><strong>{integration.provider}</strong><small>{integration.organization_name ?? shortId(integration.organization_id)} · {integration.external_account_id}</small></div><span className={`status-badge status-${integration.status}`}>{integration.status}</span></div>)}</div> : <p className="empty-state">No GitHub, Supabase, Vercel or other account connection is registered yet.</p>}</div>
+            <div><h3>Connections</h3>{snapshot.integrations?.length ? <div className="compact-list">{snapshot.integrations.map((integration) => <div className="compact-row" key={integration.id}><div><strong>{integration.provider}</strong><small>{integration.organization_name ?? shortId(integration.organization_id)} · {integration.external_account_id}</small></div><span className={`status-badge status-${integration.status}`}>{integration.status}</span></div>)}</div> : <p className="empty-state">No account connection is registered yet.</p>}</div>
             <div><h3>Policy sets</h3>{snapshot.policies?.length ? <div className="compact-list">{snapshot.policies.map((policy) => <div className="compact-row" key={policy.id}><div><strong>{policy.key} · v{policy.version}</strong><small>{policy.organization_name ?? "Global"} · {policy.rules} rules</small></div><span className={`status-badge status-${policy.status}`}>{policy.status}</span></div>)}</div> : <p className="empty-state">No customer policy sets have been created yet.</p>}</div>
           </div>
+          <p className="panel-copy">Plugin access is controlled per project, resource and capability. Lab uses the same resource-permission model as every other agent mode; there is no separate authorization ID or Lab scope object.</p>
         </section>
 
         <section className="control-panel" id="operations">
@@ -215,20 +207,6 @@ export default async function SuperadminPage() {
             <div><h3>Agent runs</h3>{snapshot.runs?.length ? <div className="compact-list">{snapshot.runs.slice(0, 12).map((run) => <div className="compact-row" key={run.id}><div><strong>{run.mode} · {run.model_alias}</strong><small>{shortId(run.id)} · {run.active_skill ?? "no active skill"}</small></div><div className="align-right"><span className={`status-badge status-${run.status}`}>{run.status}</span><small>{run.failure_code ?? formatDate(run.created_at)}</small></div></div>)}</div> : <p className="empty-state">No agent runs yet.</p>}</div>
           </div>
           {snapshot.eval_runs?.length ? <div className="compact-list spaced-list">{snapshot.eval_runs.map((evaluation) => <div className="compact-row" key={evaluation.id}><div><strong>Eval · {evaluation.version_key ?? "unassigned model"}</strong><small>{shortId(evaluation.id)} · {formatDate(evaluation.created_at)}</small></div><span className={`status-badge status-${evaluation.status}`}>{evaluation.status}</span></div>)}</div> : null}
-        </section>
-
-        <section className="control-panel" id="lab">
-          <div className="control-section-head"><div><p className="eyebrow">Lab</p><h2>Authorization scopes</h2></div><span className="panel-count">{snapshot.lab_authorizations?.length ?? 0}</span></div>
-          <p className="panel-copy">Create an explicit scope before running Lab against a target. Your superadmin account can create the authorization and then use its ID in the normal user dashboard.</p>
-          <form action={createLabAuthorization} className="control-form lab-form">
-            <label><span>Organization</span><select name="organizationId" required defaultValue={snapshot.organizations?.[0]?.id}>{snapshot.organizations?.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label>
-            <input type="hidden" name="projectId" value=""/>
-            <label><span>Target</span><input name="target" required maxLength={1024} placeholder="Authorized hostname, CIDR, app or environment"/></label>
-            <label className="wide-field"><span>Scope</span><textarea name="scope" required maxLength={4000} placeholder="Describe exactly what is authorized and any exclusions."/></label>
-            <label><span>Valid hours</span><input name="validHours" type="number" min="1" max="720" defaultValue="24"/></label>
-            <button className="button primary" disabled={!snapshot.organizations?.length}>Create authorization</button>
-          </form>
-          {snapshot.lab_authorizations?.length ? <div className="compact-list spaced-list">{snapshot.lab_authorizations.map((authorization) => <div className="compact-row" key={authorization.id}><div><strong>{authorization.target}</strong><small>{authorization.organization_name ?? shortId(authorization.organization_id)} · ID {authorization.id}</small><p>{authorization.scope}</p></div><div className="align-right"><span className={`status-badge ${authorization.revoked_at ? "status-failed" : "status-production"}`}>{authorization.revoked_at ? "revoked" : "active"}</span><small>until {formatDate(authorization.valid_to)}</small></div></div>)}</div> : <p className="empty-state">No Lab authorization exists yet.</p>}
         </section>
 
         <section className="control-panel" id="usage">
