@@ -1,10 +1,11 @@
+import { createHash } from "node:crypto";
 import type { ModelAdapter, ModelAlias, ModelMessage, ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import {
   analyzeConsequences,
   analyzeTask,
-  assertCompletionAllowed,
   createVerificationPlan,
   executeVerificationPlan,
+  LoopGuard,
   routeSkills,
   type AgentMode,
   type ConsequenceGraph,
@@ -71,6 +72,10 @@ function safeToolOutput(value: unknown): string {
   let serialized: string;
   try { serialized = JSON.stringify(value); } catch { serialized = JSON.stringify({ error: "tool_result_not_serializable" }); }
   return serialized.length > 40_000 ? `${serialized.slice(0, 40_000)}…` : serialized;
+}
+
+function hashInput(value: Record<string, unknown>): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 function projectContext(run: ClaimedRun) {
@@ -141,10 +146,10 @@ function reviewedChangedResources(trace: ToolTrace[]) {
   }));
 }
 
-async function independentReview(models: ModelResolver, run: ClaimedRun, task: TaskAnalysis, impact: ImpactAnalysis | undefined, output: string, trace: ToolTrace[]) {
+async function independentReview(models: ModelResolver, run: ClaimedRun, task: TaskAnalysis, impact: ImpactAnalysis | undefined, output: string, trace: ToolTrace[], round: number) {
   try {
     const review = await models.resolve("verifier-prod").generate({
-      requestId: `${run.requestId}:review`,
+      requestId: `${run.requestId}:review:${round}`,
       alias: "verifier-prod",
       temperature: 0,
       maxOutputTokens: 700,
@@ -218,40 +223,71 @@ export class AgentWorkerProcessor {
       ];
 
       const toolTrace: ToolTrace[] = [];
-      let finalResult: Awaited<ReturnType<ModelAdapter["generate"]>> | null = null;
-      for (let iteration = 0; iteration < 8; iteration += 1) {
-        if (await this.queue.isCancelled(run.runId)) return true;
-        await this.queue.step(run.runId, "model", "running", iteration === 0 ? "Generate model response" : "Continue after tool result", { iteration });
-        const result = await this.models.resolve(run.modelAlias).generate({ requestId: run.requestId, alias: run.modelAlias, messages, tools: toolDefinitions });
-        if (result.finishReason !== "tool_call") {
-          finalResult = result;
-          break;
+      const loopGuard = new LoopGuard(2, 40);
+      let modelTurns = 0;
+
+      for (let verificationRound = 0; verificationRound < 3; verificationRound += 1) {
+        let finalResult: Awaited<ReturnType<ModelAdapter["generate"]>> | null = null;
+        for (let iteration = 0; iteration < 8 && modelTurns < 12; iteration += 1) {
+          if (await this.queue.isCancelled(run.runId)) return true;
+          await this.queue.step(run.runId, "model", "running", modelTurns === 0 ? "Generate model response" : "Continue agent loop", { iteration, verificationRound, modelTurn: modelTurns });
+          const result = await this.models.resolve(run.modelAlias).generate({ requestId: `${run.requestId}:${verificationRound}:${iteration}`, alias: run.modelAlias, messages, tools: toolDefinitions });
+          modelTurns += 1;
+          if (result.finishReason !== "tool_call") {
+            finalResult = result;
+            break;
+          }
+          if (!result.toolCalls?.length) throw new Error("malformed_tool_call_response");
+          messages.push({ role: "assistant", content: result.content, toolCalls: result.toolCalls });
+          for (const call of result.toolCalls) {
+            loopGuard.record({ action: call.name, inputHash: hashInput(call.input) });
+            await this.queue.step(run.runId, "tool", "waiting_for_tool", call.name, { toolCallId: call.id, resourceId: call.input.resourceId, verificationRound });
+            const output = await this.tools.execute(run, call);
+            toolTrace.push({ sequence: toolTrace.length + 1, name: call.name, input: call.input, output });
+            messages.push({ role: "tool", name: call.name, toolCallId: call.id, content: safeToolOutput(output) });
+          }
         }
-        if (!result.toolCalls?.length) throw new Error("malformed_tool_call_response");
-        messages.push({ role: "assistant", content: result.content, toolCalls: result.toolCalls });
-        for (const call of result.toolCalls) {
-          await this.queue.step(run.runId, "tool", "waiting_for_tool", call.name, { toolCallId: call.id, resourceId: call.input.resourceId });
-          const output = await this.tools.execute(run, call);
-          toolTrace.push({ sequence: toolTrace.length + 1, name: call.name, input: call.input, output });
-          messages.push({ role: "tool", name: call.name, toolCallId: call.id, content: safeToolOutput(output) });
+
+        if (!finalResult) throw new Error(modelTurns >= 12 ? "model_turn_limit_exceeded" : "tool_loop_limit_exceeded");
+
+        const mutationMissing = expectsMutation(task, run) && !toolTrace.some((item) => mutationTools.has(item.name));
+        if (mutationMissing) {
+          const blocker = "change-required:no-observed-mutation";
+          await this.queue.step(run.runId, "verify", "verifying", blocker, { verificationRound, blocker });
+          if (verificationRound < 2) {
+            messages.push({ role: "assistant", content: finalResult.content });
+            messages.push({ role: "user", content: `Completion was denied by runtime verification. Blocker: ${blocker}. The requested task requires an actual mutation on an allowed resource. Use available tools, then re-read the changed resource and collect fresh verification evidence. Do not repeat an equivalent strategy.` });
+            continue;
+          }
+          throw new Error(`verification_gate_failed:${blocker}`);
         }
+
+        const impact = impactFromTrace(toolTrace);
+        const plan = createVerificationPlan(task, impact);
+        const reviewer = plan.checks.some((check) => check.kind === "independent-reviewer" && check.required)
+          ? await independentReview(this.models, run, task, impact, finalResult.content, toolTrace, verificationRound)
+          : { passed: true, reason: "Independent reviewer not required for this risk level." };
+        await this.queue.step(run.runId, "verify", "verifying", "Execute consequence-aware completion gate", { verificationRound, checks: plan.checks.map((check) => ({ kind: check.kind, required: check.required })), impactRisk: impact?.risk ?? null });
+        const report = await executeVerificationPlan(plan, evidenceExecutor(toolTrace, reviewer), { task, impact, output: finalResult.content });
+        for (const result of report.results) await this.queue.step(run.runId, "verify", "verifying", `${result.kind}: ${result.status}`, { verificationRound, verificationKind: result.kind, verificationStatus: result.status, evidence: result.evidence ?? [], summary: result.summary });
+
+        if (report.passed) {
+          await this.queue.complete(run, { content: finalResult.content, modelVersionId: finalResult.modelVersionId, usage: finalResult.usage });
+          return true;
+        }
+
+        if (verificationRound < 2) {
+          const blockers = report.unresolvedBlockers.join(", ");
+          await this.queue.step(run.runId, "verify", "verifying", "Verification failed; return blockers to agent", { verificationRound, blockers: report.unresolvedBlockers });
+          messages.push({ role: "assistant", content: finalResult.content });
+          messages.push({ role: "user", content: `Runtime verification denied completion. Mandatory blockers: ${blockers}. Diagnose the missing evidence or incorrect change, use available tools to resolve it, and retry verification. Do not repeat the same tool call with the same input if it already failed to satisfy the gate.` });
+          continue;
+        }
+
+        throw new Error(`verification_gate_failed:${report.unresolvedBlockers.join(",")}`);
       }
 
-      if (!finalResult) throw new Error("tool_loop_limit_exceeded");
-      if (expectsMutation(task, run) && !toolTrace.some((item) => mutationTools.has(item.name))) throw new Error("verification_gate_failed:change_required");
-
-      const impact = impactFromTrace(toolTrace);
-      const plan = createVerificationPlan(task, impact);
-      const reviewer = plan.checks.some((check) => check.kind === "independent-reviewer" && check.required)
-        ? await independentReview(this.models, run, task, impact, finalResult.content, toolTrace)
-        : { passed: true, reason: "Independent reviewer not required for this risk level." };
-      await this.queue.step(run.runId, "verify", "verifying", "Execute consequence-aware completion gate", { checks: plan.checks.map((check) => ({ kind: check.kind, required: check.required })), impactRisk: impact?.risk ?? null });
-      const report = await executeVerificationPlan(plan, evidenceExecutor(toolTrace, reviewer), { task, impact, output: finalResult.content });
-      for (const result of report.results) await this.queue.step(run.runId, "verify", "verifying", `${result.kind}: ${result.status}`, { verificationKind: result.kind, verificationStatus: result.status, evidence: result.evidence ?? [], summary: result.summary });
-      assertCompletionAllowed(report);
-
-      await this.queue.complete(run, { content: finalResult.content, modelVersionId: finalResult.modelVersionId, usage: finalResult.usage });
-      return true;
+      throw new Error("verification_loop_exhausted");
     } catch (error) {
       const failure = classifyFailure(error);
       await this.queue.fail(run, failure.code, failure.retryable);
