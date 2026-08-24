@@ -3,19 +3,19 @@ declare missing text;
 begin
   select string_agg(name, ', ') into missing
   from (values
-    ('agent_run_intelligence'),('repository_indexes'),('repository_index_nodes'),('repository_index_edges'),
-    ('impact_analyses'),('impact_nodes'),('verification_runs'),('verification_results'),('run_skill_observations')
+    ('agent_run_intelligence'),('agent_repository_indexes'),('agent_repository_index_nodes'),('agent_repository_index_edges'),
+    ('agent_impact_analyses'),('agent_impact_nodes'),('agent_verification_runs'),('agent_verification_results'),('agent_run_skill_observations')
   ) expected(name)
   where not exists(select 1 from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid=c.relnamespace where n.nspname='internal' and c.relname=expected.name and c.relkind='r');
   if missing is not null then raise exception 'missing observability tables: %', missing; end if;
 
   if exists(
     select 1 from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid=c.relnamespace
-    where n.nspname='internal' and c.relname in ('agent_run_intelligence','repository_indexes','repository_index_nodes','repository_index_edges','impact_analyses','impact_nodes','verification_runs','verification_results','run_skill_observations') and not c.relrowsecurity
+    where n.nspname='internal' and c.relname in ('agent_run_intelligence','agent_repository_indexes','agent_repository_index_nodes','agent_repository_index_edges','agent_impact_analyses','agent_impact_nodes','agent_verification_runs','agent_verification_results','agent_run_skill_observations') and not c.relrowsecurity
   ) then raise exception 'all observability tables must have RLS enabled'; end if;
 
-  if has_table_privilege('authenticated','internal.repository_indexes','SELECT') or has_table_privilege('anon','internal.repository_indexes','SELECT') then
-    raise exception 'repository index tables must not be directly readable by client roles';
+  if has_table_privilege('authenticated','internal.agent_repository_indexes','SELECT') or has_table_privilege('anon','internal.agent_repository_indexes','SELECT') then
+    raise exception 'agent repository index tables must not be directly readable by client roles';
   end if;
 
   if not has_function_privilege('service_role','public.worker_record_run_intelligence(uuid,jsonb,jsonb)','EXECUTE')
