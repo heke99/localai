@@ -58,7 +58,7 @@ const rules: Rule[] = [
   { category: "audit", pattern: /\baudit\b|review (the )?(whole|entire|security|architecture|code)|assessment/i },
   { category: "performance", pattern: /performance|latency|slow|lcp|cls|inp|bundle|n\+1|load test|k6|throughput/i, domains: ["performance"] },
   { category: "database", pattern: /database|postgres|supabase|sql|rls|migration|index|query plan|rpc\b/i, domains: ["database"] },
-  { category: "frontend", pattern: /frontend|react|next\.?js|tsx|component|page|browser|responsive|mobile/i, domains: ["frontend"] },
+  { category: "frontend", pattern: /frontend|\bui\b|react|next\.?js|tsx|component|page|browser|responsive|mobile/i, domains: ["frontend"] },
   { category: "design", pattern: /design|layout|typography|spacing|visual|ui\b|ux\b|accessibility/i, domains: ["design", "frontend"] },
   { category: "backend", pattern: /backend|api\b|server|worker|queue|webhook|service/i, domains: ["backend"] },
   { category: "security", pattern: /security|auth\b|authorization|permission|secret|vulnerab|pentest|threat/i, domains: ["security"] },
