@@ -76,7 +76,9 @@ function record(value: unknown, name: string): Record<string, unknown> {
 function strings(value: unknown, name: string, maximum = 500): string[] { return array(value, name, maximum).map((item) => text(item, name, 512)); }
 function boolean(value: unknown, name: string): boolean { if (typeof value !== "boolean") throw new Error(`invalid_${name}`); return value; }
 function uuidArray(value: unknown, name: string): string[] {
-  return array(value ?? [], name, 200).map((item) => text(item, name, 36)).filter((item, index, values) => uuidPattern.test(item) && values.indexOf(item) === index);
+  const values = array(value ?? [], name, 200).map((item) => text(item, name, 36));
+  if (values.some((item) => !uuidPattern.test(item))) throw new Error(`invalid_${name}`);
+  return [...new Set(values)];
 }
 
 export function createAgentExport(input: Omit<AgentExportBundle, "createdAt">): AgentExportBundle {
