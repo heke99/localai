@@ -20,7 +20,7 @@ describe("agent runtime", () => {
     expect(result.status).toBe("completed");
     expect(result.alias).toBe("code-prod");
     expect(result.steps.filter((step) => step.kind === "skill").map((step) => step.skill)).toEqual([
-      "implementation-planning", "repo-understanding", "test-driven-development", "verification-before-completion"
+      "writing-plans", "repo-understanding", "test-driven-development", "browser-e2e", "verification-before-completion", "code-review"
     ]);
     expect(runs.checkpoints.length).toBe(result.steps.length);
   });
