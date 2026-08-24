@@ -8,15 +8,36 @@ const adapter: ModelAdapter = {
   async *stream() { yield "done"; }, estimateTokens: async () => 1, getCapabilities: () => new Set(["coding"]), healthCheck: async () => ({ ok: true, latencyMs: 1 })
 };
 
-function queue(claimed: ClaimedRun | null = run): AgentQueue & { step: ReturnType<typeof vi.fn>; complete: ReturnType<typeof vi.fn>; fail: ReturnType<typeof vi.fn> } {
-  return { claim: vi.fn(async () => claimed), step: vi.fn(async () => undefined), complete: vi.fn(async () => undefined), fail: vi.fn(async () => undefined), isCancelled: vi.fn(async () => false) };
+function queue(claimed: ClaimedRun | null = run): AgentQueue & {
+  step: ReturnType<typeof vi.fn>;
+  recordRunIntelligence: ReturnType<typeof vi.fn>;
+  recordRepositoryIndex: ReturnType<typeof vi.fn>;
+  recordImpactAnalysis: ReturnType<typeof vi.fn>;
+  recordVerificationRun: ReturnType<typeof vi.fn>;
+  complete: ReturnType<typeof vi.fn>;
+  fail: ReturnType<typeof vi.fn>;
+} {
+  return {
+    claim: vi.fn(async () => claimed),
+    step: vi.fn(async () => undefined),
+    recordRunIntelligence: vi.fn(async () => undefined),
+    recordRepositoryIndex: vi.fn(async () => "00000000-0000-0000-0000-000000000001"),
+    recordImpactAnalysis: vi.fn(async () => "00000000-0000-0000-0000-000000000002"),
+    recordVerificationRun: vi.fn(async () => "00000000-0000-0000-0000-000000000003"),
+    complete: vi.fn(async () => undefined),
+    fail: vi.fn(async () => undefined),
+    isCancelled: vi.fn(async () => false)
+  };
 }
 
 describe("AgentWorkerProcessor", () => {
-  it("claims, activates skills, verifies and completes", async () => {
+  it("persists intelligence and verification before completing", async () => {
     const jobs = queue();
     await expect(new AgentWorkerProcessor(jobs, { resolve: () => adapter }, "worker-1").processOnce()).resolves.toBe(true);
+    expect(jobs.recordRunIntelligence).toHaveBeenCalledOnce();
+    expect(jobs.recordVerificationRun).toHaveBeenCalledOnce();
     expect(jobs.complete).toHaveBeenCalledOnce();
+    expect(jobs.recordVerificationRun.mock.invocationCallOrder[0]).toBeLessThan(jobs.complete.mock.invocationCallOrder[0]!);
     expect(jobs.step.mock.calls.map((call) => call[1])).toContain("verify");
   });
 
@@ -29,7 +50,16 @@ describe("AgentWorkerProcessor", () => {
     await new AgentWorkerProcessor(jobs, { resolve: () => ({ ...adapter, generate }) }, "worker-1", undefined, toolRuntime).processOnce();
     expect(toolRuntime.execute).toHaveBeenCalledOnce();
     expect(generate).toHaveBeenCalledTimes(2);
+    expect(jobs.recordVerificationRun).toHaveBeenCalledOnce();
     expect(jobs.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ content: "read complete" }));
+  });
+
+  it("fails the run when audit persistence fails instead of completing without evidence", async () => {
+    const jobs = queue();
+    jobs.recordVerificationRun.mockRejectedValueOnce(new Error("audit_persistence_failed"));
+    await new AgentWorkerProcessor(jobs, { resolve: () => adapter }, "worker-1").processOnce();
+    expect(jobs.complete).not.toHaveBeenCalled();
+    expect(jobs.fail).toHaveBeenCalledWith(run, "audit_persistence_failed", false);
   });
 
   it("classifies transient model errors as retryable", async () => {

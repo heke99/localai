@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { consumeExecutionGrant, finishExecutionGrant, updateCredential } from "../../../../../lib/integrations/broker";
 import { executeGithubTool } from "../../../../../lib/integrations/github";
+import { executeGithubRepositorySnapshot } from "../../../../../lib/integrations/github-snapshot";
 import { executeSupabaseTool, refreshSupabaseCredential } from "../../../../../lib/integrations/supabase-provider";
 import { executeVercelTool, refreshVercelCredential } from "../../../../../lib/integrations/vercel-provider";
 import type { StoredCredential } from "../../../../../lib/integrations/oauth";
@@ -54,7 +55,9 @@ export async function POST(request: Request) {
 
     let result: unknown;
     if (provider === "github") {
-      result = await executeGithubTool(toolName,args,metadata);
+      result = toolName === "github_read_repository_snapshot"
+        ? await executeGithubRepositorySnapshot(args, metadata)
+        : await executeGithubTool(toolName,args,metadata);
     } else {
       let credential = credentialFrom(grant.credential);
       if (!credential) throw new Error("integration_credential_missing");

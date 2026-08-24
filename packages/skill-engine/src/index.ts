@@ -12,31 +12,55 @@ export interface SkillSelection { metadata: SkillMetadata; reason: string; activ
 export interface SkillBodyReader { read(path: string): Promise<string> }
 
 const dependencies: Record<string, string[]> = {
+  "brainstorming-design": ["using-skills"],
+  "system-design": ["using-skills"],
+  "writing-plans": ["using-skills"],
   "test-driven-development": ["writing-plans"],
+  "systematic-debugging": ["using-skills"],
   "code-review": ["verification-before-completion"],
   "browser-e2e": ["verification-before-completion"],
   "knowledge-ingestion": ["data-poisoning-defense", "secrets-handling"],
+  "memory-learning": ["data-poisoning-defense"],
   "authorized-pentest": ["policy-access-control", "sandbox-execution", "network-egress-control"],
-  "gpu-model-operations": ["supply-chain-security", "evals-benchmarking"]
+  "audit-context-building": ["using-skills"],
+  "differential-security-review": ["audit-context-building", "verification-before-completion"],
+  "static-analysis": ["audit-context-building"],
+  "gpu-model-operations": ["supply-chain-security", "evals-benchmarking"],
+  "incident-recovery": ["observability"],
+  "agentic-ci-security": ["policy-access-control", "secrets-handling", "supply-chain-security"]
 };
 
 const modeDefaults: Record<string, string[]> = {
-  chat: ["verification-before-completion"],
-  code: ["writing-plans", "test-driven-development", "verification-before-completion"],
-  lab: ["authorized-pentest", "verification-before-completion"],
-  research: ["web-research", "verification-before-completion"]
+  chat: ["using-skills", "verification-before-completion"],
+  code: ["using-skills", "writing-plans", "test-driven-development", "verification-before-completion"],
+  lab: ["using-skills", "authorized-pentest", "verification-before-completion"],
+  research: ["using-skills", "web-research", "verification-before-completion"]
 };
 
 const signals: Array<[RegExp, string[]]> = [
-  [/bug|error|failed|debug/i, ["systematic-debugging"]],
-  [/supabase|postgres|rls|database|sql/i, ["supabase-postgres"]],
-  [/github|pull request|repository|branch/i, ["github-operations"]],
-  [/vercel|deploy/i, ["vercel-operations"]],
-  [/browser|e2e|playwright/i, ["browser-e2e"]],
-  [/performance|latency|load test/i, ["performance-profiling"]],
-  [/learn|knowledge|document|ingest/i, ["knowledge-ingestion"]],
-  [/model|gpu|cuda|quantization/i, ["gpu-model-operations"]],
-  [/security review|audit|threat/i, ["audit-context-building", "differential-security-review"]]
+  [/new feature|build|implement|create|architecture change/i, ["brainstorming-design"]],
+  [/architecture|system design|multi[- ]service|provider|adapter|portable|portability|boundary/i, ["system-design"]],
+  [/bug|error|failed|failure|debug|regression|stack trace/i, ["systematic-debugging"]],
+  [/review|refactor|cleanup|clean code|legacy|large file|complexity/i, ["code-review"]],
+  [/supabase|postgres|rls|database|sql|migration|query|index/i, ["supabase-postgres"]],
+  [/github|pull request|repository|repo\b|branch|commit|merge/i, ["github-operations"]],
+  [/vercel|deploy|deployment|rollback|runtime log/i, ["vercel-operations"]],
+  [/browser|e2e|playwright|responsive|viewport|accessibility|a11y|visual review|frontend|\bui\b/i, ["browser-e2e"]],
+  [/performance|latency|slow|load test|k6|lighthouse|bundle|lcp|cls|inp|n\+1/i, ["performance-profiling"]],
+  [/learn|knowledge|document|ingest|source material/i, ["knowledge-ingestion"]],
+  [/memory|verified history|self[- ]improv|training data|experience/i, ["memory-learning"]],
+  [/model|gpu|cuda|quantization|q8|inference|vram/i, ["gpu-model-operations"]],
+  [/benchmark|eval|candidate model|canary|quality score/i, ["evals-benchmarking"]],
+  [/security review|audit|threat|authorization|auth review|trust boundary/i, ["audit-context-building", "differential-security-review"]],
+  [/semgrep|codeql|static analysis|sast|sarif|vulnerability scan/i, ["static-analysis"]],
+  [/default credential|fail[- ]open|insecure default|debug mode|weak crypto/i, ["insecure-defaults"]],
+  [/unsafe api|sharp edge|misuse[- ]resistant|footgun/i, ["sharp-edges"]],
+  [/secret|credential|token|private key|api key/i, ["secrets-handling"]],
+  [/dependency|package|container|third[- ]party|supply chain|model artifact|dataset/i, ["supply-chain-security"]],
+  [/incident|outage|production failure|service down|recover/i, ["incident-recovery"]],
+  [/observability|telemetry|trace|metrics|run id|latency breakdown/i, ["observability"]],
+  [/github action|workflow|agentic ci|ai agent.*ci|ci.*agent/i, ["agentic-ci-security"]],
+  [/property[- ]based|fuzz|invariant/i, ["property-based-testing"]]
 ];
 
 export class SkillEngine {
@@ -48,7 +72,7 @@ export class SkillEngine {
   }
 
   select(mode: string, prompt: string): SkillSelection[] {
-    const requested = new Set(modeDefaults[mode] ?? ["verification-before-completion"]);
+    const requested = new Set(modeDefaults[mode] ?? ["using-skills", "verification-before-completion"]);
     for (const [pattern, names] of signals) if (pattern.test(prompt)) names.forEach((name) => requested.add(name));
     const ordered: string[] = [];
     const visiting = new Set<string>();

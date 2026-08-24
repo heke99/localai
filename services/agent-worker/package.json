@@ -10,6 +10,8 @@
     "@div3rsa/integrations": "0.1.0",
     "@div3rsa/model-gateway": "0.1.0",
     "@div3rsa/model-sdk": "0.1.0",
+    "@div3rsa/repository-intelligence": "0.1.0",
+    "@div3rsa/sandbox-runtime": "0.1.0",
     "@div3rsa/skill-engine": "0.1.0",
     "@supabase/supabase-js": "2.112.3"
   }

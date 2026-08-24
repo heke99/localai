@@ -219,6 +219,8 @@ export type Database = {
         }
         Returns: Array<{ run_id: string; resolved_conversation_id: string }>
       }
+      superadmin_agent_platform_snapshot: { Args: never; Returns: Json }
+      superadmin_agent_run_trace: { Args: { target_run_id: string }; Returns: Json }
       superadmin_begin_email_step_up: { Args: never; Returns: Json }
       superadmin_control_snapshot: { Args: never; Returns: Json }
       superadmin_create_policy_set: {
@@ -279,9 +281,27 @@ export type Database = {
         }
         Returns: string
       }
+      worker_append_repository_index: {
+        Args: { target_index_id: string; target_nodes?: Json; target_edges?: Json }
+        Returns: Json
+      }
       worker_authorize_tool_call: {
         Args: { target_run_id: string; target_resource_id: string; target_capability: string }
         Returns: Json
+      }
+      worker_begin_repository_index: {
+        Args: {
+          target_run_id: string
+          target_resource_id: string
+          target_phase: string
+          target_verification_round: number | null
+          target_repository: string
+          target_ref: string
+          target_revision_sha: string
+          target_content_revision_hash: string
+          target_project_profile: Json
+        }
+        Returns: string
       }
       worker_claim_agent_run: {
         Args: { worker_id: string }
@@ -307,11 +327,44 @@ export type Database = {
         Args: { target_run_id: string; target_job_id: string; error_code: string; retryable?: boolean }
         Returns: undefined
       }
+      worker_finish_repository_index: {
+        Args: { target_index_id: string; target_complete: boolean; target_counts: Json }
+        Returns: string
+      }
       worker_is_agent_run_cancelled: { Args: { target_run_id: string }; Returns: boolean }
       worker_project_resource_directory: { Args: { target_run_id: string }; Returns: Json }
       worker_record_agent_step: {
         Args: { target_run_id: string; step_kind: string; step_status: string; summary: string; state?: Json }
         Returns: number
+      }
+      worker_record_impact_analysis: {
+        Args: {
+          target_run_id: string
+          target_verification_round: number
+          target_repository_index_id: string | null
+          target_risk: string
+          target_verification_hints: Json
+          target_nodes: Json
+        }
+        Returns: string
+      }
+      worker_record_run_intelligence: {
+        Args: { target_run_id: string; target_task_analysis: Json; target_skills: Json }
+        Returns: undefined
+      }
+      worker_record_verification_run: {
+        Args: {
+          target_run_id: string
+          target_verification_round: number
+          target_repository_index_id: string | null
+          target_impact_analysis_id: string | null
+          target_status: string
+          target_plan: Json
+          target_blockers: Json
+          target_reviewer: Json
+          target_results: Json
+        }
+        Returns: string
       }
       worker_remember_resource_link: {
         Args: {

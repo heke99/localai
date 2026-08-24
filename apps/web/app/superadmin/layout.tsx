@@ -20,6 +20,9 @@ export default async function SuperadminLayout({ children }: Readonly<{ children
       <Link href="/superadmin/applications" className="button" style={{ boxShadow: "0 12px 32px rgba(0,0,0,.22)" }}>
         Applications
       </Link>
+      <Link href="/superadmin/platform" className="button" style={{ boxShadow: "0 12px 32px rgba(0,0,0,.22)" }}>
+        Agent Platform
+      </Link>
       <Link href="/superadmin/billing" className="button" style={{ boxShadow: "0 12px 32px rgba(0,0,0,.22)" }}>
         Billing & access
       </Link>
