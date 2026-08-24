@@ -21,7 +21,7 @@ const baseline = workspace("a".repeat(40), [
   { path: "src/auth.ts", content: "export function verifyUser() { return false }" },
   { path: "src/session.ts", content: "import { verifyUser } from './auth'; export const session = () => verifyUser()" },
   { path: "app/api/login/route.ts", content: "import { session } from '../../../src/session'; export async function POST() { return session() }" },
-  { path: "tests/login.test.ts", content: "import '../app/api/login/route'; test('login', () => {})" }
+  { path: "tests/login.test.ts", content: "import { POST } from '../app/api/login/route'; test('login', () => expect(POST).toBeDefined())" }
 ]);
 
 const changed = workspace("b".repeat(40), [
@@ -29,7 +29,7 @@ const changed = workspace("b".repeat(40), [
   { path: "src/auth.ts", content: "export function verifyUser() { return true }" },
   { path: "src/session.ts", content: "import { verifyUser } from './auth'; export const session = () => verifyUser()" },
   { path: "app/api/login/route.ts", content: "import { session } from '../../../src/session'; export async function POST() { return session() }" },
-  { path: "tests/login.test.ts", content: "import '../app/api/login/route'; test('login', () => {})" }
+  { path: "tests/login.test.ts", content: "import { POST } from '../app/api/login/route'; test('login', () => expect(POST).toBeDefined())" }
 ]);
 
 const mutationTrace: WorkerToolTrace[] = [
