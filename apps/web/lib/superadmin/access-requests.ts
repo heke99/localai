@@ -27,7 +27,11 @@ export async function reviewAccessRequestById(
   if (reviewed !== true) throw new Error("access_request_not_reviewable");
 }
 
-export async function grantAccessRequestById(supabase: SupabaseClient, targetId: string) {
+export async function grantAccessRequestById(
+  supabase: SupabaseClient,
+  targetId: string,
+  appOrigin = getAppUrl()
+) {
   const { data: request, error: requestError } = await supabase
     .from("access_requests")
     .select("id,email,name,organization_name,status,invited_user_id,organization_id,workspace_id")
@@ -70,7 +74,7 @@ export async function grantAccessRequestById(supabase: SupabaseClient, targetId:
     invitedUserMetadata = data.user.app_metadata ?? {};
   } else {
     const { data, error } = await admin.auth.admin.inviteUserByEmail(request.email, {
-      redirectTo: `${getAppUrl()}/auth/accepted`,
+      redirectTo: `${appOrigin.replace(/\/$/, "")}/auth/accepted`,
       data: {
         display_name: request.name,
         organization_name: request.organization_name ?? null,
