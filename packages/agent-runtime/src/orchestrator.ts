@@ -23,10 +23,9 @@ export class AgentOrchestrator {
     await this.dependencies.runs.create(record);
     try {
       const task = analyzeTask(request.mode, request.prompt);
-      await this.transition(record, "planning", "plan", `Analyze ${task.primaryCategory} task and select skills`);
+      await this.transition(record, "planning", "plan", `Analyze ${task.primaryCategory} task (${task.risk}/${task.complexity}) and select skills`);
       const skills = routeSkills(request.mode, request.prompt, task);
       for (const skill of skills) await this.step(record, "skill", skill, `Activate ${skill}`);
-      await this.dependencies.runs.checkpoint({ runId: record.id, sequence: record.steps.length, status: record.status, state: { task: { categories: task.categories, risk: task.risk, complexity: task.complexity, verificationRequirements: task.verificationRequirements }, skills }, artifactRefs: [] });
       await this.throwIfCancelled(record);
       await this.transition(record, "running", "model", "Generate model response");
       record.attempts += 1;
