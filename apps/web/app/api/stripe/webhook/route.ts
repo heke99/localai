@@ -19,9 +19,8 @@ type SubscriptionRow = {
   requested_action: string | null;
   provider_subscription_id: string | null;
   provider_customer_id: string | null;
-  termination_intent: string | null;
-  renewal_action_requested: string | null;
 };
+type ManagementRow = { termination_intent: string | null; renewal_action_requested: string | null };
 
 function stringValue(value: unknown) {
   return typeof value === "string" && value.trim() ? value : null;
@@ -53,7 +52,7 @@ function subscriptionIdFromInvoice(invoice: Record<string, unknown>) {
 
 async function findSubscription(input: { organizationId?: string | null; subscriptionId?: string | null; customerId?: string | null }) {
   const admin = createSupabaseAdminClient();
-  let query = admin.from("organization_subscriptions").select("id,organization_id,access_mode,status,requested_action,provider_subscription_id,provider_customer_id,termination_intent,renewal_action_requested").eq("access_mode", "paid");
+  let query = admin.from("organization_subscriptions").select("id,organization_id,access_mode,status,requested_action,provider_subscription_id,provider_customer_id").eq("access_mode", "paid");
   if (input.organizationId) query = query.eq("organization_id", input.organizationId);
   else if (input.subscriptionId) query = query.eq("provider_subscription_id", input.subscriptionId);
   else if (input.customerId) query = query.eq("provider_customer_id", input.customerId);
@@ -136,6 +135,50 @@ async function handleCheckoutCompleted(event: StripeEvent, session: Record<strin
   if (accessRequestId) await admin.from("access_requests").update({ billing_checkout_url: null }).eq("id", accessRequestId);
 }
 
+async function syncSubscriptionManagementFields(
+  row: SubscriptionRow,
+  subscription: Record<string, unknown>,
+  localStatus: ReturnType<typeof mapStripeSubscriptionStatus>,
+  pauseCollection: Record<string, unknown> | null
+) {
+  const admin = createSupabaseAdminClient();
+  const { data, error: readError } = await admin
+    .from("organization_subscriptions")
+    .select("termination_intent,renewal_action_requested")
+    .eq("id", row.id)
+    .maybeSingle();
+
+  // During deployment the web app can become live just before the schema migration.
+  // Provider status synchronization above must still succeed in that short window.
+  if (readError) {
+    console.warn("stripe_subscription_management_metadata_unavailable", { subscriptionId: row.id, code: readError.message });
+    return;
+  }
+
+  const management = (data ?? {}) as ManagementRow;
+  const cancelAtPeriodEnd = subscription.cancel_at_period_end === true;
+  const currentIntent: TerminationIntent = management.termination_intent === "cancel" || management.termination_intent === "auto_renew_off" ? management.termination_intent : null;
+  const requestedAction: RenewalAction = management.renewal_action_requested === "cancel" || management.renewal_action_requested === "disable_auto_renew" || management.renewal_action_requested === "reactivate" ? management.renewal_action_requested : null;
+  const renewal = reconcileRenewalConfirmation({ cancelAtPeriodEnd, localStatus, currentIntent, requestedAction });
+
+  const update: Record<string, unknown> = {
+    cancel_at_period_end: cancelAtPeriodEnd,
+    termination_intent: renewal.terminationIntent,
+    pause_collection_behavior: pauseCollection ? stringValue(pauseCollection.behavior) : null,
+    canceled_at: unixDate(subscription.canceled_at),
+    updated_at: new Date().toISOString()
+  };
+  if (renewal.clearRequestedAction) {
+    update.renewal_action_requested = null;
+    update.renewal_action_requested_at = null;
+    update.renewal_action_requested_by = null;
+  }
+  if (renewal.terminationIntent !== "cancel") update.cancellation_reason = null;
+
+  const { error: updateError } = await admin.from("organization_subscriptions").update(update).eq("id", row.id).eq("access_mode", "paid");
+  if (updateError) throw new Error(updateError.message);
+}
+
 async function handleSubscription(event: StripeEvent, subscription: Record<string, unknown>) {
   const metadata = objectValue(subscription.metadata);
   const organizationId = metadata ? stringValue(metadata.organization_id) : null;
@@ -154,29 +197,7 @@ async function handleSubscription(event: StripeEvent, subscription: Record<strin
     customerId,
     subscriptionId
   });
-
-  const cancelAtPeriodEnd = subscription.cancel_at_period_end === true;
-  const currentIntent: TerminationIntent = row.termination_intent === "cancel" || row.termination_intent === "auto_renew_off" ? row.termination_intent : null;
-  const requestedAction: RenewalAction = row.renewal_action_requested === "cancel" || row.renewal_action_requested === "disable_auto_renew" || row.renewal_action_requested === "reactivate" ? row.renewal_action_requested : null;
-  const renewal = reconcileRenewalConfirmation({ cancelAtPeriodEnd, localStatus, currentIntent, requestedAction });
-
-  const update: Record<string, unknown> = {
-    cancel_at_period_end: cancelAtPeriodEnd,
-    termination_intent: renewal.terminationIntent,
-    pause_collection_behavior: pauseCollection ? stringValue(pauseCollection.behavior) : null,
-    canceled_at: unixDate(subscription.canceled_at),
-    updated_at: new Date().toISOString()
-  };
-  if (renewal.clearRequestedAction) {
-    update.renewal_action_requested = null;
-    update.renewal_action_requested_at = null;
-    update.renewal_action_requested_by = null;
-  }
-  if (renewal.terminationIntent !== "cancel") update.cancellation_reason = null;
-
-  const admin = createSupabaseAdminClient();
-  const { error } = await admin.from("organization_subscriptions").update(update).eq("id", row.id).eq("access_mode", "paid");
-  if (error) throw new Error(error.message);
+  await syncSubscriptionManagementFields(row, subscription, localStatus, pauseCollection);
 }
 
 async function handleInvoice(event: StripeEvent, invoice: Record<string, unknown>) {
