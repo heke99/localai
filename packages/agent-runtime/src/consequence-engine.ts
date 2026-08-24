@@ -82,9 +82,9 @@ function changedIds(graph: ConsequenceGraph, change: ChangeSet): Set<string> {
   const files = new Set(change.files.map((value) => value.replace(/^\.\//, "")));
   const symbols = new Set((change.symbols ?? []).map((symbol) => `${symbol.path.replace(/^\.\//, "")}#${symbol.name}`));
   return new Set(graph.nodes.filter((node) => {
-    const path = node.path?.replace(/^\.\//, "");
-    if (path && files.has(path)) return true;
-    if (node.kind === "symbol" && path && symbols.has(`${path}#${node.label}`)) return true;
+    const nodePath = node.path?.replace(/^\.\//, "");
+    if (nodePath && files.has(nodePath)) return true;
+    if (node.kind === "symbol" && nodePath && symbols.has(`${nodePath}#${node.label}`)) return true;
     return false;
   }).map((node) => node.id));
 }
@@ -146,13 +146,40 @@ export function buildFileImpactGraph(input: {
   files: string[];
   imports: Array<{ from: string; to: string }>;
   tests?: Array<{ path: string; targets: string[] }>;
+  symbols?: Array<{ path: string; name: string; kind?: string }>;
+  routes?: Array<{ file: string; path: string; kind: "page" | "api"; methods?: string[] }>;
+  databaseEntities?: Array<{ file: string; name: string; kind: "table" | "policy" | "function" | "rpc" }>;
 }): ConsequenceGraph {
-  const nodes: ImpactNode[] = input.files.map((path) => ({ id: `file:${path}`, kind: /(?:^|\/)(?:tests?|e2e)\/|\.(?:spec|test)\.[cm]?[jt]sx?$/i.test(path) ? "test" : "file", label: path, path }));
+  const nodes: ImpactNode[] = input.files.map((filePath) => ({ id: `file:${filePath}`, kind: /(?:^|\/)(?:tests?|e2e)\/|\.(?:spec|test)\.[cm]?[jt]sx?$/i.test(filePath) ? "test" : "file", label: filePath, path: filePath }));
   const known = new Set(input.files);
   const edges: ImpactEdge[] = input.imports.filter((edge) => known.has(edge.from) && known.has(edge.to)).map((edge) => ({ from: `file:${edge.from}`, to: `file:${edge.to}`, kind: "imports" }));
+
+  for (const symbol of input.symbols ?? []) {
+    if (!known.has(symbol.path)) continue;
+    const id = `symbol:${symbol.path}#${symbol.name}`;
+    nodes.push({ id, kind: "symbol", label: symbol.name, path: symbol.path, metadata: { symbolKind: symbol.kind ?? "unknown" } });
+    edges.push({ from: id, to: `file:${symbol.path}`, kind: "depends_on" });
+  }
+
+  for (const route of input.routes ?? []) {
+    if (!known.has(route.file)) continue;
+    const kind: ImpactKind = route.kind === "api" ? "api" : "route";
+    const id = `${kind}:${route.path}@${route.file}`;
+    nodes.push({ id, kind, label: route.path, path: route.file, metadata: { methods: route.methods ?? [] } });
+    edges.push({ from: id, to: `file:${route.file}`, kind: "routes_to" });
+  }
+
+  for (const entity of input.databaseEntities ?? []) {
+    if (!known.has(entity.file)) continue;
+    const kind: ImpactKind = entity.kind === "policy" ? "policy" : entity.kind === "rpc" ? "rpc" : "database";
+    const id = `${kind}:${entity.name}@${entity.file}`;
+    nodes.push({ id, kind, label: entity.name, path: entity.file, metadata: { databaseKind: entity.kind } });
+    edges.push({ from: id, to: `file:${entity.file}`, kind: "depends_on" });
+  }
+
   for (const test of input.tests ?? []) {
     if (!known.has(test.path)) continue;
     for (const target of test.targets) if (known.has(target)) edges.push({ from: `file:${test.path}`, to: `file:${target}`, kind: "tests" });
   }
-  return { nodes, edges };
+  return { nodes: uniqueNodes(nodes), edges: [...new Map(edges.map((edge) => [`${edge.from}|${edge.kind}|${edge.to}`, edge])).values()] };
 }
