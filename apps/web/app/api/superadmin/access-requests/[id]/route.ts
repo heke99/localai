@@ -57,7 +57,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
 
     if (action === "approve") {
-      const result = await grantAccessRequestById(supabase, id);
+      const result = await grantAccessRequestById(supabase, id, requestUrl.origin);
       revalidateApplicationPaths(id);
       return redirectTo(request, `/superadmin/applications/${id}?updated=${result.alreadyApproved ? "already-approved" : "approved"}`);
     }
