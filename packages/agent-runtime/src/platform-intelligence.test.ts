@@ -30,6 +30,34 @@ describe("portable agent platform intelligence", () => {
     expect(impact.testNodeIds).toContain("file:tests/login.test.ts");
   });
 
+  it("adds semantic route, symbol and database nodes to repository impact", () => {
+    const graph = buildFileImpactGraph({
+      files: ["src/auth.ts", "app/api/login/route.ts", "supabase/migrations/auth.sql", "tests/login.test.ts"],
+      imports: [{ from: "app/api/login/route.ts", to: "src/auth.ts" }],
+      symbols: [{ path: "src/auth.ts", name: "verifyUser", kind: "function" }],
+      routes: [{ file: "app/api/login/route.ts", path: "/api/login", kind: "api", methods: ["POST"] }],
+      databaseEntities: [
+        { file: "supabase/migrations/auth.sql", name: "sessions", kind: "table" },
+        { file: "supabase/migrations/auth.sql", name: "sessions_select", kind: "policy" },
+        { file: "supabase/migrations/auth.sql", name: "login_rpc", kind: "rpc" }
+      ],
+      tests: [{ path: "tests/login.test.ts", targets: ["app/api/login/route.ts"] }]
+    });
+    const impact = analyzeConsequences(graph, { files: ["app/api/login/route.ts"] });
+    expect(impact.affected.map((node) => node.kind)).toEqual(expect.arrayContaining(["api", "test", "file"]));
+    expect(graph.nodes.some((node) => node.kind === "policy" && node.label === "sessions_select")).toBe(true);
+    expect(graph.nodes.some((node) => node.kind === "rpc" && node.label === "login_rpc")).toBe(true);
+    expect(graph.nodes.some((node) => node.kind === "symbol" && node.label === "verifyUser")).toBe(true);
+  });
+
+  it("requires complete repository intelligence for repository mutations", () => {
+    const task = analyzeTask("code", "Fix login", { languages: ["typescript"] });
+    const graph = buildFileImpactGraph({ files: ["src/login.ts"], imports: [] });
+    const impact = analyzeConsequences(graph, { files: ["src/login.ts"] });
+    const plan = createVerificationPlan(task, impact);
+    expect(plan.checks).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "repository-intelligence", required: true })]));
+  });
+
   it("denies completion when mandatory verification evidence is blocked", async () => {
     const task = analyzeTask("code", "Fix login and deploy", { languages: ["typescript"], hosting: ["vercel"] });
     const graph = buildFileImpactGraph({ files: ["src/login.ts"], imports: [] });
@@ -43,6 +71,7 @@ describe("portable agent platform intelligence", () => {
     };
     const report = await executeVerificationPlan(plan, executor, { task, impact, output: "fixed" });
     expect(report.passed).toBe(false);
+    expect(report.unresolvedBlockers.some((item) => item.startsWith("repository-intelligence:"))).toBe(true);
     expect(report.unresolvedBlockers.some((item) => item.startsWith("targeted-tests:"))).toBe(true);
     expect(() => assertCompletionAllowed(report)).toThrow(/verification_gate_failed/);
   });
