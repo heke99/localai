@@ -1,0 +1,9 @@
+-- Production migration history marker.
+--
+-- The subscription self-service migration was applied directly to production
+-- while the main-branch database workflow was delayed. Supabase recorded that
+-- application as version 20260824122425. The canonical schema implementation
+-- remains in 20260824141000_subscription_self_service_controls.sql.
+--
+-- Keeping this no-op marker makes local and remote migration history agree so
+-- future `supabase db push` runs can safely apply/record the canonical migration.
