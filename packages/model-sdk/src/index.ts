@@ -79,7 +79,7 @@ export function modelProviderFromAdapter(key: string, modelId: string, adapter: 
     generate: (request) => adapter.generate(request),
     stream: (request) => adapter.stream(request),
     toolCall: (request) => adapter.generate(request),
-    async structuredOutput<T>(request) {
+    async structuredOutput<T>(request: StructuredOutputRequest) {
       const raw = await adapter.generate(request);
       try { return { value: JSON.parse(raw.content) as T, raw }; }
       catch { throw new Error("structured_output_parse_failed"); }
