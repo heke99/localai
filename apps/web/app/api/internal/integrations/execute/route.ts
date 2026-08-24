@@ -80,6 +80,6 @@ export async function POST(request: Request) {
     return response;
   } catch (error) {
     if (grantId) await finishExecutionGrant(grantId,"failed",{ errorCode: error instanceof Error ? error.message.split(":",1)[0].slice(0,120) : "execution_failed" });
-    return NextResponse.json({ error: "integration_execution_failed" }, { status: 409, headers: { "Cache-Control","no-store, max-age=0" } });
+    return NextResponse.json({ error: "integration_execution_failed" }, { status: 409, headers: { "Cache-Control": "no-store, max-age=0" } });
   }
 }
