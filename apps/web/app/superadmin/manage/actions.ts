@@ -2,6 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { StripeClient } from "../../../lib/billing/stripe";
+import { createSupabaseAdminClient } from "../../../lib/supabase/admin";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
 
 async function requireSuperadmin() {
@@ -57,6 +59,50 @@ export async function setSubscriptionLifecycleAction(formData: FormData) {
   revalidatePath("/superadmin");
   revalidatePath("/superadmin/manage");
   revalidatePath("/account");
+  revalidatePath("/dashboard");
+}
+
+export async function setOrganizationBillingAccess(formData: FormData) {
+  const { supabase } = await requireSuperadmin();
+  const organizationId = uuid(formData.get("organizationId"));
+  const mode = String(formData.get("accessMode") ?? "");
+  if (!new Set(["paid", "free", "trial"]).has(mode)) throw new Error("invalid_access_mode");
+
+  const trialDays = mode === "trial" ? Number(formData.get("trialDays") ?? 3) : null;
+  const trialTokenLimit = mode === "trial" ? Number(formData.get("trialTokenLimit") ?? 100000) : null;
+  if (mode === "trial" && (!Number.isInteger(trialDays) || trialDays! < 1 || trialDays! > 90)) throw new Error("trial_days_invalid");
+  if (mode === "trial" && (!Number.isSafeInteger(trialTokenLimit) || trialTokenLimit! < 1000 || trialTokenLimit! > 1_000_000_000)) throw new Error("trial_token_limit_invalid");
+
+  const admin = createSupabaseAdminClient();
+  const { data: current, error: currentError } = await admin
+    .from("organization_subscriptions")
+    .select("id,access_mode,status,provider_subscription_id")
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+  if (currentError) throw new Error(currentError.message);
+
+  if (mode !== "paid" && current?.access_mode === "paid" && current.provider_subscription_id && current.status !== "canceled") {
+    await StripeClient.fromEnv().cancelSubscription(current.provider_subscription_id);
+    const { error: cancelStateError } = await admin.from("organization_subscriptions").update({
+      status: "canceled",
+      provider_status: "canceled",
+      last_error_code: null,
+      updated_at: new Date().toISOString()
+    }).eq("id", current.id).eq("access_mode", "paid");
+    if (cancelStateError) throw new Error(cancelStateError.message);
+  }
+
+  const { error } = await supabase.rpc("superadmin_configure_organization_access", {
+    target_organization_id: organizationId,
+    target_access_mode: mode,
+    target_trial_days: trialDays,
+    target_trial_token_limit: trialTokenLimit
+  });
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/superadmin");
+  revalidatePath("/superadmin/manage");
+  revalidatePath("/billing");
   revalidatePath("/dashboard");
 }
 
