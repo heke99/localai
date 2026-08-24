@@ -1,6 +1,6 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "../../lib/supabase/server";
+import { SubscriptionSettingsCard } from "./subscription-settings-card";
 import { WorkspaceShellV4 } from "./workspace-shell-v4";
 
 type AuthClaims = {
@@ -71,7 +71,6 @@ export default async function DashboardPage() {
   const snapshot = (snapshotData ?? {}) as Parameters<typeof WorkspaceShellV4>[0]["snapshot"];
 
   return <>
-    {!isSuperadmin ? <div style={{ position: "fixed", top: 14, right: 18, zIndex: 50 }}><Link className="button" href="/billing">Abonnemang</Link></div> : null}
     <WorkspaceShellV4
       workspaceId={workspace.id}
       workspaceName={workspace.name}
@@ -80,5 +79,6 @@ export default async function DashboardPage() {
       isSuperadmin={isSuperadmin}
       snapshot={snapshot}
     />
+    <SubscriptionSettingsCard isSuperadmin={isSuperadmin} />
   </>;
 }
