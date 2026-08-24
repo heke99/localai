@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "../../../../../lib/supabase/server";
 import {
   grantAccessRequestById,
-  reviewAccessRequestById
+  reviewAccessRequestById,
+  type AccessGrantMode
 } from "../../../../../lib/superadmin/access-requests";
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -18,6 +19,19 @@ function revalidateApplicationPaths(targetId: string) {
   revalidatePath("/superadmin");
   revalidatePath("/superadmin/applications");
   revalidatePath(`/superadmin/applications/${targetId}`);
+  revalidatePath("/superadmin/manage");
+}
+
+function accessGrantFromForm(form: FormData) {
+  const mode = String(form.get("access_mode") ?? "paid") as AccessGrantMode;
+  if (!new Set<AccessGrantMode>(["paid", "free", "trial"]).has(mode)) throw new Error("access_mode_not_allowed");
+  if (mode !== "trial") return { mode };
+
+  const trialDays = Number(form.get("trial_days") ?? 3);
+  const trialTokenLimit = Number(form.get("trial_token_limit") ?? 100000);
+  if (!Number.isInteger(trialDays) || trialDays < 1 || trialDays > 90) throw new Error("trial_days_invalid");
+  if (!Number.isSafeInteger(trialTokenLimit) || trialTokenLimit < 1000 || trialTokenLimit > 1_000_000_000) throw new Error("trial_token_limit_invalid");
+  return { mode, trialDays, trialTokenLimit };
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -57,15 +71,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
 
     if (action === "approve") {
-      const result = await grantAccessRequestById(supabase, id, requestUrl.origin);
+      const grant = accessGrantFromForm(form);
+      const result = await grantAccessRequestById(supabase, id, requestUrl.origin, grant);
       revalidateApplicationPaths(id);
-      return redirectTo(request, `/superadmin/applications/${id}?updated=${result.alreadyApproved ? "already-approved" : "approved"}`);
+      const state = result.checkoutError ? "approved-billing-pending" : result.alreadyApproved ? "already-approved" : "approved";
+      return redirectTo(request, `/superadmin/applications/${id}?updated=${state}`);
     }
 
     return redirectTo(request, `/superadmin/applications/${id}?error=invalid_action`);
   } catch (error) {
     const code = error instanceof Error ? error.message : "unknown";
     console.error("access_request_admin_action_failed", { action, code });
-    return redirectTo(request, `/superadmin/applications/${id}?error=action_failed`);
+    const reason = encodeURIComponent(code);
+    return redirectTo(request, `/superadmin/applications/${id}?error=action_failed&reason=${reason}`);
   }
 }
