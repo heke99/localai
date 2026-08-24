@@ -1,0 +1,67 @@
+import type { Metadata } from "next";
+import { PublicInfoLayout } from "../public-info";
+import styles from "../public-info.module.css";
+
+export const metadata: Metadata = {
+  title: "Support | DIV3RSA",
+  description: "Support information for DIV3RSA and the DIV3RSA Vercel integration."
+};
+
+export default function SupportPage() {
+  return <PublicInfoLayout
+    eyebrow="Support"
+    title="DIV3RSA Support"
+    intro="Get help with access, connected integrations, deployments, logs, account issues and security-related questions."
+  >
+    <section>
+      <h2>Contact support</h2>
+      <p>Email <a href="mailto:info@div3rsa.com">info@div3rsa.com</a>. To help us investigate efficiently, include the affected DIV3RSA workspace, the relevant integration, the Vercel team/project name and any deployment ID or timestamp connected to the issue.</p>
+      <div className={styles.callout}><strong>Do not send secrets.</strong> Never include passwords, Vercel client secrets, access tokens, refresh tokens, API keys, private keys or recovery codes in a support email.</div>
+    </section>
+
+    <section>
+      <h2>Vercel integration support</h2>
+      <h3>Connection or installation issues</h3>
+      <p>If Vercel authorization does not complete, confirm that you selected at least one project and approved the requested permissions. DIV3RSA intentionally does not mark an identity-only Vercel login with zero readable projects as a completed resource connection.</p>
+      <h3>Project access changed</h3>
+      <p>If a project was added or removed in Vercel, allow the signed integration webhook to synchronize the updated installation scope. Reconnect from DIV3RSA if Vercel requires a new permission approval.</p>
+      <h3>Deployment or log issue</h3>
+      <p>Provide the Vercel deployment ID when possible. DIV3RSA can use an authorized deployment ID to retrieve current deployment, build and runtime context without requiring you to send credentials to support.</p>
+      <p>Full setup instructions are available in the <a href="/docs/vercel-integration">Vercel integration documentation</a>.</p>
+    </section>
+
+    <section>
+      <h2>Account and access issues</h2>
+      <p>For sign-in, verification, workspace membership or access-application problems, contact support from the email address associated with your DIV3RSA account when possible. We may request additional information to verify account ownership before making security-sensitive changes.</p>
+    </section>
+
+    <section>
+      <h2>Security reports</h2>
+      <p>If you believe you have found a security vulnerability affecting DIV3RSA, contact <a href="mailto:info@div3rsa.com?subject=DIV3RSA%20Security%20Report">info@div3rsa.com</a> with the subject <strong>DIV3RSA Security Report</strong>. Include enough information to reproduce and assess the issue, but do not access data that is not yours, disrupt production systems or expose secrets in the report.</p>
+      <p>We ask researchers to act in good faith, limit testing to authorized systems and avoid privacy violations, destructive activity, denial of service and social engineering.</p>
+    </section>
+
+    <section>
+      <h2>Service status and third-party dependencies</h2>
+      <p>Some DIV3RSA functionality depends on third-party providers selected by the user, such as Vercel, GitHub and infrastructure providers. A provider outage, permission change or API change can affect an integration even when DIV3RSA itself is available. Support will distinguish DIV3RSA failures from upstream-provider failures where possible.</p>
+    </section>
+
+    <section>
+      <h2>What to include in a useful report</h2>
+      <ul>
+        <li>DIV3RSA workspace or organization name.</li>
+        <li>Feature or integration affected.</li>
+        <li>Approximate date and time, including time zone.</li>
+        <li>Expected result and actual result.</li>
+        <li>Relevant project, repository or deployment identifier.</li>
+        <li>Screenshot or non-sensitive error text where useful.</li>
+        <li>Whether the issue can be reproduced.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Legal and privacy</h2>
+      <p>See the <a href="/legal/eula">End User License Agreement</a> and <a href="/legal/privacy">Privacy Policy</a>. Privacy requests can also be sent to <a href="mailto:info@div3rsa.com">info@div3rsa.com</a>.</p>
+    </section>
+  </PublicInfoLayout>;
+}
