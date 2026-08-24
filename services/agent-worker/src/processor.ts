@@ -8,7 +8,9 @@ import {
   routeSkills,
   type AgentMode,
   type ImpactAnalysis,
-  type TaskAnalysis
+  type TaskAnalysis,
+  type VerificationPlan,
+  type VerificationReport
 } from "@div3rsa/agent-runtime";
 import type { PreparedRepositoryWorkspace, WorkerRepositoryRuntime } from "./repository-runtime";
 import { executeRepositoryTool, repositoryToolDefinitions } from "./repository-tools";
@@ -47,6 +49,10 @@ export interface ClaimedRun {
 export interface AgentQueue {
   claim(workerId: string): Promise<ClaimedRun | null>;
   step(runId: string, kind: string, status: string, summary: string, state?: Record<string, unknown>): Promise<void>;
+  recordRunIntelligence(runId: string, task: TaskAnalysis, skills: string[]): Promise<void>;
+  recordRepositoryIndex(runId: string, phase: "baseline" | "post_change", verificationRound: number | null, workspace: PreparedRepositoryWorkspace): Promise<string>;
+  recordImpactAnalysis(runId: string, verificationRound: number, repositoryIndexId: string | null, impact: ImpactAnalysis): Promise<string>;
+  recordVerificationRun(runId: string, verificationRound: number, repositoryIndexId: string | null, impactAnalysisId: string | null, plan: VerificationPlan, report: VerificationReport, reviewer: { passed: boolean; reason: string }): Promise<string>;
   complete(run: ClaimedRun, output: { content: string; modelVersionId: string; usage: Record<string, number> }): Promise<void>;
   fail(run: ClaimedRun, errorCode: string, retryable: boolean): Promise<void>;
   isCancelled(runId: string): Promise<boolean>;
@@ -134,6 +140,8 @@ export class AgentWorkerProcessor {
     if (!run) return false;
     let baselineWorkspace: PreparedRepositoryWorkspace | null = null;
     let activeWorkspace: PreparedRepositoryWorkspace | null = null;
+    let baselineIndexId: string | null = null;
+    let activeIndexId: string | null = null;
     try {
       try {
         baselineWorkspace = await this.repositories.prepare(run);
@@ -157,6 +165,11 @@ export class AgentWorkerProcessor {
 
       const task = analyzeTask(run.mode, run.prompt, projectContext(run, baselineWorkspace));
       const preparedSkills = await this.skills.prepare(run.mode, run.prompt);
+      await this.queue.recordRunIntelligence(run.runId, task, preparedSkills.names);
+      if (baselineWorkspace) {
+        baselineIndexId = await this.queue.recordRepositoryIndex(run.runId, "baseline", null, baselineWorkspace);
+        activeIndexId = baselineIndexId;
+      }
       const providerTools = await this.tools.list(run);
       const toolDefinitions = [...repositoryToolDefinitions(baselineWorkspace), ...providerTools];
       await this.queue.step(run.runId, "plan", "planning", "Analyze task, index repository, select skills and resolve project resources", {
@@ -165,7 +178,8 @@ export class AgentWorkerProcessor {
         resourceCount: run.resourceContext.length,
         tools: toolDefinitions.map((tool) => tool.name),
         repositoryRevision: baselineWorkspace?.revision ?? null,
-        repositoryIndexComplete: baselineWorkspace?.complete ?? null
+        repositoryIndexComplete: baselineWorkspace?.complete ?? null,
+        repositoryIndexId: baselineIndexId
       });
       for (const skill of preparedSkills.names) await this.queue.step(run.runId, "skill", "planning", skill, { activeSkill: skill });
       if (await this.queue.isCancelled(run.runId)) return true;
@@ -222,23 +236,29 @@ export class AgentWorkerProcessor {
           const ref = repositoryMutationRef(toolTrace, activeWorkspace?.ref ?? baselineWorkspace?.ref ?? "main");
           if (activeWorkspace && activeWorkspace !== baselineWorkspace) await this.repositories.release(activeWorkspace);
           activeWorkspace = null;
+          activeIndexId = null;
           try {
             activeWorkspace = await this.repositories.prepare(run, ref);
             if (activeWorkspace) {
+              activeIndexId = await this.queue.recordRepositoryIndex(run.runId, "post_change", verificationRound, activeWorkspace);
               await this.queue.step(run.runId, "repository_index", "verifying", "Indexed exact post-change repository revision", {
                 verificationRound,
                 ref: activeWorkspace.ref,
                 revision: activeWorkspace.revision,
                 complete: activeWorkspace.complete,
-                files: activeWorkspace.index.files.length
+                files: activeWorkspace.index.files.length,
+                repositoryIndexId: activeIndexId
               });
             }
           } catch (error) {
             await this.queue.step(run.runId, "repository_index", "blocked", "Post-change repository indexing failed", { verificationRound, ref, error: error instanceof Error ? error.message : "repository_index_failed" });
           }
+        } else {
+          activeIndexId = baselineIndexId;
         }
 
         const impact = impactFromRuntime(toolTrace, baselineWorkspace, activeWorkspace);
+        const impactAnalysisId = impact ? await this.queue.recordImpactAnalysis(run.runId, verificationRound, activeIndexId, impact) : null;
         const plan = createVerificationPlan(task, impact);
         const reviewer = plan.checks.some((check) => check.kind === "independent-reviewer" && check.required)
           ? await independentReview(this.models, run, task, impact, finalResult.content, toolTrace, verificationRound)
@@ -254,13 +274,16 @@ export class AgentWorkerProcessor {
           impactRisk: impact?.risk ?? null,
           affected: impact?.affected.length ?? 0,
           repositoryRevision: repositoryEvidence?.revision ?? null,
-          repositoryComplete: repositoryEvidence?.complete ?? null
+          repositoryComplete: repositoryEvidence?.complete ?? null,
+          repositoryIndexId: activeIndexId,
+          impactAnalysisId
         });
         const report = await executeVerificationPlan(
           plan,
           createWorkerVerificationExecutor({ trace: toolTrace, reviewer, workspace: activeWorkspace, sandbox: this.sandbox }),
           { task, impact, output: finalResult.content, repository: repositoryEvidence }
         );
+        await this.queue.recordVerificationRun(run.runId, verificationRound, activeIndexId, impactAnalysisId, plan, report, reviewer);
         for (const result of report.results) await this.queue.step(run.runId, "verify", "verifying", `${result.kind}: ${result.status}`, { verificationRound, verificationKind: result.kind, verificationStatus: result.status, evidence: result.evidence ?? [], summary: result.summary, durationMs: result.durationMs ?? null });
 
         if (report.passed) {
