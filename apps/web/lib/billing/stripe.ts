@@ -37,26 +37,30 @@ export class StripeClient {
     return new StripeClient(secretKey);
   }
 
-  private async post<T extends StripeObject>(path: string, form: URLSearchParams, idempotencyKey?: string): Promise<T> {
+  private async request<T extends StripeObject>(method: "POST" | "DELETE", path: string, form?: URLSearchParams, idempotencyKey?: string): Promise<T> {
     const response = await fetch(`https://api.stripe.com${path}`, {
-      method: "POST",
+      method,
       headers: {
         Authorization: `Bearer ${this.secretKey}`,
-        "Content-Type": "application/x-www-form-urlencoded",
+        ...(method === "POST" ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
         "Stripe-Version": stripeApiVersion,
         ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {})
       },
-      body: form.toString(),
+      ...(method === "POST" ? { body: (form ?? new URLSearchParams()).toString() } : {}),
       cache: "no-store"
     });
 
     const body = await response.json().catch(() => ({})) as { error?: { code?: string; message?: string } } & T;
     if (!response.ok) {
       const code = body.error?.code || "stripe_request_failed";
-      console.error("stripe_api_request_failed", { path, status: response.status, code });
+      console.error("stripe_api_request_failed", { method, path, status: response.status, code });
       throw new Error(code);
     }
     return body;
+  }
+
+  private post<T extends StripeObject>(path: string, form: URLSearchParams, idempotencyKey?: string) {
+    return this.request<T>("POST", path, form, idempotencyKey);
   }
 
   async createSubscriptionCheckout(input: {
@@ -97,7 +101,7 @@ export class StripeClient {
   }
 
   async cancelSubscription(subscriptionId: string) {
-    return this.post<StripeObject>(`/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, new URLSearchParams([["cancel_at_period_end", "false"]]));
+    return this.request<StripeObject>("DELETE", `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`);
   }
 }
 
