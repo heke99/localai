@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { getAppUrl } from "../../../../lib/app-url";
 import { createSupabaseAdminClient } from "../../../../lib/supabase/admin";
 import { createSupabaseServerClient } from "../../../../lib/supabase/server";
 
@@ -9,7 +8,11 @@ function json(body: Record<string, unknown>, status = 200) {
   return response;
 }
 
-export async function POST() {
+export async function POST(request: Request) {
+  const requestUrl = new URL(request.url);
+  const origin = request.headers.get("origin");
+  if (origin && origin !== requestUrl.origin) return json({ error: "invalid_origin" }, 403);
+
   const supabase = await createSupabaseServerClient();
   const { data: { user }, error: userError } = await supabase.auth.getUser();
   if (userError || !user) return json({ error: "authentication_required" }, 401);
@@ -41,7 +44,7 @@ export async function POST() {
   }
 
   const { error: emailError } = await admin.auth.resetPasswordForEmail(grant.email, {
-    redirectTo: `${getAppUrl()}/auth/set-password?mode=onboarding`
+    redirectTo: `${requestUrl.origin}/auth/set-password?mode=onboarding`
   });
   if (emailError) return json({ error: "password_email_failed" }, 502);
 

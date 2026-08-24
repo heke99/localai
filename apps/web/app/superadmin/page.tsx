@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "../../lib/supabase/server";
-import { enqueueOperation, grantAccess, reviewAccessRequest, setModelAlias } from "./actions";
+import { enqueueOperation, setModelAlias } from "./actions";
 
 type Snapshot = {
   counts?: Record<string, number>;
@@ -141,12 +141,11 @@ export default async function SuperadminPage() {
                 <p>{request.use_case}</p>
                 {request.status === "approved" ? <div className="onboarding-track"><span className={request.invited_at ? "done" : ""}>Invite</span><span className={request.password_email_sent_at ? "done" : ""}>Password mail</span><span className={request.onboarding_completed_at ? "done" : ""}>Activated</span></div> : null}
               </div>
-              {!finished && request.status !== "approved" ? <form className="row-actions">
-                <input type="hidden" name="requestId" value={request.id}/>
-                {request.status === "pending" ? <button formAction={reviewAccessRequest} name="decision" value="reviewing" className="button">Review</button> : null}
-                <button formAction={grantAccess} className="button primary">Grant access</button>
-                <button formAction={reviewAccessRequest} name="decision" value="rejected" className="button danger">Reject</button>
-              </form> : null}
+              <div className="row-actions">
+                <Link className="button primary" href={`/superadmin/applications/${request.id}`}>
+                  {request.status === "pending" || request.status === "reviewing" ? "Review" : "Open"}
+                </Link>
+              </div>
             </article>;
           })}</div> : <p className="empty-state">No applications yet.</p>}
         </section>

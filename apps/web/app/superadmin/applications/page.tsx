@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
-import { grantAccess, reviewAccessRequest } from "../actions";
 
 type AccessRequest = {
   id: string;
@@ -99,13 +98,9 @@ export default async function SuperadminApplicationsPage() {
               </div> : null}
             </div>
             <div className="row-actions">
-              <Link className="button primary" href={`/superadmin/applications/${request.id}`}>Öppna ansökan</Link>
-              {!finished && request.status !== "approved" && request.status !== "rejected" ? <form className="row-actions">
-                <input type="hidden" name="requestId" value={request.id}/>
-                {request.status === "pending" ? <button formAction={reviewAccessRequest} name="decision" value="reviewing" className="button">Review</button> : null}
-                <button formAction={grantAccess} className="button">Grant access</button>
-                <button formAction={reviewAccessRequest} name="decision" value="rejected" className="button danger">Reject</button>
-              </form> : null}
+              <Link className="button primary" href={`/superadmin/applications/${request.id}`}>
+                {request.status === "pending" || request.status === "reviewing" ? "Review" : "Öppna ansökan"}
+              </Link>
             </div>
           </article>;
         })}</div> : <p className="empty-state">Inga ansökningar har kommit in ännu.</p>}
