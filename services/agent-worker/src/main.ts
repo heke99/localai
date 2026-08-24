@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@div3rsa/db";
-import { OpenAiCompatibleAdapter } from "@div3rsa/model-gateway";
+import { LlamaCppAdmissionController, OpenAiCompatibleAdapter } from "@div3rsa/model-gateway";
 import { AgentWorkerProcessor } from "./processor";
 import { SupabaseAgentQueue } from "./supabase-queue";
 import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
@@ -17,8 +17,35 @@ function required(name: string): string {
   return value;
 }
 
+function numericEnvironment(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new Error(`invalid_environment_number:${name}`);
+  return value;
+}
+
 const supabase = createClient<Database>(required("SUPABASE_URL"), required("SUPABASE_SECRET_KEY"), { auth: { persistSession: false, autoRefreshToken: false } });
-const adapter = new OpenAiCompatibleAdapter(required("QWEN_INFERENCE_BASE_URL"), required("QWEN_INFERENCE_API_KEY"));
+const inferenceBaseUrl = required("QWEN_INFERENCE_BASE_URL");
+const inferenceApiKey = required("QWEN_INFERENCE_API_KEY");
+const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApiKey, {
+  contextLimit: numericEnvironment("DIV3RSA_MODEL_CONTEXT_SIZE", 32768),
+  batchSize: numericEnvironment("DIV3RSA_MODEL_BATCH_SIZE", 2048),
+  maxActiveSequences: numericEnvironment("DIV3RSA_ADMISSION_MAX_ACTIVE_SEQUENCES", 4),
+  maxDeferredRequests: numericEnvironment("DIV3RSA_ADMISSION_MAX_DEFERRED_REQUESTS", 4),
+  maxKvCacheUsageRatio: numericEnvironment("DIV3RSA_ADMISSION_MAX_KV_CACHE_RATIO", 0.9),
+  minTokensPerSecond: numericEnvironment("DIV3RSA_ADMISSION_MIN_TOKENS_PER_SECOND", 8),
+  maxTtftMs: numericEnvironment("DIV3RSA_ADMISSION_MAX_TTFT_MS", 5000),
+  maxInterTokenLatencyMs: numericEnvironment("DIV3RSA_ADMISSION_MAX_INTER_TOKEN_MS", 125),
+  maxGpuUtilizationRatio: numericEnvironment("DIV3RSA_ADMISSION_MAX_GPU_RATIO", 0.98),
+  maxVramUsageRatio: numericEnvironment("DIV3RSA_ADMISSION_MAX_VRAM_RATIO", 0.94),
+  maxContextHighWatermarkRatio: numericEnvironment("DIV3RSA_ADMISSION_MAX_CONTEXT_HIGH_WATERMARK_RATIO", 0.95),
+  pollIntervalMs: numericEnvironment("DIV3RSA_ADMISSION_POLL_INTERVAL_MS", 250),
+  maxWaitMs: numericEnvironment("DIV3RSA_ADMISSION_MAX_WAIT_MS", 30000),
+  telemetryTimeoutMs: numericEnvironment("DIV3RSA_ADMISSION_TELEMETRY_TIMEOUT_MS", 1000),
+  gpuMetricsUrl: process.env.DIV3RSA_GPU_METRICS_URL?.trim() || null
+});
+const adapter = new OpenAiCompatibleAdapter(inferenceBaseUrl, inferenceApiKey, fetch, admission);
 const queue = new SupabaseAgentQueue(supabase);
 const workerId = process.env.DIV3RSA_WORKER_ID ?? `agent-worker-${process.pid}`;
 const repositoryRoot = process.env.DIV3RSA_REPOSITORY_ROOT ?? process.cwd();

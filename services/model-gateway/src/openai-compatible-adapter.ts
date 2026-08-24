@@ -1,10 +1,18 @@
 import type { GenerateRequest, GenerateResult, ModelAdapter, ModelCapability, ModelHealth, ModelMessage, ModelToolCall } from "@div3rsa/model-sdk";
+import type { AdmissionController, ModelTimingObservation } from "./admission-control";
 import { QWEN_Q8 } from "./registry";
 
 type Fetch = typeof fetch;
 
 type OpenAiToolCall = { id?: string; type?: string; function?: { name?: string; arguments?: string } };
 type OpenAiMessage = { content?: string | null; tool_calls?: OpenAiToolCall[] };
+type LlamaTimings = {
+  prompt_ms?: number;
+  predicted_ms?: number;
+  predicted_n?: number;
+  predicted_per_token_ms?: number;
+  predicted_per_second?: number;
+};
 
 function encodeMessage(message: ModelMessage): Record<string, unknown> {
   if (message.role === "assistant" && message.toolCalls?.length) {
@@ -39,13 +47,30 @@ function parseToolCalls(message: OpenAiMessage): ModelToolCall[] {
   });
 }
 
+function timingObservation(timings?: LlamaTimings): ModelTimingObservation | null {
+  if (!timings) return null;
+  const interTokenLatencyMs = timings.predicted_per_token_ms ?? (
+    timings.predicted_ms != null && timings.predicted_n != null && timings.predicted_n > 0
+      ? timings.predicted_ms / timings.predicted_n
+      : undefined
+  );
+  if (timings.prompt_ms == null && timings.predicted_per_second == null && interTokenLatencyMs == null) return null;
+  return { ttftMs: timings.prompt_ms, tokensPerSecond: timings.predicted_per_second, interTokenLatencyMs };
+}
+
 export class OpenAiCompatibleAdapter implements ModelAdapter {
-  constructor(private readonly baseUrl: string, private readonly apiKey: string, private readonly fetcher: Fetch = fetch) {}
+  constructor(
+    private readonly baseUrl: string,
+    private readonly apiKey: string,
+    private readonly fetcher: Fetch = fetch,
+    private readonly admission?: AdmissionController
+  ) {}
 
   getCapabilities(): ReadonlySet<ModelCapability> { return new Set(QWEN_Q8.capabilities); }
   async estimateTokens(text: string): Promise<number> { return Math.max(1, Math.ceil(text.length / 3.5)); }
 
   async generate(request: GenerateRequest): Promise<GenerateResult> {
+    await this.admission?.waitForAdmission(this.estimateRequestContextTokens(request));
     const response = await this.fetcher(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "x-request-id": request.requestId },
@@ -63,7 +88,10 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     const body = await response.json() as {
       choices: Array<{ message: OpenAiMessage; finish_reason: string }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
+      timings?: LlamaTimings;
     };
+    const observation = timingObservation(body.timings);
+    if (observation) this.admission?.observeTimings(observation);
     const first = body.choices[0];
     if (!first) throw new Error("Inference returned no choices");
     const toolCalls = parseToolCalls(first.message);
@@ -77,6 +105,9 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
   }
 
   async *stream(request: GenerateRequest): AsyncIterable<string> {
+    await this.admission?.waitForAdmission(this.estimateRequestContextTokens(request));
+    const requestStartedAt = performance.now();
+    let observedFirstToken = false;
     const response = await this.fetcher(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "x-request-id": request.requestId },
@@ -85,6 +116,17 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     if (!response.ok || !response.body) throw new Error(`Inference stream failed with status ${response.status}`);
     const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
     let buffer = "";
+    const parseData = (data: string): string | null => {
+      const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }>; timings?: LlamaTimings };
+      const timing = timingObservation(parsed.timings);
+      if (timing) this.admission?.observeTimings(timing);
+      const content = parsed.choices?.[0]?.delta?.content;
+      if (content && !observedFirstToken) {
+        observedFirstToken = true;
+        this.admission?.observeTimings({ ttftMs: performance.now() - requestStartedAt });
+      }
+      return content || null;
+    };
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -96,8 +138,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
           if (!data || data === "[DONE]") continue;
-          const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
-          const content = parsed.choices?.[0]?.delta?.content;
+          const content = parseData(data);
           if (content) yield content;
         }
       }
@@ -107,8 +148,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
         if (!data || data === "[DONE]") continue;
-        const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
-        const content = parsed.choices?.[0]?.delta?.content;
+        const content = parseData(data);
         if (content) yield content;
       }
     }
@@ -122,5 +162,12 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     } catch (error) {
       return { ok: false, latencyMs: Math.round(performance.now() - started), detail: error instanceof Error ? error.message : "unknown" };
     }
+  }
+
+  private estimateRequestContextTokens(request: GenerateRequest): number {
+    const messageCharacters = request.messages.reduce((total, message) => total + message.content.length + JSON.stringify(message.toolCalls ?? []).length, 0);
+    const toolCharacters = JSON.stringify(request.tools ?? []).length;
+    const estimatedInput = Math.max(1, Math.ceil((messageCharacters + toolCharacters) / 3.5));
+    return estimatedInput + Math.max(0, request.maxOutputTokens ?? 1024);
   }
 }
