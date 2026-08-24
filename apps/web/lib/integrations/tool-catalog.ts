@@ -21,4 +21,13 @@ const tools: GatewayTool[] = [
   { name: "vercel_rollback_deployment", provider: "vercel", capability: "vercel.deployments.rollback" }
 ];
 const byName = new Map(tools.map((tool) => [tool.name, tool]));
-export function gatewayToolByName(name: string) { return byName.get(name) ?? null; }
+
+export function isForbiddenIntegrationToolName(name: string) {
+  const normalized = name.trim().toLowerCase().replace(/[.-]/g, "_");
+  return normalized.startsWith("vercel_") && normalized.includes("drain");
+}
+
+export function gatewayToolByName(name: string) {
+  if (isForbiddenIntegrationToolName(name)) return null;
+  return byName.get(name) ?? null;
+}

@@ -79,6 +79,8 @@ export function configuredCapabilities(provider: ProviderKey): string[] {
     // Keep the connection capability set aligned with tools that are actually
     // implemented by the integration gateway. Project read is needed for
     // discovery; deployment read/write powers the four Vercel tools below.
+    // Log Drains are intentionally excluded and must never be introduced by
+    // an environment override.
     vercel: [
       "vercel.project.read",
       "vercel.deployments.read",
@@ -89,6 +91,10 @@ export function configuredCapabilities(provider: ProviderKey): string[] {
   };
   const envName = `${provider.toUpperCase()}_INTEGRATION_CAPABILITIES`;
   const configured = process.env[envName]?.split(",").map((item) => item.trim()).filter(Boolean);
+  if (provider === "vercel" && configured?.length) {
+    const allowed = new Set(defaults.vercel);
+    return [...new Set(configured.filter((capability) => allowed.has(capability)))];
+  }
   return configured?.length ? configured : defaults[provider];
 }
 
