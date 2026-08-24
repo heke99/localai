@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ImpactAnalysis, VerificationPlan, VerificationReport } from "@div3rsa/agent-runtime";
 import type { PreparedRepositoryWorkspace } from "./repository-runtime";
 
@@ -16,12 +17,20 @@ export interface RepositoryGraphEdge {
   metadata: Record<string, unknown>;
 }
 
+function persistentKey(value: string): string {
+  if (Buffer.byteLength(value, "utf8") <= 500) return value;
+  const digest = createHash("sha256").update(value).digest("hex");
+  return `${value.slice(0, 100)}#${digest}`;
+}
+
+const fileKey = (path: string) => persistentKey(`file:${path}`);
+
 export function repositoryGraph(workspace: PreparedRepositoryWorkspace): { nodes: RepositoryGraphNode[]; edges: RepositoryGraphEdge[] } {
   const index = workspace.index;
   const testPaths = new Set(index.tests.map((test) => test.path));
   const knownFiles = new Set(index.files.map((file) => file.path));
   const nodes: RepositoryGraphNode[] = index.files.map((file) => ({
-    node_key: `file:${file.path}`,
+    node_key: fileKey(file.path),
     kind: testPaths.has(file.path) ? "test" : "file",
     path: file.path,
     label: file.path,
@@ -29,25 +38,25 @@ export function repositoryGraph(workspace: PreparedRepositoryWorkspace): { nodes
   }));
   const edges: RepositoryGraphEdge[] = index.edges
     .filter((edge) => knownFiles.has(edge.from) && knownFiles.has(edge.to))
-    .map((edge) => ({ from_key: `file:${edge.from}`, to_key: `file:${edge.to}`, kind: "imports", metadata: {} }));
+    .map((edge) => ({ from_key: fileKey(edge.from), to_key: fileKey(edge.to), kind: "imports", metadata: {} }));
 
   for (const symbol of index.symbols) {
-    const key = `symbol:${symbol.path}#${symbol.name}@${symbol.line}`;
+    const key = persistentKey(`symbol:${symbol.path}#${symbol.name}@${symbol.line}`);
     nodes.push({ node_key: key, kind: "symbol", path: symbol.path, label: symbol.name, metadata: { symbolKind: symbol.kind, line: symbol.line } });
-    edges.push({ from_key: key, to_key: `file:${symbol.path}`, kind: "contains", metadata: {} });
+    edges.push({ from_key: key, to_key: fileKey(symbol.path), kind: "contains", metadata: {} });
   }
   for (const route of index.routes) {
-    const key = `route:${route.kind}:${route.path}@${route.file}`;
+    const key = persistentKey(`route:${route.kind}:${route.path}@${route.file}`);
     nodes.push({ node_key: key, kind: "route", path: route.file, label: route.path, metadata: { routeKind: route.kind, methods: route.methods } });
-    edges.push({ from_key: key, to_key: `file:${route.file}`, kind: "routes_to", metadata: {} });
+    edges.push({ from_key: key, to_key: fileKey(route.file), kind: "routes_to", metadata: {} });
   }
   for (const entity of index.databaseEntities) {
-    const key = `database:${entity.kind}:${entity.name}@${entity.file}`;
+    const key = persistentKey(`database:${entity.kind}:${entity.name}@${entity.file}`);
     nodes.push({ node_key: key, kind: "database", path: entity.file, label: entity.name, metadata: { databaseKind: entity.kind } });
-    edges.push({ from_key: key, to_key: `file:${entity.file}`, kind: "depends_on", metadata: {} });
+    edges.push({ from_key: key, to_key: fileKey(entity.file), kind: "depends_on", metadata: {} });
   }
   for (const test of index.tests) for (const target of test.targets) if (knownFiles.has(target)) {
-    edges.push({ from_key: `file:${test.path}`, to_key: `file:${target}`, kind: "tests", metadata: { testKind: test.kind } });
+    edges.push({ from_key: fileKey(test.path), to_key: fileKey(target), kind: "tests", metadata: { testKind: test.kind } });
   }
 
   return {
@@ -68,7 +77,7 @@ export function impactNodePayload(impact: ImpactAnalysis) {
   return impact.affected.map((node) => {
     const item = evidence.get(node.id);
     return {
-      node_key: node.id,
+      node_key: persistentKey(node.id),
       kind: node.kind,
       path: node.path ?? null,
       distance: item?.distance ?? 0,
