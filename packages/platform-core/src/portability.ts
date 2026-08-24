@@ -22,10 +22,16 @@ export interface AgentManifestV1 {
   };
 }
 
+export interface ConfigurationReference {
+  key: string;
+  reference: string;
+  providerType: AgentManifestV1["requiredProviders"][number];
+}
+
 export interface AgentExportBundle {
   manifest: AgentManifestV1;
   createdAt: string;
-  configuration: Record<string, unknown>;
+  configurationReferences: ConfigurationReference[];
   selectedProjectIds?: string[];
   selectedRepositoryIds?: string[];
 }
@@ -49,6 +55,7 @@ export interface ImportValidation {
 export function createAgentExport(input: Omit<AgentExportBundle, "createdAt">): AgentExportBundle {
   if (input.manifest.schemaVersion !== AGENT_MANIFEST_SCHEMA_VERSION) throw new Error("unsupported_agent_manifest_schema");
   if (input.manifest.knowledge.some((item) => item.scope !== "GLOBAL" && item.scope !== "ORGANIZATION")) throw new Error("nonportable_knowledge_scope");
+  if (input.configurationReferences.some((item) => !item.key.trim() || !item.reference.trim())) throw new Error("invalid_configuration_reference");
   return { ...input, createdAt: new Date().toISOString() };
 }
 
