@@ -76,6 +76,8 @@ export class StripeClient {
     setFormValue(form, "client_reference_id", input.organizationId);
     setFormValue(form, "line_items[0][price]", div3rsaMonthlyPriceId);
     setFormValue(form, "line_items[0][quantity]", 1);
+    setFormValue(form, "automatic_tax[enabled]", true);
+    setFormValue(form, "tax_id_collection[enabled]", true);
     setFormValue(form, "success_url", `${input.appOrigin.replace(/\/$/, "")}/billing?checkout=success`);
     setFormValue(form, "cancel_url", `${input.appOrigin.replace(/\/$/, "")}/billing?checkout=canceled`);
     setFormValue(form, "metadata[organization_id]", input.organizationId);
