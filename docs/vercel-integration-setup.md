@@ -11,6 +11,9 @@ Create an External / Connectable Integration in Vercel and configure:
 - URL slug: store as `VERCEL_INTEGRATION_SLUG`
 - Client ID: store as `VERCEL_INTEGRATION_CLIENT_ID`
 - Client secret / Integration Secret: store as `VERCEL_INTEGRATION_CLIENT_SECRET`
+- **Log Drain Settings: Disabled. Do not enable Log Drains for this integration.** DIV3RSA reads deployment/runtime logs on demand and does not need a drain.
+
+If Log Drain Settings were accidentally enabled in the Vercel Integration Console, disable them there. Enabling the setting only makes Log Drain configuration available to the integration user; DIV3RSA must not provision, update, test or delete Vercel drains. The application gateway also rejects Vercel tool names for Log Drain operations as a defense-in-depth control.
 
 Integration webhook requests are verified with the raw request body, `x-vercel-signature`, and the Integration Secret. No customer-specific webhook secret is required.
 
