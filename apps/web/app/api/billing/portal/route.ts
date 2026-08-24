@@ -22,6 +22,11 @@ export async function POST(request: Request) {
   const { data: workspaces } = await supabase.from("workspaces").select("id,organization_id").order("created_at", { ascending: true }).limit(1);
   if (!workspaces?.[0]) return redirectTo(request, "/billing?error=workspace");
 
+  const { data: management, error: managementError } = await supabase.rpc("my_subscription_management_snapshot", {
+    target_workspace_id: workspaces[0].id
+  });
+  if (managementError || !(management as { canManage?: boolean } | null)?.canManage) return redirectTo(request, "/billing?error=admin_required");
+
   const admin = createSupabaseAdminClient();
   const { data: subscription } = await admin
     .from("organization_subscriptions")
