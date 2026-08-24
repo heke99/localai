@@ -125,7 +125,7 @@ export async function findGithubWebhookConnections(installationId: number, sende
   });
 }
 
-export async function resyncGithubConnection(input: { connectionId: string; metadata: Record<string,unknown>; capabilities: string[]; resources: DiscoveredResource[] }) {
+export async function resyncIntegrationConnection(input: { connectionId: string; metadata: Record<string,unknown>; capabilities: string[]; resources: DiscoveredResource[] }) {
   const { error } = await adminRpc().rpc("service_update_integration_connection_discovery", {
     target_connection_id: input.connectionId,
     target_metadata: input.metadata,
@@ -133,6 +133,10 @@ export async function resyncGithubConnection(input: { connectionId: string; meta
   });
   if (error) throw new Error(error.message);
   await syncResources(input.connectionId, input.resources);
+}
+
+export async function resyncGithubConnection(input: { connectionId: string; metadata: Record<string,unknown>; capabilities: string[]; resources: DiscoveredResource[] }) {
+  return resyncIntegrationConnection(input);
 }
 
 export async function readCredential(connectionId: string) {
