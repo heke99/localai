@@ -76,7 +76,8 @@ const rules: Rule[] = [
 const unique = <T>(values: T[]) => [...new Set(values)];
 
 function riskFor(categories: TaskCategory[], prompt: string, mode: AgentMode): TaskRisk {
-  if (mode === "lab" || /production database|service[_ -]?role|credential|secret|billing|payment|authorization|rls|schema migration/i.test(prompt)) return "critical";
+  const databaseDeployment = categories.includes("database") && categories.includes("deployment");
+  if (mode === "lab" || databaseDeployment || /production database|service[_ -]?role|credential|secret|billing|payment|authorization|rls|schema migration/i.test(prompt)) return "critical";
   if (categories.some((category) => ["security", "migration", "deployment"].includes(category))) return "high";
   if (categories.some((category) => ["database", "backend", "architecture", "refactor", "performance"].includes(category))) return "medium";
   return "low";
