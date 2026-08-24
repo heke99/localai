@@ -1,15 +1,18 @@
 # Vercel project authorization
 
-DIV3RSA's Vercel resource connection uses a Vercel External Integration installation, not Sign in with Vercel identity OAuth.
+DIV3RSA's Vercel resource connection uses a Vercel External / Connectable Integration installation, not Sign in with Vercel identity OAuth.
 
 ## Vercel-side configuration
 
 Create an External / Connectable Integration in Vercel and configure:
 
 - Redirect URL: `https://system.div3rsa.com/api/integrations/vercel/callback`
+- Webhook URL: `https://system.div3rsa.com/api/integrations/vercel/webhook`
 - URL slug: store as `VERCEL_INTEGRATION_SLUG`
 - Client ID: store as `VERCEL_INTEGRATION_CLIENT_ID`
-- Client secret: store as `VERCEL_INTEGRATION_CLIENT_SECRET`
+- Client secret / Integration Secret: store as `VERCEL_INTEGRATION_CLIENT_SECRET`
+
+Integration webhook requests are verified with the raw request body, `x-vercel-signature`, and the Integration Secret. No customer-specific webhook secret is required.
 
 Grant only permissions required by implemented DIV3RSA tools:
 
@@ -19,6 +22,38 @@ Grant only permissions required by implemented DIV3RSA tools:
 - Deployment: Read/Write (list/create/rollback deployments and deployment log access)
 
 Do not grant environment-variable or domain write permissions unless corresponding DIV3RSA gateway tools are implemented and reviewed.
+
+## Webhook events
+
+Enable these Integration Console webhook events:
+
+### Deployment
+- `deployment.created`
+- `deployment.build-requested`
+- `deployment.error`
+- `deployment.blocked`
+- `deployment.canceled`
+- `deployment.succeeded`
+- `deployment.promoted`
+- `deployment.rollback`
+- `deployment.ready`
+
+### Project/configuration synchronization
+- `project.env-variable.created`
+- `project.env-variable.updated`
+- `project.env-variable.deleted`
+- `project.created`
+- `project.removed`
+- `project.renamed`
+- `integration-configuration.permission-upgraded`
+- `integration-configuration.scope-change-confirmed`
+- `integration-configuration.transferred`
+- `integration-resource.project-connected`
+- `integration-resource.project-disconnected`
+
+Do not enable domain/certificate, rolling-release, firewall, alert, or checkrun events until DIV3RSA has a reviewed consumer for them.
+
+Deployment events persist only operational metadata such as event ID, project ID, deployment ID, state, target and known Git commit/branch identifiers. Full build/runtime log bodies are not copied into Postgres. The agent uses the authorized Vercel token to fetch current build/runtime logs on demand for the relevant deployment.
 
 ## Expected user flow
 
@@ -30,5 +65,7 @@ Do not grant environment-variable or domain write permissions unless correspondi
 6. DIV3RSA exchanges the code at `https://api.vercel.com/v2/oauth/access_token` for the long-lived installation token.
 7. DIV3RSA validates the installation by listing accessible Vercel projects.
 8. Only if at least one project is readable is the connection stored as usable and its project resources/capabilities exposed.
+9. Vercel sends selected signed platform events to the Integration Console webhook endpoint.
+10. DIV3RSA maps each event to the authorized connection by configuration/team/project, records it idempotently, and resynchronizes project scope after relevant configuration events.
 
 Identity-only callbacks and zero-project installations must never be displayed as a completed Vercel resource connection.
