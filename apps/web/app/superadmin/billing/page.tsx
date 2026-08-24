@@ -41,7 +41,7 @@ export default async function SuperadminBillingPage() {
   return <main className="shell control-shell">
     <nav className="nav control-topbar"><div><span className="brand">DIV3RSA CONTROL</span><span className="control-role">Billing & access</span></div><div className="control-top-actions"><Link className="button" href="/superadmin/manage">Management</Link><Link className="button primary" href="/superadmin">Control center</Link></div></nav>
     <section className="control-content" style={{ maxWidth: 1180, margin: "0 auto" }}>
-      <header className="control-header"><div><p className="eyebrow">Access plans</p><h1>Billing & access</h1><p className="lead">Hantera Paid, Free och tidsbegränsade Trials. Superadmin är alltid undantagen från billing.</p></div></header>
+      <header className="control-header"><div><p className="eyebrow">Access plans</p><h1>Billing & access</h1><p className="lead">Hantera Paid, Free och tidsbegränsade Trials. Paid kostar 2 000 kr/mån exkl. moms och Stripe Tax beräknar tillämplig moms automatiskt. Superadmin är alltid undantagen från billing.</p></div></header>
 
       <section className="control-panel">
         <div className="control-section-head"><div><p className="eyebrow">Organizations</p><h2>Åtkomst per organisation</h2></div><span className="panel-count">{organizations?.length ?? 0}</span></div>
@@ -59,7 +59,7 @@ export default async function SuperadminBillingPage() {
 
               {internal ? <span className="status-badge status-production">billing exempt</span> : <form action={setOrganizationBillingAccess} className="row-actions" style={{ flex: 1, justifyContent: "flex-end", alignItems: "flex-end", flexWrap: "wrap" }}>
                 <input type="hidden" name="organizationId" value={organization.id}/>
-                <label style={{ display: "grid", gap: 5 }}><small>Åtkomst</small><select name="accessMode" defaultValue={subscription?.access_mode ?? "paid"}><option value="paid">Paid · 2 000 kr/mån</option><option value="free">Free</option><option value="trial">Trial</option></select></label>
+                <label style={{ display: "grid", gap: 5 }}><small>Åtkomst</small><select name="accessMode" defaultValue={subscription?.access_mode ?? "paid"}><option value="paid">Paid · 2 000 kr/mån exkl. moms</option><option value="free">Free</option><option value="trial">Trial</option></select></label>
                 <label style={{ display: "grid", gap: 5 }}><small>Trial dagar</small><input name="trialDays" type="number" min={1} max={90} defaultValue={3} style={{ width: 90 }}/></label>
                 <label style={{ display: "grid", gap: 5 }}><small>Trial tokens</small><input name="trialTokenLimit" type="number" min={1000} max={1000000000} step={1000} defaultValue={subscription?.trial_token_limit ?? 100000} style={{ width: 140 }}/></label>
                 <button className="button primary" type="submit">Spara access</button>

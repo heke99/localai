@@ -68,14 +68,14 @@ export default async function BillingPage({ searchParams }: { searchParams: Sear
           {trialExhausted ? <p className="error">Trialens tokenbudget är förbrukad.</p> : null}
         </> : null}
         {paid ? <>
-          <p><strong>2 000 kr/mån</strong>. Abonnemanget förnyas månadsvis via Stripe.</p>
+          <p><strong>2 000 kr/mån exkl. moms.</strong> Stripe beräknar tillämplig moms automatiskt utifrån kundens land och skatteuppgifter. Abonnemanget förnyas månadsvis.</p>
           {access.currentPeriodEnd ? <p>Nästa period: {formatDate(access.currentPeriodEnd)}</p> : null}
           {access.status === "past_due" ? <p className="error">Betalningen kunde inte genomföras. Agentåtkomsten är pausad tills betalningen är löst.</p> : null}
           {access.status === "canceled" ? <p className="error">Abonnemanget är avslutat.</p> : null}
         </> : null}
 
         <div className="actions">
-          {needsPayment ? <form action="/api/billing/checkout" method="post"><button className="button primary" type="submit">Aktivera · 2 000 kr/mån</button></form> : null}
+          {needsPayment ? <form action="/api/billing/checkout" method="post"><button className="button primary" type="submit">Aktivera · 2 000 kr/mån exkl. moms</button></form> : null}
           {paid && access.providerCustomerId ? <form action="/api/billing/portal" method="post"><button className="button" type="submit">Hantera betalning</button></form> : null}
           {access.allowed ? <Link className="button primary" href="/dashboard">Öppna DIV3RSA</Link> : null}
         </div>
