@@ -24,7 +24,7 @@ const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
 export function isForbiddenIntegrationToolName(name: string) {
   const normalized = name.trim().toLowerCase().replace(/[.-]/g, "_");
-  return normalized.startsWith("vercel_") && (normalized.includes("log_drain") || normalized.includes("drains"));
+  return normalized.startsWith("vercel_") && normalized.includes("drain");
 }
 
 export function gatewayToolByName(name: string) {
