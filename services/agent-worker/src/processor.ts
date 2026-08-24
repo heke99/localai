@@ -56,7 +56,7 @@ export interface WorkerToolRuntime {
 type ToolTrace = { sequence: number; name: string; input: Record<string, unknown>; output: unknown };
 
 const mutationTools = new Set([
-  "github_write_file", "github_create_branch", "github_create_pull_request", "github_merge_pull_request", "github_run_action",
+  "github_write_file", "github_merge_pull_request",
   "supabase_write_database", "supabase_apply_migration", "supabase_deploy_function",
   "vercel_create_deployment", "vercel_rollback_deployment"
 ]);
@@ -89,12 +89,13 @@ function projectContext(run: ClaimedRun) {
 
 function expectsMutation(task: TaskAnalysis, run: ClaimedRun) {
   const intent = task.categories.some((category) => mutationIntent.has(category));
-  const writable = run.resourceContext.some((resource) => resource.capabilities.some((capability) => /(?:\.write|\.create|\.apply|\.merge|\.run|\.rollback)$/.test(capability)));
+  const writable = run.resourceContext.some((resource) => resource.capabilities.some((capability) => /(?:\.write|\.apply|\.merge|\.rollback)$/.test(capability) || capability === "vercel.deployments.create"));
   return intent && writable;
 }
 
 function mutationPath(trace: ToolTrace): { path: string; kind: ConsequenceGraph["nodes"][number]["kind"] } | null {
   if (trace.name === "github_write_file") return { path: String(trace.input.path ?? "unknown-file"), kind: "file" };
+  if (trace.name === "github_merge_pull_request") return { path: `pull-request:${String(trace.input.pullNumber ?? "unknown")}`, kind: "workflow" };
   if (trace.name === "supabase_apply_migration") return { path: `supabase/migrations/${String(trace.input.name ?? "migration")}.sql`, kind: "database" };
   if (trace.name === "supabase_write_database") return { path: `database:${String(trace.input.resourceId ?? "unknown")}`, kind: "database" };
   if (trace.name === "supabase_deploy_function") return { path: `edge-function:${String(trace.input.name ?? "unknown")}`, kind: "service" };
@@ -129,11 +130,12 @@ function successfulDeploymentRead(trace: ToolTrace[]) {
 }
 
 function reviewedChangedResources(trace: ToolTrace[]) {
-  const writes = trace.filter((item) => ["github_write_file", "supabase_apply_migration", "supabase_write_database", "vercel_create_deployment", "vercel_rollback_deployment"].includes(item.name));
+  const writes = trace.filter((item) => ["github_write_file", "github_merge_pull_request", "supabase_apply_migration", "supabase_write_database", "vercel_create_deployment", "vercel_rollback_deployment"].includes(item.name));
   if (!writes.length) return true;
   return writes.every((write) => trace.some((candidate) => {
     if (candidate.sequence <= write.sequence) return false;
     if (write.name === "github_write_file") return candidate.name === "github_read_file" && candidate.input.path === write.input.path;
+    if (write.name === "github_merge_pull_request") return candidate.name === "github_read_pull_requests" || candidate.name === "github_read_actions";
     if (write.name.startsWith("supabase_")) return candidate.name === "supabase_read_database" || successfulActions([candidate], /database|verify|test|ci/);
     return candidate.name === "vercel_read_deployments" || candidate.name === "vercel_read_logs";
   }));
