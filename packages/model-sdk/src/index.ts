@@ -48,6 +48,57 @@ export interface ModelAdapter {
   healthCheck(): Promise<ModelHealth>;
 }
 
+export interface StructuredOutputRequest extends GenerateRequest {
+  schema: Record<string, unknown>;
+}
+
+export interface ModelProviderCapabilities {
+  modelId: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  capabilities: ReadonlySet<ModelCapability>;
+  toolCallSupport: boolean;
+  structuredOutputSupport: boolean;
+  reasoningSupport: boolean;
+}
+
+export interface ModelProvider {
+  readonly key: string;
+  generate(request: GenerateRequest): Promise<GenerateResult>;
+  stream(request: GenerateRequest): AsyncIterable<string>;
+  toolCall(request: GenerateRequest): Promise<GenerateResult>;
+  structuredOutput<T>(request: StructuredOutputRequest): Promise<{ value: T; raw: GenerateResult }>;
+  reason(request: GenerateRequest): Promise<GenerateResult>;
+  capabilities(): Promise<ModelProviderCapabilities>;
+  health(): Promise<ModelHealth>;
+}
+
+export function modelProviderFromAdapter(key: string, modelId: string, adapter: ModelAdapter): ModelProvider {
+  return {
+    key,
+    generate: (request) => adapter.generate(request),
+    stream: (request) => adapter.stream(request),
+    toolCall: (request) => adapter.generate(request),
+    async structuredOutput<T>(request) {
+      const raw = await adapter.generate(request);
+      try { return { value: JSON.parse(raw.content) as T, raw }; }
+      catch { throw new Error("structured_output_parse_failed"); }
+    },
+    reason: (request) => adapter.generate(request),
+    async capabilities() {
+      const capabilities = adapter.getCapabilities();
+      return {
+        modelId,
+        capabilities,
+        toolCallSupport: capabilities.has("tool_use"),
+        structuredOutputSupport: capabilities.has("tool_use") || capabilities.has("reasoning"),
+        reasoningSupport: capabilities.has("reasoning")
+      };
+    },
+    health: () => adapter.healthCheck()
+  };
+}
+
 export interface RegisteredModelVersion {
   id: string;
   provider: string;
