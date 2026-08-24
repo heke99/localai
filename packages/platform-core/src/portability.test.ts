@@ -5,7 +5,9 @@ import {
   createAgentExport,
   evaluatePortabilityActivation,
   parseAgentExportBundle,
-  validateAgentImport
+  validateAgentImport,
+  type ImportEnvironment,
+  type PortabilitySelfTestKind
 } from "./portability";
 
 const bundle = createAgentExport({
@@ -25,14 +27,14 @@ const bundle = createAgentExport({
   configurationReferences: [{ key: "git.default", reference: "resource://git/default", providerType: "git" }]
 });
 
-const environment = {
+const environment: ImportEnvironment = {
   platformVersion: "0.1.9",
   runtimeVersion: "0.1.7",
   availableSkills: [{ name: "code-review", version: "1.0.0" }],
   availableTools: ["div3rsa_repository_search"],
   providers: { database: "supabase", git: "github", deployment: "vercel", compute: "gpu", "object-storage": "supabase-storage", "vector-store": "pgvector", model: "model-gateway" },
   modelCapabilities: ["coding", "tools"]
-} as const;
+};
 
 describe("agent portability", () => {
   it("round-trips a strict export bundle", () => {
@@ -47,10 +49,21 @@ describe("agent portability", () => {
     expect(() => parseAgentExportBundle(unsafe)).toThrow("secret_like_reference_rejected");
   });
 
+  it("rejects malformed selected project ids instead of silently dropping them", () => {
+    const invalid = JSON.parse(JSON.stringify(bundle));
+    invalid.selectedProjectIds = ["not-a-uuid"];
+    expect(() => parseAgentExportBundle(invalid)).toThrow("invalid_selected_project_ids");
+  });
+
   it("requires compatible environment and every self-test before activation", () => {
     const validation = validateAgentImport(bundle, environment);
+    const passed = validation.requiredSelfTests.map((kind) => ({
+      kind: kind as PortabilitySelfTestKind,
+      status: "passed" as const,
+      summary: "ok"
+    }));
     expect(validation.compatible).toBe(true);
-    expect(evaluatePortabilityActivation(validation, validation.requiredSelfTests.map((kind) => ({ kind: kind as never, status: "passed" as const, summary: "ok" }))).toEqual({ ready: true, blockers: [] });
+    expect(evaluatePortabilityActivation(validation, passed)).toEqual({ ready: true, blockers: [] });
     expect(evaluatePortabilityActivation(validation, [])).toEqual(expect.objectContaining({ ready: false }));
   });
 
