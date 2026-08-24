@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { createSupabaseServerClient } from "../../../../lib/supabase/server";
-import { grantAccess, reviewAccessRequest } from "../../actions";
 
 type AccessRequest = {
   id: string;
@@ -21,6 +20,8 @@ type AccessRequest = {
   workspace_id: string | null;
 };
 
+type SearchParams = Promise<{ updated?: string; error?: string }>;
+
 function formatDate(value?: string | null) {
   if (!value) return "—";
   const date = new Date(value);
@@ -32,8 +33,23 @@ function valueOrDash(value?: string | null) {
   return value?.trim() || "—";
 }
 
-export default async function SuperadminApplicationDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+function feedback(updated?: string, error?: string) {
+  if (error) return { kind: "error", text: "Åtgärden kunde inte slutföras. Kontrollera statusen och försök igen." };
+  if (updated === "reviewing") return { kind: "success", text: "Ansökan är markerad som under granskning." };
+  if (updated === "rejected") return { kind: "success", text: "Ansökan är avslagen." };
+  if (updated === "approved") return { kind: "success", text: "Kunden är godkänd och inbjudan har skickats." };
+  if (updated === "already-approved") return { kind: "success", text: "Kunden var redan godkänd. Ingen dubbel provisionering gjordes." };
+  return null;
+}
+
+export default async function SuperadminApplicationDetailPage({
+  params,
+  searchParams
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: SearchParams;
+}) {
+  const [{ id }, query] = await Promise.all([params, searchParams]);
   if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
 
   const supabase = await createSupabaseServerClient();
@@ -54,6 +70,7 @@ export default async function SuperadminApplicationDetailPage({ params }: { para
   if (!data) notFound();
   const request = data as AccessRequest;
   const finished = Boolean(request.onboarding_completed_at);
+  const notice = feedback(query.updated, query.error);
 
   return <main className="shell control-shell">
     <nav className="nav control-topbar">
@@ -73,6 +90,11 @@ export default async function SuperadminApplicationDetailPage({ params }: { para
         </div>
         <span className={`status-badge status-${finished ? "active" : request.status}`}>{finished ? "active" : request.status}</span>
       </header>
+
+      {notice ? <div className="card" role="status">
+        <strong>{notice.kind === "error" ? "Åtgärden misslyckades" : "Status uppdaterad"}</strong>
+        <p>{notice.text}</p>
+      </div> : null}
 
       <section className="control-panel">
         <div className="control-section-head"><div><p className="eyebrow">Applicant</p><h2>Kontakt & organisation</h2></div></div>
@@ -106,11 +128,15 @@ export default async function SuperadminApplicationDetailPage({ params }: { para
           </div>
         </div>
 
-        {!finished && request.status !== "approved" && request.status !== "rejected" ? <form className="row-actions" style={{ marginTop: 18 }}>
-          <input type="hidden" name="requestId" value={request.id}/>
-          {request.status === "pending" ? <button formAction={reviewAccessRequest} name="decision" value="reviewing" className="button">Markera under granskning</button> : null}
-          <button formAction={grantAccess} className="button primary">Godkänn & ge åtkomst</button>
-          <button formAction={reviewAccessRequest} name="decision" value="rejected" className="button danger">Avslå</button>
+        {!finished && request.status !== "approved" && request.status !== "rejected" ? <form
+          className="row-actions"
+          style={{ marginTop: 18 }}
+          action={`/api/superadmin/access-requests/${request.id}`}
+          method="post"
+        >
+          {request.status === "pending" ? <button name="action" value="reviewing" className="button">Markera under granskning</button> : null}
+          <button name="action" value="approve" className="button primary">Godkänn & ge åtkomst</button>
+          <button name="action" value="rejected" className="button danger">Avslå</button>
         </form> : null}
       </section>
 
