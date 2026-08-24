@@ -10,3 +10,8 @@ test("Vercel connect route requires an authenticated workspace session", async (
   expect(response.status()).toBe(303);
   expect(response.headers().location).toContain("/sign-in");
 });
+
+test("Vercel Integration Console webhook route is deployed and POST-only", async ({ request }) => {
+  const response = await request.get("/api/integrations/vercel/webhook", { maxRedirects: 0 });
+  expect(response.status()).toBe(405);
+});
