@@ -51,6 +51,13 @@ export async function GET(request: Request, context: { params: Promise<{ provide
       configurationId: requestUrl.searchParams.get("configurationId"),
       source: requestUrl.searchParams.get("source")
     } : {});
+
+    // A Vercel account identity without an installed project scope is not a
+    // usable resource integration. Never persist it as connected.
+    if (rawProvider === "vercel" && discovered.resources.length === 0) {
+      throw new Error("vercel_no_projects_authorized");
+    }
+
     const completed = await completeOAuthConnection({
       oauthSessionId,
       provider: rawProvider,
