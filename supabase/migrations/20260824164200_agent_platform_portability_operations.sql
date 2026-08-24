@@ -90,7 +90,13 @@ create or replace function public.superadmin_record_platform_export(
 as $$ declare created_id uuid;
 begin
   if not internal.is_superadmin_email_verified() then raise exception 'superadmin_step_up_required' using errcode='42501'; end if;
-  if target_bundle_hash !~ '^[a-f0-9]{64}$' or coalesce((target_manifest->>'schemaVersion')::integer,0) <> 1 then raise exception 'invalid_portability_export'; end if;
+  if target_bundle_hash !~ '^[a-f0-9]{64}$'
+     or jsonb_typeof(coalesce(target_manifest,'null'::jsonb)) <> 'object'
+     or target_manifest->>'schemaVersion' <> '1'
+     or nullif(trim(target_manifest->>'platformVersion'),'') is null
+     or nullif(trim(target_manifest->>'runtimeVersion'),'') is null then
+    raise exception 'invalid_portability_export';
+  end if;
   if jsonb_typeof(coalesce(target_configuration_references,'[]'::jsonb)) <> 'array' then raise exception 'invalid_configuration_references'; end if;
   insert into internal.agent_platform_exports(created_by,bundle_hash,schema_version,platform_version,runtime_version,manifest,configuration_references,selected_project_ids,selected_repository_ids)
   values(auth.uid(),target_bundle_hash,1,target_manifest->>'platformVersion',target_manifest->>'runtimeVersion',target_manifest,coalesce(target_configuration_references,'[]'::jsonb),coalesce(target_selected_project_ids,'{}'),coalesce(target_selected_repository_ids,'{}'))
@@ -110,12 +116,22 @@ as $$
 declare created_id uuid; target_status text; required_test text; all_tests_passed boolean := true;
 begin
   if not internal.is_superadmin_email_verified() then raise exception 'superadmin_step_up_required' using errcode='42501'; end if;
-  if target_bundle_hash !~ '^[a-f0-9]{64}$' or coalesce((target_manifest->>'schemaVersion')::integer,0) <> 1 then raise exception 'invalid_portability_import'; end if;
-  if jsonb_typeof(coalesce(target_validation,'{}'::jsonb)) <> 'object' or jsonb_typeof(coalesce(target_self_tests,'[]'::jsonb)) <> 'array' then raise exception 'invalid_portability_evidence'; end if;
+  if target_bundle_hash !~ '^[a-f0-9]{64}$'
+     or jsonb_typeof(coalesce(target_manifest,'null'::jsonb)) <> 'object'
+     or target_manifest->>'schemaVersion' <> '1'
+     or nullif(trim(target_manifest->>'platformVersion'),'') is null
+     or nullif(trim(target_manifest->>'runtimeVersion'),'') is null then
+    raise exception 'invalid_portability_import';
+  end if;
+  if jsonb_typeof(coalesce(target_configuration_references,'[]'::jsonb)) <> 'array'
+     or jsonb_typeof(coalesce(target_validation,'{}'::jsonb)) <> 'object'
+     or jsonb_typeof(coalesce(target_self_tests,'[]'::jsonb)) <> 'array' then
+    raise exception 'invalid_portability_evidence';
+  end if;
   foreach required_test in array array['provider-health','model-health','tool-contracts','skill-resolution','baseline-evals','portability-eval'] loop
     if not exists(select 1 from jsonb_array_elements(coalesce(target_self_tests,'[]'::jsonb)) item where item->>'kind'=required_test and item->>'status'='passed') then all_tests_passed := false; end if;
   end loop;
-  target_status := case when coalesce((target_validation->>'compatible')::boolean,false) and all_tests_passed then 'ready' else 'blocked' end;
+  target_status := case when target_validation->>'compatible'='true' and all_tests_passed then 'ready' else 'blocked' end;
   insert into internal.agent_platform_imports(created_by,bundle_hash,schema_version,platform_version,runtime_version,manifest,configuration_references,selected_project_ids,selected_repository_ids,validation,self_tests,status)
   values(auth.uid(),target_bundle_hash,1,target_manifest->>'platformVersion',target_manifest->>'runtimeVersion',target_manifest,coalesce(target_configuration_references,'[]'::jsonb),coalesce(target_selected_project_ids,'{}'),coalesce(target_selected_repository_ids,'{}'),target_validation,target_self_tests,target_status)
   returning id into created_id;
@@ -144,13 +160,12 @@ revoke all on function public.superadmin_activate_platform_import(uuid) from pub
 grant execute on function public.superadmin_activate_platform_import(uuid) to authenticated;
 
 create or replace function public.superadmin_platform_import_status(target_import_id uuid)
-returns jsonb language sql stable security definer set search_path=''
+returns jsonb language plpgsql stable security definer set search_path=''
 as $$
-  select case when internal.is_superadmin_email_verified() then (
-    select jsonb_build_object('id',i.id,'bundle_hash',i.bundle_hash,'status',i.status,'validation',i.validation,'self_tests',i.self_tests,'created_at',i.created_at,'activated_at',i.activated_at)
-    from internal.agent_platform_imports i where i.id=target_import_id
-  ) else null end
-$$;
+begin
+  if not internal.is_superadmin_email_verified() then raise exception 'superadmin_step_up_required' using errcode='42501'; end if;
+  return (select jsonb_build_object('id',i.id,'bundle_hash',i.bundle_hash,'status',i.status,'validation',i.validation,'self_tests',i.self_tests,'created_at',i.created_at,'activated_at',i.activated_at) from internal.agent_platform_imports i where i.id=target_import_id);
+end $$;
 revoke all on function public.superadmin_platform_import_status(uuid) from public,anon;
 grant execute on function public.superadmin_platform_import_status(uuid) to authenticated;
 
