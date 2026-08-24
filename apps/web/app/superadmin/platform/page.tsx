@@ -16,16 +16,25 @@ type Snapshot = {
   runs?: Array<{ id: string; mode: string; status: string; failure_code: string | null; active_skill: string | null; created_at: string }>;
 };
 
-const architecture = [
-  { name: "Task intelligence", detail: "Intent, category, risk, complexity, affected domains and verification requirements", state: "enabled" },
-  { name: "Dynamic skill routing", detail: "Mode + task signals + dependency resolution; only relevant skills are loaded", state: "enabled" },
-  { name: "Repository intelligence", detail: "Project profile, symbols, imports, routes/API, DB/RLS/RPC, tests and incremental indexing", state: "enabled" },
-  { name: "Consequence engine", detail: "Changed nodes, callers, dependencies, transitive impact, risk and affected-test selection", state: "enabled" },
-  { name: "Verification gate", detail: "Evidence-backed checks; mutation runs cannot complete when mandatory verification is blocked", state: "enabled" },
-  { name: "Independent reviewer", detail: "Verifier model gets separate context and can reject unsupported completion claims", state: "enabled" },
-  { name: "Provider abstraction", detail: "Model, compute, database, Git, deployment, object storage and vector store are contract-driven", state: "enabled" },
-  { name: "Portable export / import", detail: "Versioned manifest, provider/tool/skill resolution, self-tests and explicit project-data selection", state: "enabled" }
-] as const;
+type Readiness = "ready" | "foundation";
+const architecture: Array<{ name: string; detail: string; state: Readiness }> = [
+  { name: "Task intelligence", detail: "Intent, category, risk, complexity, affected domains and verification requirements are computed before execution.", state: "ready" },
+  { name: "Dynamic skill routing", detail: "Mode, prompt signals and skill dependencies select a minimal approved skill set at runtime.", state: "ready" },
+  { name: "Repository intelligence", detail: "Project profile, files, symbols, imports, Next routes/API, SQL entities, tests and incremental re-indexing are implemented. AST/LSP adapters remain a deeper indexing layer.", state: "foundation" },
+  { name: "Consequence engine", detail: "Portable graph traversal supports callers, dependencies, transitive impact, risk and test selection. Production worker currently starts from observed mutations until the persisted repo graph is wired into each run.", state: "foundation" },
+  { name: "Verification gate", detail: "Observed mutations require evidence-backed checks. Required checks that are failed, missing or blocked deny completion.", state: "ready" },
+  { name: "Independent reviewer", detail: "Medium/high-risk mutation runs can be reviewed through the separate verifier model route before completion.", state: "ready" },
+  { name: "Provider abstraction", detail: "Model, compute, database, Git, deployment, object storage and vector store expose provider-neutral contracts.", state: "ready" },
+  { name: "Portable export / import", detail: "Versioned manifest, skill/tool/provider compatibility and project-data isolation are defined. Operational export/import API, self-test runner and migration workflow remain to be wired.", state: "foundation" }
+];
+
+const remainingFoundation = [
+  "Wire persisted repository graph into worker consequence analysis instead of mutation-only seed graphs.",
+  "Add AST/LSP-backed symbol/call indexing adapters and richer route/database/test edges.",
+  "Expose operational export/import endpoints and execute portability self-tests/evals.",
+  "Add sandbox terminal/tool-runner verification so lint, typecheck, tests and Playwright can run directly rather than relying on CI evidence.",
+  "Add verification-driven remediation loops so a failed gate can diagnose, change strategy and retry before the run is finally blocked."
+];
 
 function formatDate(value?: string | null) {
   if (!value) return "—";
@@ -49,6 +58,7 @@ export default async function AgentPlatformPage() {
   const activeSkills = snapshot.skills?.filter((skill) => skill.status === "production" || skill.status === "verified") ?? [];
   const failedJobs = snapshot.jobs?.filter((job) => job.status === "failed") ?? [];
   const failedRuns = snapshot.runs?.filter((run) => run.status === "failed") ?? [];
+  const readyComponents = architecture.filter((component) => component.state === "ready").length;
   const liveState = activeModel && readyWorkers.length ? "ready" : activeModel ? "waiting" : "blocked";
 
   return <main className="shell control-shell">
@@ -59,12 +69,12 @@ export default async function AgentPlatformPage() {
 
     <div className="control-content" style={{ maxWidth: 1320, margin: "0 auto", width: "100%" }}>
       <header className="control-header" id="overview">
-        <div><p className="eyebrow">Portable agent engine</p><h1>Agent Platform</h1><p className="lead">Runtime intelligence lives above products and providers. This view separates architecture readiness from live model/GPU/queue health so a configured component is never confused with a healthy deployment.</p></div>
-        <div className="control-health"><span className={`health-dot ${liveState === "ready" ? "ready" : "waiting"}`} /><div><strong>{liveState === "ready" ? "Runtime ready" : activeModel ? "Model routed · compute waiting" : "Model route missing"}</strong><small>{activeModel?.version_key ?? "No general-prod model"} · {readyWorkers.length} ready worker(s)</small></div></div>
+        <div><p className="eyebrow">Portable agent engine</p><h1>Agent Platform</h1><p className="lead">Runtime intelligence lives above products and providers. Readiness below is intentionally split between production-ready contracts and foundations that still need deeper runtime wiring.</p></div>
+        <div className="control-health"><span className={`health-dot ${liveState === "ready" ? "ready" : "waiting"}`} /><div><strong>{liveState === "ready" ? "Inference runtime online" : activeModel ? "Model routed · compute waiting" : "Model route missing"}</strong><small>{activeModel?.version_key ?? "No general-prod model"} · {readyWorkers.length} ready worker(s)</small></div></div>
       </header>
 
       <div className="control-metrics">
-        <article><span>Platform engines</span><strong>{architecture.length}</strong><small>portable core capabilities</small></article>
+        <article><span>Core readiness</span><strong>{readyComponents}/{architecture.length}</strong><small>{architecture.length - readyComponents} foundation layer(s)</small></article>
         <article><span>Model route</span><strong>{activeModel ? "OK" : "—"}</strong><small>{activeModel?.version_key ?? "not configured"}</small></article>
         <article><span>Compute</span><strong>{readyWorkers.length}</strong><small>ready GPU workers</small></article>
         <article><span>Skills</span><strong>{activeSkills.length}</strong><small>{snapshot.skills?.length ?? 0} registered</small></article>
@@ -73,8 +83,13 @@ export default async function AgentPlatformPage() {
       </div>
 
       <section className="control-panel">
-        <div className="control-section-head"><div><p className="eyebrow">Architecture</p><h2>Portable intelligence layers</h2></div><span className="panel-count">{architecture.length}/{architecture.length}</span></div>
-        <div className="provider-grid">{architecture.map((component) => <article key={component.name}><div><strong>{component.name}</strong><span className="status-badge status-production">{component.state}</span></div><p>{component.detail}</p></article>)}</div>
+        <div className="control-section-head"><div><p className="eyebrow">Architecture</p><h2>Portable intelligence layers</h2></div><span className="panel-count">{readyComponents} ready</span></div>
+        <div className="provider-grid">{architecture.map((component) => <article key={component.name}><div><strong>{component.name}</strong><span className={`status-badge ${component.state === "ready" ? "status-production" : "status-pending"}`}>{component.state}</span></div><p>{component.detail}</p></article>)}</div>
+      </section>
+
+      <section className="control-panel">
+        <div className="control-section-head"><div><p className="eyebrow">Foundation gaps</p><h2>Still required for full master-prompt completion</h2></div><span className="panel-count">{remainingFoundation.length}</span></div>
+        <div className="compact-list">{remainingFoundation.map((item, index) => <div className="compact-row" key={item}><div><strong>{String(index + 1).padStart(2, "0")}</strong><small>{item}</small></div><span className="status-badge status-pending">open</span></div>)}</div>
       </section>
 
       <section className="control-panel">
