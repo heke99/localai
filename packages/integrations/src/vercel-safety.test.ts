@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { gatewayToolByName, isForbiddenIntegrationToolName } from "../../../apps/web/lib/integrations/tool-catalog";
 
 describe("Vercel integration tool safety", () => {
-  it("rejects log drain tool names even if a future catalog entry is introduced", () => {
+  it("rejects drain tool names even if a future catalog entry is introduced", () => {
     expect(isForbiddenIntegrationToolName("vercel_create_log_drain")).toBe(true);
+    expect(isForbiddenIntegrationToolName("vercel_drain_create")).toBe(true);
     expect(isForbiddenIntegrationToolName("vercel.drains.create")).toBe(true);
     expect(isForbiddenIntegrationToolName("vercel-log-drain-delete")).toBe(true);
     expect(gatewayToolByName("vercel_create_log_drain")).toBeNull();
