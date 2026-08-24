@@ -102,6 +102,24 @@ export class StripeClient {
     return session;
   }
 
+  async pauseSubscription(subscriptionId: string) {
+    const form = new URLSearchParams();
+    setFormValue(form, "pause_collection[behavior]", "void");
+    return this.post<StripeObject>(`/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, form);
+  }
+
+  async resumeSubscription(subscriptionId: string) {
+    const form = new URLSearchParams();
+    setFormValue(form, "pause_collection", "");
+    return this.post<StripeObject>(`/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, form);
+  }
+
+  async setCancelAtPeriodEnd(subscriptionId: string, enabled: boolean) {
+    const form = new URLSearchParams();
+    setFormValue(form, "cancel_at_period_end", enabled);
+    return this.post<StripeObject>(`/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, form);
+  }
+
   async cancelSubscription(subscriptionId: string) {
     return this.request<StripeObject>("DELETE", `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`);
   }
