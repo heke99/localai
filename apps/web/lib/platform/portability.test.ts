@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { parseAgentExportBundle } from "@div3rsa/platform-core";
+import { extractPortabilityBundle } from "./portability-artifact";
 import { buildLiveAgentExport, portabilityHash, runPortabilitySelfTests, type PortabilitySource } from "./portability";
 
 const source: PortabilitySource = {
@@ -18,6 +20,12 @@ describe("web portability service", () => {
     expect(bundle.manifest.knowledge).toHaveLength(1);
     expect(JSON.stringify(bundle)).not.toContain("token/private");
     expect(portabilityHash(bundle)).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("accepts the downloaded v1 export envelope as the next import artifact", () => {
+    const bundle = buildLiveAgentExport(source);
+    const envelope = { apiVersion: "v1", requestId: "request", data: { bundleHash: portabilityHash(bundle), bundle } };
+    expect(parseAgentExportBundle(extractPortabilityBundle(envelope))).toEqual(bundle);
   });
 
   it("allows activation only with health and baseline eval evidence", () => {
