@@ -23,6 +23,12 @@ type PlatformSnapshot = {
   skills?: Array<{ run_id: string; skill_key: string; activation_order: number; status: string; created_at: string }>;
 };
 
+type PortabilitySnapshot = {
+  recent_imports?: Array<{ id: string; bundle_hash: string; status: string; created_at: string; activated_at: string | null }>;
+  recent_exports?: Array<{ id: string; bundle_hash: string; created_at: string }>;
+};
+type RpcClient = { rpc: <T = unknown>(name: string, args?: Record<string, unknown>) => Promise<{ data: T | null; error: { message: string } | null }> };
+
 type Readiness = "ready" | "foundation";
 const architecture: Array<{ name: string; detail: string; state: Readiness }> = [
   { name: "Task intelligence", detail: "Intent, risk, complexity, domains and required verification are computed and persisted before execution.", state: "ready" },
@@ -33,12 +39,11 @@ const architecture: Array<{ name: string; detail: string; state: Readiness }> = 
   { name: "Completion gate", detail: "Completion is denied until mandatory checks pass with fresh evidence tied to the post-change state.", state: "ready" },
   { name: "Remediation loop", detail: "Verification blockers are returned to the agent for strategy changes and bounded retries before final failure.", state: "ready" },
   { name: "Persistent audit trail", detail: "Task analysis, skills, graph metadata, impact and every verification round are stored before a run may complete.", state: "ready" },
-  { name: "Portable export / import", detail: "Versioned portability contracts exist; operational export/import endpoints and portability self-tests are still pending.", state: "foundation" }
+  { name: "Portable export / import", detail: "Strict versioned bundles, compatibility validation, staged imports, six required self-tests and gated activation are operational through stable v1 APIs.", state: "ready" }
 ];
 
 const remainingFoundation = [
   "Add AST/LSP-backed symbol and call-graph adapters for deeper language-aware indexing.",
-  "Expose operational export/import endpoints and run portability self-tests/evals after a move.",
   "Reuse compatible persisted repository indexes across runs to reduce re-index cost without weakening exact-revision guarantees."
 ];
 
@@ -49,7 +54,7 @@ function formatDate(value?: string | null) {
 }
 
 function shortSha(value?: string | null) { return value ? value.slice(0, 10) : "—"; }
-function statusClass(status: string) { return status === "passed" || status === "ready" || status === "completed" || status === "production" ? "status-production" : status === "failed" || status === "blocked" ? "status-failed" : "status-pending"; }
+function statusClass(status: string) { return status === "passed" || status === "ready" || status === "completed" || status === "production" || status === "activated" ? "status-production" : status === "failed" || status === "blocked" ? "status-failed" : "status-pending"; }
 
 export default async function AgentPlatformPage() {
   const supabase = await createSupabaseServerClient();
@@ -59,14 +64,18 @@ export default async function AgentPlatformPage() {
   const { data: stepUp, error: stepUpError } = await supabase.rpc("superadmin_email_step_up_status");
   if (stepUpError || !(stepUp as { verified?: boolean } | null)?.verified) redirect("/verify-email");
 
-  const [controlResult, platformResult] = await Promise.all([
+  const rpc = supabase as unknown as RpcClient;
+  const [controlResult, platformResult, portabilityResult] = await Promise.all([
     supabase.rpc("superadmin_control_snapshot"),
-    supabase.rpc("superadmin_agent_platform_snapshot")
+    supabase.rpc("superadmin_agent_platform_snapshot"),
+    rpc.rpc<PortabilitySnapshot>("superadmin_portability_source")
   ]);
   if (controlResult.error) throw new Error(controlResult.error.message);
   if (platformResult.error) throw new Error(platformResult.error.message);
+  if (portabilityResult.error) throw new Error(portabilityResult.error.message);
   const snapshot = (controlResult.data ?? {}) as Snapshot;
   const platform = (platformResult.data ?? {}) as PlatformSnapshot;
+  const portability = portabilityResult.data ?? {};
   const activeModel = snapshot.model_aliases?.find((item) => item.alias === "general-prod");
   const readyWorkers = snapshot.gpu_workers?.filter((worker) => worker.state === "ready") ?? [];
   const activeSkills = snapshot.skills?.filter((skill) => skill.status === "production" || skill.status === "verified") ?? [];
@@ -86,7 +95,7 @@ export default async function AgentPlatformPage() {
 
     <div className="control-content" style={{ maxWidth: 1320, margin: "0 auto", width: "100%" }}>
       <header className="control-header" id="overview">
-        <div><p className="eyebrow">Portable agent engine</p><h1>Agent Platform</h1><p className="lead">Superadmin can inspect the complete decision chain for each run: task classification, selected skills, exact repository revisions, consequence impact and evidence-backed completion checks.</p></div>
+        <div><p className="eyebrow">Portable agent engine</p><h1>Agent Platform</h1><p className="lead">Superadmin can inspect the complete decision chain for each run and move the agent profile between compatible environments without exporting credentials or silently activating an unverified target.</p></div>
         <div className="control-health"><span className={`health-dot ${liveState === "ready" ? "ready" : "waiting"}`} /><div><strong>{liveState === "ready" ? "Inference runtime online" : activeModel ? "Model routed · compute waiting" : "Model route missing"}</strong><small>{activeModel?.version_key ?? "No general-prod model"} · {readyWorkers.length} ready worker(s)</small></div></div>
       </header>
 
@@ -95,13 +104,26 @@ export default async function AgentPlatformPage() {
         <article><span>Tracked runs</span><strong>{platform.counts?.tracked_runs ?? 0}</strong><small>persistent intelligence traces</small></article>
         <article><span>Repo indexes</span><strong>{platform.counts?.repository_indexes ?? 0}</strong><small>baseline + post-change</small></article>
         <article><span>Verification</span><strong>{passRate === null ? "—" : `${passRate}%`}</strong><small>{verificationPassed}/{verificationTotal} passed rounds</small></article>
-        <article><span>Impact analyses</span><strong>{platform.counts?.impact_analyses ?? 0}</strong><small>consequence snapshots</small></article>
+        <article><span>Imports</span><strong>{portability.recent_imports?.length ?? 0}</strong><small>recent portability stages</small></article>
         <article><span>Failures</span><strong>{failedJobs.length + failedRuns.length}</strong><small>recent jobs + runs</small></article>
       </div>
 
       <section className="control-panel">
         <div className="control-section-head"><div><p className="eyebrow">Architecture</p><h2>Portable intelligence layers</h2></div><span className="panel-count">{readyComponents} ready</span></div>
         <div className="provider-grid">{architecture.map((component) => <article key={component.name}><div><strong>{component.name}</strong><span className={`status-badge ${component.state === "ready" ? "status-production" : "status-pending"}`}>{component.state}</span></div><p>{component.detail}</p></article>)}</div>
+      </section>
+
+      <section className="control-panel">
+        <div className="control-section-head"><div><p className="eyebrow">Portability</p><h2>Export, validate, stage & activate</h2></div><a className="button primary" href="/api/v1/platform/export">Export portable bundle</a></div>
+        <div className="provider-grid">
+          <article><div><strong>Export contract</strong><span className="status-badge status-production">v1</span></div><p>Includes runtime/model references, skills with hashes, provider/tool contracts, approved global/organization knowledge references and eval profile. Secrets and raw project data are excluded.</p></article>
+          <article><div><strong>Import gate</strong><span className="status-badge status-production">fail closed</span></div><p>Compatibility plus provider-health, model-health, tool-contracts, skill-resolution, baseline-evals and portability round-trip must pass before activation.</p></article>
+        </div>
+        <div className="control-split" style={{ marginTop: 18 }}>
+          <div><h3>Recent imports</h3>{portability.recent_imports?.length ? <div className="compact-list">{portability.recent_imports.slice(0, 10).map((item) => <div className="compact-row" key={item.id}><div><strong>{item.bundle_hash.slice(0, 12)}</strong><small>{formatDate(item.created_at)}{item.activated_at ? ` · activated ${formatDate(item.activated_at)}` : ""}</small></div><span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span></div>)}</div> : <p className="empty-state">No staged imports yet.</p>}</div>
+          <div><h3>Recent exports</h3>{portability.recent_exports?.length ? <div className="compact-list">{portability.recent_exports.slice(0, 10).map((item) => <div className="compact-row" key={item.id}><div><strong>{item.bundle_hash.slice(0, 12)}</strong><small>{formatDate(item.created_at)}</small></div><span className="status-badge status-production">exported</span></div>)}</div> : <p className="empty-state">No portability bundles exported yet.</p>}</div>
+        </div>
+        <p className="empty-state">Stable API: <code>/api/v1/platform/import/validate</code> → <code>/api/v1/platform/import</code> → <code>/api/v1/platform/imports/{`{importId}`}/activate</code>.</p>
       </section>
 
       <section className="control-panel">
