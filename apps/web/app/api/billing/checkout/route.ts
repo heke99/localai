@@ -23,6 +23,11 @@ export async function POST(request: Request) {
   if (workspaceError || !workspaces?.[0]) return redirectTo(request, "/billing?error=workspace");
   const workspace = workspaces[0];
 
+  const { data: management, error: managementError } = await supabase.rpc("my_subscription_management_snapshot", {
+    target_workspace_id: workspace.id
+  });
+  if (managementError || !(management as { canManage?: boolean } | null)?.canManage) return redirectTo(request, "/billing?error=admin_required");
+
   const admin = createSupabaseAdminClient();
   const { data: subscription, error: subscriptionError } = await admin
     .from("organization_subscriptions")
@@ -31,7 +36,7 @@ export async function POST(request: Request) {
     .maybeSingle();
   if (subscriptionError || !subscription) return redirectTo(request, "/billing?error=subscription");
   if (subscription.access_mode !== "paid") return redirectTo(request, "/billing?error=admin_required");
-  if (["active", "trialing"].includes(subscription.status)) return redirectTo(request, "/dashboard");
+  if (["active", "trialing", "paused"].includes(subscription.status)) return redirectTo(request, "/billing");
 
   try {
     const session = await StripeClient.fromEnv().createSubscriptionCheckout({
