@@ -39,6 +39,8 @@ export function IntegrationIdentityDetails({ connection, resources }: { connecti
   const identity = record(metadata.identity) ?? {};
   const account = record(identity.account);
   const projectAccess = text(metadata.projectAccess);
+  const accessModel = text(metadata.accessModel);
+  const configurationId = text(metadata.callbackConfigurationId);
   const accountLabel = text(connection.external_account_name)
     || text(account?.name)
     || text(account?.email)
@@ -66,11 +68,17 @@ export function IntegrationIdentityDetails({ connection, resources }: { connecti
       ];
     })
   ]);
+  const vercelInstallationReady = connection.provider !== "vercel" || (
+    accessModel === "vercel_integration_installation"
+    && Boolean(configurationId)
+    && projectAccess === "granted"
+    && scoped.length > 0
+  );
 
   return <div aria-label="Ansluten identitet">
     <small>Konto: {accountLabel}</small><br />
     <small>Team/organisation: {scopeLabels.length ? scopeLabels.join(", ") : "Ingen scope rapporterad"}</small><br />
-    <small>Åtkomst: {scoped.length} {scoped.length === 1 ? "resurs" : "resurser"}</small>
-    {connection.provider === "vercel" && projectAccess === "installation_required" ? <><br /><small>Projektåtkomst: Vercel App-behörighet krävs för projekt och deployments.</small></> : null}
+    <small>Åtkomst: {scoped.length} {connection.provider === "vercel" ? (scoped.length === 1 ? "projekt" : "projekt") : (scoped.length === 1 ? "resurs" : "resurser")}</small>
+    {connection.provider === "vercel" && !vercelInstallationReady ? <><br /><small>Projektåtkomst saknas. Installera DIV3RSA i Vercel och välj team/projekt som får delas.</small></> : null}
   </div>;
 }
