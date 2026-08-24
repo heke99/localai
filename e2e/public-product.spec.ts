@@ -18,3 +18,16 @@ test("request access form exposes the intended fields", async ({ page }) => {
   await expect(page.getByLabel("E-post")).toBeVisible();
   await expect(page.getByRole("button", { name: "Skicka ansökan" })).toBeVisible();
 });
+
+test("superadmin application mutation route exists and requires authentication", async ({ request }) => {
+  const response = await request.post(
+    "/api/superadmin/access-requests/00000000-0000-4000-8000-000000000000",
+    {
+      form: { action: "approve" },
+      maxRedirects: 0
+    }
+  );
+
+  expect(response.status()).toBe(303);
+  expect(response.headers().location).toContain("/sign-in");
+});
