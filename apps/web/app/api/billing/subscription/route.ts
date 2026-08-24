@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { StripeClient } from "../../../../../lib/billing/stripe";
-import { createSupabaseAdminClient } from "../../../../../lib/supabase/admin";
-import { createSupabaseServerClient } from "../../../../../lib/supabase/server";
+import { StripeClient } from "../../../../lib/billing/stripe";
+import { createSupabaseAdminClient } from "../../../../lib/supabase/admin";
+import { createSupabaseServerClient } from "../../../../lib/supabase/server";
 
 type SubscriptionAction = "pause" | "resume" | "cancel" | "disable_auto_renew" | "reactivate";
 type RequestResult = {
