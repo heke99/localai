@@ -8,7 +8,7 @@ interface GitBlobResponse { content?: string; encoding?: string; size?: number }
 
 const excludedPath = /(^|\/)(?:\.git|node_modules|vendor|dist|build|\.next)(\/|$)|(^|\/)(?:\.env(?:\.|$)|[^/]+\.(?:pem|key|p12|pfx))$/i;
 const binaryPath = /\.(?:png|jpe?g|gif|webp|ico|pdf|zip|gz|tgz|7z|rar|wasm|woff2?|ttf|otf|mp[34]|mov|avi|mkv)$/i;
-const MAX_FILE_BYTES = 750_000;
+const MAX_FILE_BYTES = 500_000;
 
 function githubHeaders(token: string): HeadersInit {
   return { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
@@ -69,7 +69,7 @@ export async function executeGithubRepositorySnapshot(args: Record<string, unkno
   const ref = typeof args.ref === "string" && args.ref.trim() ? args.ref.trim() : defaultBranch;
   const cursor = Math.max(0, Number.isInteger(Number(args.cursor)) ? Number(args.cursor) : 0);
   const requestedBytes = Number(args.maxBytes);
-  const maxBytes = Number.isFinite(requestedBytes) ? Math.min(900_000, Math.max(250_000, Math.floor(requestedBytes))) : 800_000;
+  const maxBytes = Number.isFinite(requestedBytes) ? Math.min(550_000, Math.max(200_000, Math.floor(requestedBytes))) : 500_000;
   const commitSha = await resolveCommitSha(token, repoPath, ref);
   const commit = await githubApi<{ tree?: { sha?: string } }>(token, `${repoPath}/git/commits/${commitSha}`);
   const treeSha = commit.tree?.sha;
@@ -90,6 +90,7 @@ export async function executeGithubRepositorySnapshot(args: Record<string, unkno
     const blob = await githubApi<GitBlobResponse>(token, `${repoPath}/git/blobs/${entry.sha}`);
     if (blob.encoding !== "base64" || typeof blob.content !== "string") continue;
     const buffer = Buffer.from(blob.content.replace(/\s+/g, ""), "base64");
+    if (buffer.byteLength > MAX_FILE_BYTES) continue;
     const content = safeText(buffer);
     if (content === null) continue;
     files.push({ path: entry.path, content, blobSha: entry.sha, size: buffer.byteLength });
