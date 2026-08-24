@@ -1,9 +1,26 @@
 import { NextResponse } from "next/server";
-import { StripeClient, verifyStripeWebhook } from "../../../../lib/billing/stripe";
+import { verifyStripeWebhook } from "../../../../lib/billing/stripe";
+import {
+  mapStripeSubscriptionStatus,
+  reconcileRenewalConfirmation,
+  resolveLocalSubscriptionStatus,
+  shouldApplyPaidInvoiceAsActive,
+  type RenewalAction,
+  type TerminationIntent
+} from "../../../../lib/billing/subscription-state";
 import { createSupabaseAdminClient } from "../../../../lib/supabase/admin";
 
 type StripeEvent = { id: string; type: string; created?: number; data?: { object?: Record<string, unknown> } };
-type SubscriptionRow = { id: string; organization_id: string; access_mode: string; provider_subscription_id: string | null; provider_customer_id: string | null };
+type SubscriptionRow = {
+  id: string;
+  organization_id: string;
+  access_mode: string;
+  status: string;
+  requested_action: string | null;
+  provider_subscription_id: string | null;
+  provider_customer_id: string | null;
+};
+type ManagementRow = { termination_intent: string | null; renewal_action_requested: string | null };
 
 function stringValue(value: unknown) {
   return typeof value === "string" && value.trim() ? value : null;
@@ -32,18 +49,10 @@ function subscriptionIdFromInvoice(invoice: Record<string, unknown>) {
   }
   return null;
 }
-function mapSubscriptionStatus(status: string | null) {
-  if (status === "active") return "active";
-  if (status === "trialing") return "trialing";
-  if (status === "past_due" || status === "unpaid") return "past_due";
-  if (status === "paused") return "paused";
-  if (status === "canceled" || status === "incomplete_expired") return "canceled";
-  return "inactive";
-}
 
 async function findSubscription(input: { organizationId?: string | null; subscriptionId?: string | null; customerId?: string | null }) {
   const admin = createSupabaseAdminClient();
-  let query = admin.from("organization_subscriptions").select("id,organization_id,access_mode,provider_subscription_id,provider_customer_id").eq("access_mode", "paid");
+  let query = admin.from("organization_subscriptions").select("id,organization_id,access_mode,status,requested_action,provider_subscription_id,provider_customer_id").eq("access_mode", "paid");
   if (input.organizationId) query = query.eq("organization_id", input.organizationId);
   else if (input.subscriptionId) query = query.eq("provider_subscription_id", input.subscriptionId);
   else if (input.customerId) query = query.eq("provider_customer_id", input.customerId);
@@ -53,9 +62,20 @@ async function findSubscription(input: { organizationId?: string | null; subscri
   return data as SubscriptionRow | null;
 }
 
-async function applyProviderStatus(row: SubscriptionRow, event: StripeEvent, providerStatus: string | null, effectiveAt?: string | null, currentPeriodEnd?: string | null, customerId?: string | null, subscriptionId?: string | null) {
+async function applyProviderStatus(
+  row: SubscriptionRow,
+  event: StripeEvent,
+  providerStatus: string | null,
+  options?: {
+    localStatus?: ReturnType<typeof mapStripeSubscriptionStatus>;
+    effectiveAt?: string | null;
+    currentPeriodEnd?: string | null;
+    customerId?: string | null;
+    subscriptionId?: string | null;
+  }
+) {
   const admin = createSupabaseAdminClient();
-  const status = mapSubscriptionStatus(providerStatus);
+  const status = options?.localStatus ?? mapStripeSubscriptionStatus(providerStatus);
   const eventAt = event.created ? new Date(event.created * 1000).toISOString() : new Date().toISOString();
 
   if (status === "inactive") {
@@ -65,9 +85,9 @@ async function applyProviderStatus(row: SubscriptionRow, event: StripeEvent, pro
       last_provider_event_id: event.id,
       last_provider_event_at: eventAt,
       last_error_code: providerStatus === "incomplete" ? "payment_incomplete" : null,
-      provider_customer_id: customerId ?? row.provider_customer_id,
-      provider_subscription_id: subscriptionId ?? row.provider_subscription_id,
-      current_period_end: currentPeriodEnd,
+      provider_customer_id: options?.customerId ?? row.provider_customer_id,
+      provider_subscription_id: options?.subscriptionId ?? row.provider_subscription_id,
+      current_period_end: options?.currentPeriodEnd ?? null,
       updated_at: new Date().toISOString()
     }).eq("id", row.id).eq("access_mode", "paid");
     if (error) throw new Error(error.message);
@@ -78,20 +98,22 @@ async function applyProviderStatus(row: SubscriptionRow, event: StripeEvent, pro
     target_subscription_id: row.id,
     target_status: status,
     target_provider_status: providerStatus,
-    target_effective_at: effectiveAt ?? null,
+    target_effective_at: options?.effectiveAt ?? null,
     target_provider_event_id: event.id,
     target_provider_event_at: eventAt,
     target_error_code: status === "past_due" ? "payment_failed" : null
   });
   if (rpcError) throw new Error(rpcError.message);
 
-  const { error: updateError } = await admin.from("organization_subscriptions").update({
-    provider_customer_id: customerId ?? row.provider_customer_id,
-    provider_subscription_id: subscriptionId ?? row.provider_subscription_id,
-    current_period_end: currentPeriodEnd,
-    checkout_url: status === "active" || status === "trialing" ? null : undefined,
+  const providerFields: Record<string, unknown> = {
+    provider_customer_id: options?.customerId ?? row.provider_customer_id,
+    provider_subscription_id: options?.subscriptionId ?? row.provider_subscription_id,
     updated_at: new Date().toISOString()
-  }).eq("id", row.id).eq("access_mode", "paid");
+  };
+  if (options?.currentPeriodEnd !== undefined) providerFields.current_period_end = options.currentPeriodEnd;
+  if (status === "active" || status === "trialing") providerFields.checkout_url = null;
+
+  const { error: updateError } = await admin.from("organization_subscriptions").update(providerFields).eq("id", row.id).eq("access_mode", "paid");
   if (updateError) throw new Error(updateError.message);
 }
 
@@ -106,13 +128,55 @@ async function handleCheckoutCompleted(event: StripeEvent, session: Record<strin
 
   const paymentStatus = stringValue(session.payment_status);
   const providerStatus = paymentStatus === "paid" || paymentStatus === "no_payment_required" ? "active" : "incomplete";
-  await applyProviderStatus(row, event, providerStatus, null, null, customerId, subscriptionId);
+  await applyProviderStatus(row, event, providerStatus, { customerId, subscriptionId });
 
   const admin = createSupabaseAdminClient();
   const accessRequestId = metadata ? stringValue(metadata.access_request_id) : null;
-  if (accessRequestId) {
-    await admin.from("access_requests").update({ billing_checkout_url: null }).eq("id", accessRequestId);
+  if (accessRequestId) await admin.from("access_requests").update({ billing_checkout_url: null }).eq("id", accessRequestId);
+}
+
+async function syncSubscriptionManagementFields(
+  row: SubscriptionRow,
+  subscription: Record<string, unknown>,
+  localStatus: ReturnType<typeof mapStripeSubscriptionStatus>,
+  pauseCollection: Record<string, unknown> | null
+) {
+  const admin = createSupabaseAdminClient();
+  const { data, error: readError } = await admin
+    .from("organization_subscriptions")
+    .select("termination_intent,renewal_action_requested")
+    .eq("id", row.id)
+    .maybeSingle();
+
+  // During deployment the web app can become live just before the schema migration.
+  // Provider status synchronization above must still succeed in that short window.
+  if (readError) {
+    console.warn("stripe_subscription_management_metadata_unavailable", { subscriptionId: row.id, code: readError.message });
+    return;
   }
+
+  const management = (data ?? {}) as ManagementRow;
+  const cancelAtPeriodEnd = subscription.cancel_at_period_end === true;
+  const currentIntent: TerminationIntent = management.termination_intent === "cancel" || management.termination_intent === "auto_renew_off" ? management.termination_intent : null;
+  const requestedAction: RenewalAction = management.renewal_action_requested === "cancel" || management.renewal_action_requested === "disable_auto_renew" || management.renewal_action_requested === "reactivate" ? management.renewal_action_requested : null;
+  const renewal = reconcileRenewalConfirmation({ cancelAtPeriodEnd, localStatus, currentIntent, requestedAction });
+
+  const update: Record<string, unknown> = {
+    cancel_at_period_end: cancelAtPeriodEnd,
+    termination_intent: renewal.terminationIntent,
+    pause_collection_behavior: pauseCollection ? stringValue(pauseCollection.behavior) : null,
+    canceled_at: unixDate(subscription.canceled_at),
+    updated_at: new Date().toISOString()
+  };
+  if (renewal.clearRequestedAction) {
+    update.renewal_action_requested = null;
+    update.renewal_action_requested_at = null;
+    update.renewal_action_requested_by = null;
+  }
+  if (renewal.terminationIntent !== "cancel") update.cancellation_reason = null;
+
+  const { error: updateError } = await admin.from("organization_subscriptions").update(update).eq("id", row.id).eq("access_mode", "paid");
+  if (updateError) throw new Error(updateError.message);
 }
 
 async function handleSubscription(event: StripeEvent, subscription: Record<string, unknown>) {
@@ -122,8 +186,18 @@ async function handleSubscription(event: StripeEvent, subscription: Record<strin
   const customerId = stringValue(subscription.customer);
   const row = await findSubscription({ organizationId, subscriptionId, customerId });
   if (!row) return;
-  const status = event.type === "customer.subscription.deleted" ? "canceled" : stringValue(subscription.status);
-  await applyProviderStatus(row, event, status, status === "paused" ? new Date().toISOString() : null, unixDate(subscription.current_period_end), customerId, subscriptionId);
+
+  const providerStatus = event.type === "customer.subscription.deleted" ? "canceled" : stringValue(subscription.status);
+  const pauseCollection = objectValue(subscription.pause_collection);
+  const localStatus = resolveLocalSubscriptionStatus(providerStatus, Boolean(pauseCollection));
+  await applyProviderStatus(row, event, providerStatus, {
+    localStatus,
+    effectiveAt: localStatus === "paused" ? new Date().toISOString() : null,
+    currentPeriodEnd: unixDate(subscription.current_period_end),
+    customerId,
+    subscriptionId
+  });
+  await syncSubscriptionManagementFields(row, subscription, localStatus, pauseCollection);
 }
 
 async function handleInvoice(event: StripeEvent, invoice: Record<string, unknown>) {
@@ -131,8 +205,10 @@ async function handleInvoice(event: StripeEvent, invoice: Record<string, unknown
   const customerId = stringValue(invoice.customer);
   const row = await findSubscription({ subscriptionId, customerId });
   if (!row) return;
+
+  if (event.type === "invoice.paid" && !shouldApplyPaidInvoiceAsActive(row.status)) return;
   const providerStatus = event.type === "invoice.paid" ? "active" : "past_due";
-  await applyProviderStatus(row, event, providerStatus, null, null, customerId, subscriptionId);
+  await applyProviderStatus(row, event, providerStatus, { customerId, subscriptionId });
 }
 
 export async function POST(request: Request) {

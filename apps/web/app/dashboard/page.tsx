@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "../../lib/supabase/server";
 import { WorkspaceShellV4 } from "./workspace-shell-v4";
@@ -69,12 +70,15 @@ export default async function DashboardPage() {
   if (snapshotError) throw new Error(snapshotError.message);
   const snapshot = (snapshotData ?? {}) as Parameters<typeof WorkspaceShellV4>[0]["snapshot"];
 
-  return <WorkspaceShellV4
-    workspaceId={workspace.id}
-    workspaceName={workspace.name}
-    displayName={profile?.display_name ?? claims.email?.split("@")[0] ?? "Konto"}
-    email={claims.email ?? ""}
-    isSuperadmin={isSuperadmin}
-    snapshot={snapshot}
-  />;
+  return <>
+    {!isSuperadmin ? <div style={{ position: "fixed", top: 14, right: 18, zIndex: 50 }}><Link className="button" href="/billing">Abonnemang</Link></div> : null}
+    <WorkspaceShellV4
+      workspaceId={workspace.id}
+      workspaceName={workspace.name}
+      displayName={profile?.display_name ?? claims.email?.split("@")[0] ?? "Konto"}
+      email={claims.email ?? ""}
+      isSuperadmin={isSuperadmin}
+      snapshot={snapshot}
+    />
+  </>;
 }
