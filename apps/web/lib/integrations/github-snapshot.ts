@@ -6,7 +6,7 @@ interface GitTreeEntry { path?: string; mode?: string; type?: string; sha?: stri
 interface GitTreeResponse { sha: string; truncated?: boolean; tree?: GitTreeEntry[] }
 interface GitBlobResponse { content?: string; encoding?: string; size?: number }
 
-const excludedPath = /(^|\/)(?:\.git|node_modules|vendor|dist|build|\.next)(\/|$)|(^|\/)(?:\.env(?:\.|$)|[^/]+\.(?:pem|key|p12|pfx))$/i;
+const excludedPath = /(^|\/)(?:\.git|node_modules|vendor|dist|build|\.next)(\/|$)|(^|\/)(?:\.env(?:\.[^/]*)?|\.npmrc|\.pypirc|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)|credentials|[^/]+\.(?:pem|key|p12|pfx))$/i;
 const binaryPath = /\.(?:png|jpe?g|gif|webp|ico|pdf|zip|gz|tgz|7z|rar|wasm|woff2?|ttf|otf|mp[34]|mov|avi|mkv)$/i;
 const MAX_FILE_BYTES = 500_000;
 
