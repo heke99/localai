@@ -100,6 +100,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Sear
   const cancelAtPeriodEnd = Boolean(management.cancelAtPeriodEnd);
   const periodEnd = management.currentPeriodEnd ?? access.currentPeriodEnd;
   const pendingLabel = pendingActionLabel(management);
+  const hasPendingProviderAction = Boolean(management.requestedAction || management.renewalActionRequested);
   const notice = actionNotice(query.action);
   const priceSekMonthly = access.priceSekMonthly ?? 2000;
 
@@ -138,7 +139,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Sear
         </> : null}
 
         <div className="actions">
-          {needsPayment ? <form action="/api/billing/checkout" method="post"><button className="button primary" type="submit">Aktivera · {priceSekMonthly.toLocaleString("sv-SE")} kr/mån exkl. moms</button></form> : null}
+          {needsPayment && management.canManage ? <form action="/api/billing/checkout" method="post"><button className="button primary" type="submit">Aktivera · {priceSekMonthly.toLocaleString("sv-SE")} kr/mån exkl. moms</button></form> : null}
           {paid && access.providerCustomerId && management.canManage ? <form action="/api/billing/portal" method="post"><button className="button" type="submit">Betalningsmetod & fakturor</button></form> : null}
           {access.allowed ? <Link className="button primary" href="/dashboard">Öppna DIV3RSA</Link> : null}
         </div>
@@ -148,18 +149,18 @@ export default async function BillingPage({ searchParams }: { searchParams: Sear
         <strong>Hantera abonnemang</strong>
         <p>Pausa, återuppta eller styr förnyelsen själv. Alla ändringar skickas till Stripe och blir aktiva först när providern har bekräftat dem.</p>
 
-        <div className="actions" style={{ marginTop: 18 }}>
+        {!hasPendingProviderAction ? <div className="actions" style={{ marginTop: 18 }}>
           {pausedPaid ? <form action="/api/billing/subscription" method="post"><input type="hidden" name="action" value="resume"/><button className="button primary" type="submit">Återuppta abonnemang</button></form> : null}
           {activePaid ? <form action="/api/billing/subscription" method="post"><input type="hidden" name="action" value="pause"/><button className="button" type="submit">Pausa abonnemang</button></form> : null}
           {cancelAtPeriodEnd ? <form action="/api/billing/subscription" method="post"><input type="hidden" name="action" value="reactivate"/><button className="button primary" type="submit">Slå på förnyelse igen</button></form> : null}
           {!cancelAtPeriodEnd && ["active", "trialing", "paused"].includes(status) ? <form action="/api/billing/subscription" method="post"><input type="hidden" name="action" value="disable_auto_renew"/><button className="button" type="submit">Stäng av auto-renew</button></form> : null}
           {!cancelAtPeriodEnd && ["active", "trialing", "paused"].includes(status) ? <Link className="button" href="/billing?confirm=cancel">Säg upp abonnemang</Link> : null}
-        </div>
+        </div> : <p style={{ marginTop: 18 }}>En abonnemangsändring behandlas just nu. Nya ändringar blir tillgängliga när Stripe har bekräftat den pågående åtgärden.</p>}
 
         <p style={{ marginTop: 18, fontSize: 14 }}>Paus raderar inte konto eller projekt. Uppsägning avslutar förnyelsen vid periodslut; den raderar inte automatiskt ditt konto eller din data.</p>
       </div> : null}
 
-      {query.confirm === "cancel" && canManage && !cancelAtPeriodEnd && status !== "canceled" ? <div className="card">
+      {query.confirm === "cancel" && canManage && !cancelAtPeriodEnd && !hasPendingProviderAction && status !== "canceled" ? <div className="card">
         <strong>Bekräfta uppsägning</strong>
         <p>Nuvarande period behålls till {formatDate(periodEnd)} om abonnemanget är aktivt. Därefter startas ingen ny period och ingen ny abonnemangsdebitering görs.</p>
         <p>Ditt konto, dina projekt och historik raderas inte av själva uppsägningen.</p>
