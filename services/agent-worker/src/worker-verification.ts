@@ -62,7 +62,7 @@ export function impactFromRuntime(trace: WorkerToolTrace[], before: PreparedRepo
   const synthetic = syntheticMutationNodes(trace);
   if (!repoChanged.length && !synthetic.length) return undefined;
 
-  const base = after ? buildFileImpactGraph(consequenceGraphInput(after.index)) : { nodes: [], edges: [] } satisfies ConsequenceGraph;
+  const base: ConsequenceGraph = after ? buildFileImpactGraph(consequenceGraphInput(after.index)) : { nodes: [], edges: [] };
   const nodeIds = new Set(base.nodes.map((node) => node.id));
   for (const filePath of repoChanged) {
     const id = `file:${filePath}`;
