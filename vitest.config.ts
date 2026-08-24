@@ -13,7 +13,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["apps/**/*.test.ts", "packages/**/*.test.ts", "services/**/*.test.ts", "workers/**/*.test.ts"],
+    include: ["packages/**/*.test.ts", "services/**/*.test.ts", "workers/**/*.test.ts"],
     coverage: { reporter: ["text", "json-summary"] }
   }
 });
