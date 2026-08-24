@@ -4,6 +4,7 @@ import type { TaskAnalysis } from "./task-analyzer";
 export type VerificationCheckKind =
   | "response-integrity"
   | "diff-review"
+  | "repository-intelligence"
   | "consequence-analysis"
   | "format"
   | "lint"
@@ -47,10 +48,18 @@ export interface VerificationReport {
   unresolvedBlockers: string[];
 }
 
+export interface RepositoryVerificationEvidence {
+  revision: string;
+  complete: boolean;
+  indexedFiles: number;
+  branch?: string;
+}
+
 export interface VerificationContext {
   task: TaskAnalysis;
   impact?: ImpactAnalysis;
   output?: string;
+  repository?: RepositoryVerificationEvidence;
 }
 
 export interface VerificationExecutor {
@@ -58,7 +67,7 @@ export interface VerificationExecutor {
 }
 
 const order: VerificationCheckKind[] = [
-  "response-integrity", "diff-review", "consequence-analysis", "format", "lint", "typecheck", "unit-tests", "targeted-tests",
+  "response-integrity", "diff-review", "repository-intelligence", "consequence-analysis", "format", "lint", "typecheck", "unit-tests", "targeted-tests",
   "integration-tests", "database-invariants", "browser-e2e", "multi-viewport-review", "accessibility", "dependency-validation",
   "dead-code-regression", "security-review", "performance-regression", "build", "deployment-health", "independent-reviewer", "completion-proof"
 ];
@@ -71,10 +80,12 @@ function add(checks: Map<VerificationCheckKind, VerificationCheck>, kind: Verifi
 export function createVerificationPlan(task: TaskAnalysis, impact?: ImpactAnalysis): VerificationPlan {
   const checks = new Map<VerificationCheckKind, VerificationCheck>();
   const changed = Boolean(impact?.changed.length);
+  const repositoryChanged = Boolean(impact?.changed.some((node) => ["file", "symbol", "route", "api", "test"].includes(node.kind)));
   add(checks, "response-integrity", true, "Every run must return a valid non-empty result.");
 
   if (changed) {
     add(checks, "diff-review", true, "Changed code must be reviewed as a final change set.");
+    if (repositoryChanged) add(checks, "repository-intelligence", true, "Repository mutations require a complete index of the exact post-change revision.");
     add(checks, "consequence-analysis", true, "Observed changes require impact analysis before completion.");
     add(checks, "targeted-tests", true, "Affected tests must be selected from the impact set.");
     add(checks, "dependency-validation", true, "Dependency relationships must remain valid after code changes.");
@@ -138,6 +149,10 @@ export function createResponseOnlyVerificationExecutor(): VerificationExecutor {
       if (check.kind === "response-integrity") {
         const ok = Boolean(context.output?.trim());
         return { kind: check.kind, status: ok ? "passed" : "failed", summary: ok ? "Model output is non-empty." : "Model output is empty." };
+      }
+      if (check.kind === "repository-intelligence") {
+        const ok = context.repository?.complete === true && context.repository.indexedFiles > 0 && Boolean(context.repository.revision);
+        return { kind: check.kind, status: ok ? "passed" : check.required ? "blocked" : "skipped", summary: ok ? `Repository revision ${context.repository!.revision} was fully indexed.` : "No complete repository revision evidence is configured." };
       }
       return { kind: check.kind, status: check.required ? "blocked" : "skipped", summary: "No execution evidence provider is configured for this verification check." };
     }
