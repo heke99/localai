@@ -51,7 +51,7 @@ function feedback(updated?: string, error?: string, reason?: string) {
 function accessLabel(request: AccessRequest) {
   if (request.access_mode === "free") return "Fri åtkomst";
   if (request.access_mode === "trial") return `Trial · ${request.trial_days ?? "—"} dagar · ${(request.trial_token_limit ?? 0).toLocaleString("sv-SE")} tokens`;
-  if (request.access_mode === "paid") return "Paid · 2 000 kr/mån";
+  if (request.access_mode === "paid") return "Paid · 2 000 kr/mån exkl. moms";
   return "Inte vald";
 }
 
@@ -147,10 +147,10 @@ export default async function SuperadminApplicationDetailPage({
           action={`/api/superadmin/access-requests/${request.id}`}
           method="post"
         >
-          <label><span>Åtkomsttyp</span><select name="access_mode" defaultValue="paid"><option value="paid">Paid · 2 000 kr/mån</option><option value="free">Fri åtkomst</option><option value="trial">Trial</option></select></label>
+          <label><span>Åtkomsttyp</span><select name="access_mode" defaultValue="paid"><option value="paid">Paid · 2 000 kr/mån exkl. moms</option><option value="free">Fri åtkomst</option><option value="trial">Trial</option></select></label>
           <label><span>Trial · dagar</span><input name="trial_days" type="number" min={1} max={90} defaultValue={3}/></label>
           <label><span>Trial · tokenlimit</span><input name="trial_token_limit" type="number" min={1000} max={1000000000} step={1000} defaultValue={100000}/></label>
-          <p className="muted" style={{ gridColumn: "1 / -1" }}>Trial-fälten används endast när Trial väljs. Paid aktiveras först efter bekräftad Stripe-betalning. Free och Trial kräver ingen betalning.</p>
+          <p className="muted" style={{ gridColumn: "1 / -1" }}>Trial-fälten används endast när Trial väljs. Paid aktiveras först efter bekräftad Stripe-betalning. Stripe Tax beräknar tillämplig moms automatiskt. Free och Trial kräver ingen betalning.</p>
           <div className="row-actions" style={{ gridColumn: "1 / -1" }}>
             {request.status === "pending" ? <button name="action" value="reviewing" className="button">Markera under granskning</button> : null}
             <button name="action" value="approve" className="button primary">Godkänn & konfigurera åtkomst</button>
