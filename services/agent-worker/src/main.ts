@@ -5,6 +5,8 @@ import { AgentWorkerProcessor } from "./processor";
 import { SupabaseAgentQueue } from "./supabase-queue";
 import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
 import { RemoteProviderToolExecutor } from "./remote-provider-executor";
+import { RemoteRepositoryWorkspaceRuntime } from "./repository-runtime";
+import { SandboxVerificationRuntime } from "./sandbox-verification";
 import { SkillEngine, type SkillManifest } from "@div3rsa/skill-engine";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -33,12 +35,14 @@ const executors = new Map([
   ["vercel", remoteExecutor]
 ]);
 const toolRuntime = new PermissionedIntegrationToolRuntime(supabase as unknown as ConstructorParameters<typeof PermissionedIntegrationToolRuntime>[0], executors);
+const repositoryRuntime = new RemoteRepositoryWorkspaceRuntime(supabase as unknown as ConstructorParameters<typeof RemoteRepositoryWorkspaceRuntime>[0], gatewayUrl);
+const sandboxRuntime = new SandboxVerificationRuntime(process.env.DIV3RSA_SANDBOX_IMAGE_DIGEST?.trim() || null);
 const processor = new AgentWorkerProcessor(queue, { resolve: () => adapter }, workerId, {
   prepare: async (mode, prompt) => {
     const loaded = await skillEngine.load(skillEngine.select(mode, prompt));
     return { names: loaded.map((skill) => skill.metadata.name), instructions: loaded.map((skill) => `## ${skill.metadata.name}@${skill.metadata.version}\n${skill.instructions}`).join("\n\n") };
   }
-}, toolRuntime);
+}, toolRuntime, repositoryRuntime, sandboxRuntime);
 let stopping = false;
 
 process.on("SIGTERM", () => { stopping = true; });
