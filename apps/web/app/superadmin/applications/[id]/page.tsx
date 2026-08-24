@@ -18,9 +18,14 @@ type AccessRequest = {
   onboarding_completed_at: string | null;
   organization_id: string | null;
   workspace_id: string | null;
+  access_mode: "paid" | "free" | "trial" | null;
+  trial_days: number | null;
+  trial_token_limit: number | null;
+  billing_checkout_url: string | null;
+  billing_configured_at: string | null;
 };
 
-type SearchParams = Promise<{ updated?: string; error?: string }>;
+type SearchParams = Promise<{ updated?: string; error?: string; reason?: string }>;
 
 function formatDate(value?: string | null) {
   if (!value) return "—";
@@ -33,13 +38,21 @@ function valueOrDash(value?: string | null) {
   return value?.trim() || "—";
 }
 
-function feedback(updated?: string, error?: string) {
-  if (error) return { kind: "error", text: "Åtgärden kunde inte slutföras. Kontrollera statusen och försök igen." };
+function feedback(updated?: string, error?: string, reason?: string) {
+  if (error) return { kind: "error", text: reason ? `Åtgärden kunde inte slutföras (${reason}).` : "Åtgärden kunde inte slutföras. Kontrollera statusen och försök igen." };
   if (updated === "reviewing") return { kind: "success", text: "Ansökan är markerad som under granskning." };
   if (updated === "rejected") return { kind: "success", text: "Ansökan är avslagen." };
-  if (updated === "approved") return { kind: "success", text: "Kunden är godkänd och inbjudan har skickats." };
-  if (updated === "already-approved") return { kind: "success", text: "Kunden var redan godkänd. Ingen dubbel provisionering gjordes." };
+  if (updated === "approved") return { kind: "success", text: "Kunden är godkänd och åtkomsten är konfigurerad." };
+  if (updated === "approved-billing-pending") return { kind: "error", text: "Kunden är godkänd, men Stripe Checkout kunde inte skapas. Paid-access är fortsatt låst tills en betalningslänk skapas." };
+  if (updated === "already-approved") return { kind: "success", text: "Kunden var redan godkänd. Åtkomstinställningen har uppdaterats utan dubbel provisionering." };
   return null;
+}
+
+function accessLabel(request: AccessRequest) {
+  if (request.access_mode === "free") return "Fri åtkomst";
+  if (request.access_mode === "trial") return `Trial · ${request.trial_days ?? "—"} dagar · ${(request.trial_token_limit ?? 0).toLocaleString("sv-SE")} tokens`;
+  if (request.access_mode === "paid") return "Paid · 2 000 kr/mån";
+  return "Inte vald";
 }
 
 export default async function SuperadminApplicationDetailPage({
@@ -62,7 +75,7 @@ export default async function SuperadminApplicationDetailPage({
 
   const { data, error } = await supabase
     .from("access_requests")
-    .select("id,email,name,organization_name,use_case,status,reviewed_by,reviewed_at,created_at,invited_user_id,invited_at,password_email_sent_at,onboarding_completed_at,organization_id,workspace_id")
+    .select("id,email,name,organization_name,use_case,status,reviewed_by,reviewed_at,created_at,invited_user_id,invited_at,password_email_sent_at,onboarding_completed_at,organization_id,workspace_id,access_mode,trial_days,trial_token_limit,billing_checkout_url,billing_configured_at")
     .eq("id", id)
     .maybeSingle();
 
@@ -70,7 +83,7 @@ export default async function SuperadminApplicationDetailPage({
   if (!data) notFound();
   const request = data as AccessRequest;
   const finished = Boolean(request.onboarding_completed_at);
-  const notice = feedback(query.updated, query.error);
+  const notice = feedback(query.updated, query.error, query.reason);
 
   return <main className="shell control-shell">
     <nav className="nav control-topbar">
@@ -86,13 +99,13 @@ export default async function SuperadminApplicationDetailPage({
         <div>
           <p className="eyebrow">Application</p>
           <h1>{request.name}</h1>
-          <p className="lead">Fullständigt ansökningsunderlag och onboardinghistorik.</p>
+          <p className="lead">Ansökningsunderlag, beslut, åtkomsttyp och onboardingstatus.</p>
         </div>
         <span className={`status-badge status-${finished ? "active" : request.status}`}>{finished ? "active" : request.status}</span>
       </header>
 
       {notice ? <div className="card" role="status">
-        <strong>{notice.kind === "error" ? "Åtgärden misslyckades" : "Status uppdaterad"}</strong>
+        <strong>{notice.kind === "error" ? "Kontroll krävs" : "Status uppdaterad"}</strong>
         <p>{notice.text}</p>
       </div> : null}
 
@@ -123,21 +136,29 @@ export default async function SuperadminApplicationDetailPage({
             <div className="compact-row"><div><strong>Granskad</strong><small>{formatDate(request.reviewed_at)}</small></div></div>
           </div>
           <div className="compact-list">
-            <div className="compact-row"><div><strong>Reviewed by</strong><small>{valueOrDash(request.reviewed_by)}</small></div></div>
-            <div className="compact-row"><div><strong>Application ID</strong><small>{request.id}</small></div></div>
+            <div className="compact-row"><div><strong>Åtkomst</strong><small>{accessLabel(request)}</small></div></div>
+            <div className="compact-row"><div><strong>Billing konfigurerad</strong><small>{formatDate(request.billing_configured_at)}</small></div></div>
           </div>
         </div>
 
         {!finished && request.status !== "approved" && request.status !== "rejected" ? <form
-          className="row-actions"
+          className="control-form"
           style={{ marginTop: 18 }}
           action={`/api/superadmin/access-requests/${request.id}`}
           method="post"
         >
-          {request.status === "pending" ? <button name="action" value="reviewing" className="button">Markera under granskning</button> : null}
-          <button name="action" value="approve" className="button primary">Godkänn & ge åtkomst</button>
-          <button name="action" value="rejected" className="button danger">Avslå</button>
+          <label><span>Åtkomsttyp</span><select name="access_mode" defaultValue="paid"><option value="paid">Paid · 2 000 kr/mån</option><option value="free">Fri åtkomst</option><option value="trial">Trial</option></select></label>
+          <label><span>Trial · dagar</span><input name="trial_days" type="number" min={1} max={90} defaultValue={3}/></label>
+          <label><span>Trial · tokenlimit</span><input name="trial_token_limit" type="number" min={1000} max={1000000000} step={1000} defaultValue={100000}/></label>
+          <p className="muted" style={{ gridColumn: "1 / -1" }}>Trial-fälten används endast när Trial väljs. Paid aktiveras först efter bekräftad Stripe-betalning. Free och Trial kräver ingen betalning.</p>
+          <div className="row-actions" style={{ gridColumn: "1 / -1" }}>
+            {request.status === "pending" ? <button name="action" value="reviewing" className="button">Markera under granskning</button> : null}
+            <button name="action" value="approve" className="button primary">Godkänn & konfigurera åtkomst</button>
+            <button name="action" value="rejected" className="button danger">Avslå</button>
+          </div>
         </form> : null}
+
+        {request.billing_checkout_url ? <div className="actions" style={{ marginTop: 16 }}><a className="button" href={request.billing_checkout_url} target="_blank" rel="noreferrer">Öppna Stripe Checkout</a></div> : null}
       </section>
 
       <section className="control-panel">

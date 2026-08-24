@@ -10,6 +10,7 @@ type AuthClaims = {
 
 type Profile = { display_name: string | null; account_status: string | null };
 type Workspace = { id: string; name: string };
+type AgentAccess = { allowed?: boolean; accessMode?: string; status?: string };
 
 export default async function DashboardPage() {
   const supabase = await createSupabaseServerClient();
@@ -55,6 +56,13 @@ export default async function DashboardPage() {
   if (!workspace) {
     if (isSuperadmin) redirect("/superadmin");
     redirect("/auth/accepted");
+  }
+
+  if (!isSuperadmin) {
+    const { data: accessData, error: accessError } = await supabase.rpc("my_agent_access_snapshot", { target_workspace_id: workspace.id });
+    if (accessError) throw new Error(accessError.message);
+    const access = (accessData ?? {}) as AgentAccess;
+    if (!access.allowed) redirect("/billing");
   }
 
   const { data: snapshotData, error: snapshotError } = await supabase.rpc("workspace_dashboard_snapshot", { target_workspace_id: workspace.id });

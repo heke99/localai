@@ -1,0 +1,22 @@
+/* Customer-facing copy overrides. Internal relationship/inference terminology stays out of the product UI. */
+[class*="advancedHeader"] > div > p,
+[class*="resourcePanelHeader"] > div > p {
+  display: none;
+}
+
+[class*="advancedHeader"] > div::after {
+  content: "Behörigheter hanteras per projekt och kan när som helst justeras här.";
+  display: block;
+  max-width: 760px;
+  color: #777c85;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+[class*="resourcePanelHeader"] > div::after {
+  content: "Välj vilka anslutna resurser som ska vara aktiva i den här chatten.";
+  display: block;
+  color: #777c85;
+  font-size: 12px;
+  line-height: 1.55;
+}

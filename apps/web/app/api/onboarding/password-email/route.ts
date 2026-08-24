@@ -21,26 +21,25 @@ export async function POST(request: Request) {
   const admin = createSupabaseAdminClient();
   const { data: grant, error: grantError } = await admin
     .from("access_requests")
-    .select("id,email,status,password_email_sent_at,onboarding_completed_at")
+    .select("id,email,status,password_email_sent_at,onboarding_completed_at,access_mode,billing_checkout_url")
     .eq("invited_user_id", user.id)
     .eq("status", "approved")
     .maybeSingle();
 
   if (grantError) return json({ error: "grant_lookup_failed" }, 500);
   if (!grant) return json({ error: "approved_access_grant_required" }, 403);
-  if (grant.onboarding_completed_at) return json({ completed: true });
+  const billingCheckoutUrl = grant.access_mode === "paid" ? grant.billing_checkout_url : null;
+  if (grant.onboarding_completed_at) return json({ completed: true, billingCheckoutUrl, accessMode: grant.access_mode });
 
   if (grant.password_email_sent_at) {
-    // Self-heal the only safe partial state: the password was saved but the
-    // final onboarding RPC failed or the browser closed before it completed.
     const { error: completionError } = await supabase.rpc("complete_user_onboarding");
-    if (!completionError) return json({ completed: true, recovered: true });
+    if (!completionError) return json({ completed: true, recovered: true, billingCheckoutUrl, accessMode: grant.access_mode });
     if (!completionError.message.includes("password_required")) {
       console.error("onboarding_completion_recovery_failed", { code: completionError.code });
       return json({ error: "onboarding_completion_failed" }, 500);
     }
 
-    return json({ sent: true, alreadySent: true });
+    return json({ sent: true, alreadySent: true, billingCheckoutUrl, accessMode: grant.access_mode });
   }
 
   const { error: emailError } = await admin.auth.resetPasswordForEmail(grant.email, {
@@ -55,5 +54,5 @@ export async function POST(request: Request) {
     .is("password_email_sent_at", null);
   if (updateError) return json({ error: "password_email_state_failed" }, 500);
 
-  return json({ sent: true });
+  return json({ sent: true, billingCheckoutUrl, accessMode: grant.access_mode });
 }

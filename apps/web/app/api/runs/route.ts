@@ -21,8 +21,6 @@ export async function POST(request: Request) {
   const traceId = request.headers.get("x-trace-id") ?? crypto.randomUUID();
   const rpc = supabase as unknown as RpcClient;
 
-  // Persist and enrich the resource graph before the run is queued so the very first
-  // model turn receives strongly-related deployment/database context as well.
   if (body.conversationId) {
     const { error: selectionError } = await rpc.rpc<Record<string, unknown>>("set_conversation_resources", {
       target_conversation_id: body.conversationId,
@@ -46,9 +44,13 @@ export async function POST(request: Request) {
   });
 
   if (error) {
+    const subscriptionRequired = /subscription_access_required/.test(error.message);
     const denied = /permission_denied|workspace_access_denied|conversation_access_denied|resource_not_available|project_required_for_integration_resources/.test(error.message);
     const conflict = /conversation_mode_mismatch/.test(error.message);
-    return NextResponse.json({ error: denied ? "resource_or_access_denied" : conflict ? "conversation_mode_mismatch" : "run_start_failed", requestId }, { status: denied ? 403 : conflict ? 409 : 500 });
+    return NextResponse.json(
+      { error: subscriptionRequired ? "subscription_required" : denied ? "resource_or_access_denied" : conflict ? "conversation_mode_mismatch" : "run_start_failed", requestId },
+      { status: subscriptionRequired ? 402 : denied ? 403 : conflict ? 409 : 500 }
+    );
   }
 
   const run = data?.[0];
