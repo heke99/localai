@@ -3,15 +3,9 @@ import { createSupabaseServerClient } from "../../../../../lib/supabase/server";
 import { completeOAuthConnection, failOAuthSession, getOAuthSession } from "../../../../../lib/integrations/broker";
 import { isProviderKey, safeReturnPath } from "../../../../../lib/integrations/oauth";
 import { exchangeAndDiscover } from "../../../../../lib/integrations/providers";
-import { storeVercelWebhookSubscription } from "../../../../../lib/integrations/vercel-webhook-broker";
-import { createVercelDeploymentWebhook, deleteVercelDeploymentWebhook } from "../../../../../lib/integrations/vercel-webhooks";
 
 function stringField(record: Record<string,unknown>, key: string) {
   return typeof record[key] === "string" ? record[key] as string : "";
-}
-
-function metadataString(record: Record<string,unknown>, key: string) {
-  return typeof record[key] === "string" && String(record[key]).trim() ? String(record[key]).trim() : null;
 }
 
 function safeOAuthErrorCode(error: unknown) {
@@ -72,48 +66,6 @@ export async function GET(request: Request, context: { params: Promise<{ provide
       capabilities: discovered.capabilities,
       resources: discovered.resources
     });
-
-    if (rawProvider === "vercel") {
-      if (!discovered.credential) throw new Error("vercel_credential_missing");
-      const workspaceId = stringField(session, "workspaceId");
-      const teamId = metadataString(discovered.metadata, "callbackTeamId");
-      let createdWebhook: Awaited<ReturnType<typeof createVercelDeploymentWebhook>> | null = null;
-      try {
-        createdWebhook = await createVercelDeploymentWebhook({
-          credential: discovered.credential,
-          connectionId: completed.connectionId,
-          teamId,
-          projectIds: discovered.resources.map((resource) => resource.externalId),
-          origin: requestUrl.origin
-        });
-        await storeVercelWebhookSubscription({
-          connectionId: completed.connectionId,
-          webhookId: createdWebhook.webhookId,
-          ownerId: createdWebhook.ownerId,
-          teamId: createdWebhook.teamId,
-          projectIds: createdWebhook.projectIds,
-          events: createdWebhook.events,
-          secret: createdWebhook.secret
-        });
-      } catch (webhookError) {
-        if (createdWebhook) {
-          try {
-            await deleteVercelDeploymentWebhook(discovered.credential, createdWebhook.webhookId, teamId);
-          } catch (cleanupError) {
-            console.error("vercel_webhook_cleanup_failed", { errorCode: safeOAuthErrorCode(cleanupError) });
-          }
-        }
-        if (workspaceId) {
-          const { error: rollbackError } = await supabase.rpc("disconnect_integration_connection", {
-            target_workspace_id: workspaceId,
-            target_connection_id: completed.connectionId
-          } as never);
-          if (rollbackError) console.error("vercel_connection_rollback_failed", { errorCode: safeOAuthErrorCode(rollbackError) });
-        }
-        throw new Error(`vercel_webhook_setup_failed:${safeOAuthErrorCode(webhookError)}`);
-      }
-    }
-
     const target = safeReturnPath(completed.returnPath || returnPath);
     const response = NextResponse.redirect(new URL(`${target}${target.includes("?") ? "&" : "?"}connected=${rawProvider}`, requestUrl.origin), 303);
     response.headers.set("Cache-Control", "no-store, max-age=0");
