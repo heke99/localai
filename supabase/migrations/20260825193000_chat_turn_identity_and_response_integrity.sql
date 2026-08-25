@@ -11,8 +11,7 @@ alter table internal.agent_runs
 -- input deterministically from the closest preceding user message. Output is not
 -- guessed here; new completions always persist output_message_id explicitly.
 update internal.agent_runs r
-set input_message_id = matched.id
-from lateral (
+set input_message_id = (
   select m.id
   from public.messages m
   where m.conversation_id = r.conversation_id
@@ -20,7 +19,7 @@ from lateral (
     and m.created_at <= r.created_at
   order by m.created_at desc, m.id desc
   limit 1
-) matched
+)
 where r.input_message_id is null;
 
 alter table internal.agent_runs
@@ -57,6 +56,7 @@ begin
     or new.trace_id is distinct from old.trace_id
     or new.mode is distinct from old.mode
     or new.input_message_id is distinct from old.input_message_id
+    or (old.output_message_id is not null and new.output_message_id is distinct from old.output_message_id)
   ) then
     raise exception 'agent_run_identity_is_immutable' using errcode = '23514';
   end if;
