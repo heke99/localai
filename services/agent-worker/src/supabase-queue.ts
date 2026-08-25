@@ -129,13 +129,7 @@ export class SupabaseAgentQueue implements AgentQueue {
   }
 
   async complete(run: ClaimedRun, output: { content: string; modelVersionId: string; usage: Record<string, number> }): Promise<void> {
-    const { error } = await this.client.rpc("worker_complete_agent_run", {
-      target_run_id: run.runId,
-      target_job_id: run.jobId,
-      output_content: output.content,
-      model_version: output.modelVersionId,
-      usage: asJson(output.usage)
-    });
+    const { error } = await this.client.rpc("worker_complete_agent_run", { target_run_id: run.runId, target_job_id: run.jobId, output_content: output.content, usage: asJson(output.usage) });
     if (error) throw error;
   }
 
