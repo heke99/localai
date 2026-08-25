@@ -4,7 +4,7 @@ test("public product explains the private access boundary", async ({ page }) => 
   const consoleErrors: string[] = [];
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
   await page.goto("/");
-  await expect(page.getByRole("heading", { level: 1 })).toContainText("Från komplex uppgift till verifierat resultat");
+  await expect(page.getByRole("heading", { level: 1 })).toContainText("Från komplex uppgift till ett resultat du kan kontrollera");
   await expect(page.getByRole("link", { name: /ansök om åtkomst/i }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: /logga in/i }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "En arbetsyta för det som kräver mer." })).toBeVisible();
