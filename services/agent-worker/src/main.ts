@@ -25,6 +25,10 @@ function numericEnvironment(name: string, fallback: number): number {
   return value;
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 const supabase = createClient<Database>(required("SUPABASE_URL"), required("SUPABASE_SECRET_KEY"), { auth: { persistSession: false, autoRefreshToken: false } });
 const inferenceBaseUrl = required("QWEN_INFERENCE_BASE_URL");
 const inferenceApiKey = required("QWEN_INFERENCE_API_KEY");
@@ -75,10 +79,36 @@ let stopping = false;
 process.on("SIGTERM", () => { stopping = true; });
 process.on("SIGINT", () => { stopping = true; });
 
-const health = await adapter.healthCheck();
-if (!health.ok) throw new Error(`model_unhealthy:${health.detail ?? "unknown"}`);
+async function waitForHealthyModel() {
+  const timeoutMs = Math.max(1_000, numericEnvironment("DIV3RSA_MODEL_STARTUP_TIMEOUT_MS", 15 * 60_000));
+  const pollMs = Math.max(500, numericEnvironment("DIV3RSA_MODEL_STARTUP_POLL_MS", 5_000));
+  const startedAt = Date.now();
+  let lastDetail = "not_checked";
+
+  while (!stopping) {
+    try {
+      const health = await adapter.healthCheck();
+      if (health.ok) {
+        console.info(`[agent-worker] model ready; worker=${workerId}`);
+        return;
+      }
+      lastDetail = health.detail ?? "unhealthy";
+    } catch (error) {
+      lastDetail = error instanceof Error ? error.message : "health_check_failed";
+    }
+
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error(`model_startup_timeout:${lastDetail}`);
+    }
+
+    console.warn(`[agent-worker] waiting for model; worker=${workerId}; detail=${lastDetail}`);
+    await sleep(pollMs);
+  }
+}
+
+await waitForHealthyModel();
 
 while (!stopping) {
   const processed = await processor.processOnce();
-  if (!processed) await new Promise((resolve) => setTimeout(resolve, 1000));
+  if (!processed) await sleep(1000);
 }
