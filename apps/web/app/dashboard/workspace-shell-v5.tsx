@@ -1,11 +1,45 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { WorkspaceShellV4 } from "./workspace-shell-v4";
 import styles from "./workspace-shell-v3.module.css";
 
 type WorkspaceShellV5Props = Parameters<typeof WorkspaceShellV4>[0];
 
+const PREWARM_DEBOUNCE_MS = 250;
+const PREWARM_COOLDOWN_MS = 30_000;
+
 export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
+  const prewarmTimer = useRef<number | null>(null);
+  const lastPrewarmAt = useRef(0);
+
+  useEffect(() => {
+    function schedulePrewarm(event: Event) {
+      const target = event.target;
+      if (!(target instanceof HTMLTextAreaElement)) return;
+      if (!target.closest(`.${styles.composer}`) || !target.value.trim()) return;
+      if (Date.now() - lastPrewarmAt.current < PREWARM_COOLDOWN_MS) return;
+      if (prewarmTimer.current !== null) window.clearTimeout(prewarmTimer.current);
+
+      prewarmTimer.current = window.setTimeout(() => {
+        prewarmTimer.current = null;
+        lastPrewarmAt.current = Date.now();
+        void fetch("/api/runtime/prewarm", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ workspaceId: props.workspaceId }),
+          keepalive: true
+        }).catch(() => undefined);
+      }, PREWARM_DEBOUNCE_MS);
+    }
+
+    document.addEventListener("input", schedulePrewarm, true);
+    return () => {
+      document.removeEventListener("input", schedulePrewarm, true);
+      if (prewarmTimer.current !== null) window.clearTimeout(prewarmTimer.current);
+    };
+  }, [props.workspaceId]);
+
   const statusStyles = `
     .${styles.runBar} {
       position: fixed !important;

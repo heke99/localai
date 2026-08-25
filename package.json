@@ -16,12 +16,13 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:native-runtime": "node --experimental-transform-types --import ./infra/runpod/native-typescript-register.mjs scripts/smoke_native_ts_runtime.mjs",
+    "test:runpod-wake": "node scripts/smoke_runpod_wake_contract.mjs",
     "typecheck": "tsc --noEmit",
     "model:fetch:q8": "bash scripts/fetch_qwen_v3_q8.sh",
     "validate:skills": "python3 scripts/validate_skills.py",
-    "validate:runpod-startup": "bash -n infra/runpod/start-production.sh",
+    "validate:runpod-startup": "bash -n infra/runpod/start-production.sh && bash -n infra/runpod/auto-start.sh",
     "build:skill-manifest": "python3 scripts/build_skill_manifest.py",
-    "verify": "npm run validate:skills && npm run validate:runpod-startup && npm run test:native-runtime && npm run build:skill-manifest && npm run test && npm run typecheck && npm run build"
+    "verify": "npm run validate:skills && npm run validate:runpod-startup && npm run test:native-runtime && npm run test:runpod-wake && npm run build:skill-manifest && npm run test && npm run typecheck && npm run build"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",

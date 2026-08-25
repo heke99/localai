@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
 import { inferConversationRelationships } from "../../../lib/integrations/relationship-inference";
+import { ensureRunpodRuntimeAwake } from "../../../lib/runpod/runtime";
 
 const modes = new Set(["chat", "code", "lab", "research"]);
 type RpcClient = { rpc: <T>(name: string, args: Record<string, unknown>) => Promise<{ data: T | null; error: { message: string } | null }> };
@@ -55,5 +56,11 @@ export async function POST(request: Request) {
 
   const run = data?.[0];
   if (!run) return NextResponse.json({ error: "run_start_failed", requestId }, { status: 500 });
-  return NextResponse.json({ runId: run.run_id, conversationId: run.resolved_conversation_id, requestId, traceId }, { status: 202 });
+
+  const runtimeWake = await ensureRunpodRuntimeAwake().catch((wakeError) => {
+    console.error("[run-start] runtime wake failed", wakeError);
+    return null;
+  });
+
+  return NextResponse.json({ runId: run.run_id, conversationId: run.resolved_conversation_id, requestId, traceId, runtimeWake }, { status: 202 });
 }
