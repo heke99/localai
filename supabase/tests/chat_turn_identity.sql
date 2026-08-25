@@ -4,6 +4,7 @@ declare
   claim_definition text;
   complete_definition text;
   get_definition text;
+  normalized_complete text;
   input_unique boolean;
   output_unique boolean;
 begin
@@ -57,8 +58,9 @@ begin
 
   select pg_get_functiondef('public.worker_complete_agent_run(uuid,uuid,text,uuid,jsonb)'::regprocedure)
   into complete_definition;
-  if position('output_message_id = created_output_id' in lower(complete_definition)) = 0
-     or position('empty_model_response' in lower(complete_definition)) = 0 then
+  normalized_complete := regexp_replace(lower(complete_definition), '\s+', '', 'g');
+  if position('output_message_id=created_output_id' in normalized_complete) = 0
+     or position('empty_model_response' in normalized_complete) = 0 then
     raise exception 'worker completion does not persist an exact non-empty output message';
   end if;
 
