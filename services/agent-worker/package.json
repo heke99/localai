@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": { "start": "node --experimental-strip-types src/main.ts" },
+  "scripts": { "start": "node --experimental-transform-types --import ../../infra/runpod/native-typescript-register.mjs src/main.ts" },
   "dependencies": {
     "@div3rsa/agent-runtime": "0.1.0",
     "@div3rsa/db": "0.1.0",
