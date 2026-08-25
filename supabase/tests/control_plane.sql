@@ -2,6 +2,7 @@ do $$
 declare
   exposed_without_rls integer;
   alias_count integer;
+  v2_alias_count integer;
 begin
   select count(*) into exposed_without_rls
   from pg_class c join pg_namespace n on n.oid = c.relnamespace
@@ -50,8 +51,19 @@ begin
   from internal.model_aliases a
   join internal.model_versions mv on mv.id = a.model_version_id
   join internal.model_artifacts ma on ma.model_version_id = mv.id
-  where mv.revision = 'e335d239dbdfae590687e24b800e81a18d070ebe'
+  where mv.version_key = 'v3-q8-0'
+    and mv.revision = '768dd4ca58e1af3593605d93abef2c1c45647a07'
+    and mv.status = 'verified'
+    and mv.metadata->>'runtime_model' = 'localai-qwen38-v3-q8'
+    and ma.filename = 'Qwen3.8-27B-OBLITERATED-Q8_0.gguf'
     and ma.quantization = 'Q8_0'
-    and ma.sha256 = '4cfb568f17fb58a0373279cc3b73602a350e25aea2953ce087dcea6b51fa6f3c';
-  if alias_count <> 6 then raise exception 'expected 6 pinned Q8 aliases, got %', alias_count; end if;
+    and ma.sha256 = 'afa839b2fa5bc890e5735031dda2c6239d3b6bba3b6ffa29477cbc14a2e1f221'
+    and ma.bytes = 29047075872;
+  if alias_count <> 6 then raise exception 'expected 6 verified V3 Q8 aliases, got %', alias_count; end if;
+
+  select count(*) into v2_alias_count
+  from internal.model_aliases a
+  join internal.model_versions mv on mv.id = a.model_version_id
+  where mv.version_key = 'v2-q8-0';
+  if v2_alias_count <> 0 then raise exception 'expected V2 to remain historical without production aliases, got %', v2_alias_count; end if;
 end $$;

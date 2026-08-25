@@ -108,8 +108,8 @@ export interface RegisteredModelVersion {
   artifactSha256: string;
   artifactBytes: number;
   quantization: "Q8_0";
-  tokenizerSha256: string;
-  chatTemplateSha256: string;
+  tokenizerSha256: string | null;
+  chatTemplateSha256: string | null;
   license: string;
   contextWindow: number;
   capabilities: ModelCapability[];

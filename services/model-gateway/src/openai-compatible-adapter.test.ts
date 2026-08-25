@@ -1,14 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 import { OpenAiCompatibleAdapter } from "./openai-compatible-adapter";
+import { QWEN_Q8, QWEN_RUNTIME_MODEL } from "./registry";
 
 describe("OpenAiCompatibleAdapter", () => {
-  it("normalizes an OpenAI-compatible response to the stable model contract", async () => {
-    const fetcher = vi.fn(async () => new Response(JSON.stringify({
-      choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
-      usage: { prompt_tokens: 4, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 1 } }
-    }), { status: 200, headers: { "content-type": "application/json" } }));
+  it("uses the llama.cpp runtime model name and returns the canonical model version", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body)) as { model?: string };
+      expect(payload.model).toBe(QWEN_RUNTIME_MODEL);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 4, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 1 } }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
     const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
     const result = await adapter.generate({ requestId: "req-1", alias: "general-prod", messages: [{ role: "user", content: "hello" }] });
+    expect(result.modelVersionId).toBe(QWEN_Q8.id);
     expect(result.content).toBe("ok");
     expect(result.usage).toEqual({ inputTokens: 4, outputTokens: 2, cachedTokens: 1 });
     expect(fetcher).toHaveBeenCalledOnce();
@@ -16,7 +22,8 @@ describe("OpenAiCompatibleAdapter", () => {
 
   it("sends tool definitions and parses structured tool calls", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const payload = JSON.parse(String(init?.body)) as { tools?: unknown[] };
+      const payload = JSON.parse(String(init?.body)) as { model?: string; tools?: unknown[] };
+      expect(payload.model).toBe(QWEN_RUNTIME_MODEL);
       expect(payload.tools).toHaveLength(1);
       return new Response(JSON.stringify({
         choices: [{ message: { content: null, tool_calls: [{ id: "call-1", type: "function", function: { name: "github_read_file", arguments: '{"resourceId":"repo-1","path":"README.md"}' } }] }, finish_reason: "tool_calls" }],
@@ -47,7 +54,11 @@ describe("OpenAiCompatibleAdapter", () => {
       'data: [DONE]\n\n'
     ];
     const stream = new ReadableStream({ start(controller) { chunks.forEach((chunk) => controller.enqueue(new TextEncoder().encode(chunk))); controller.close(); } });
-    const fetcher = vi.fn(async () => new Response(stream, { status: 200 }));
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body)) as { model?: string };
+      expect(payload.model).toBe(QWEN_RUNTIME_MODEL);
+      return new Response(stream, { status: 200 });
+    });
     const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);
     const output: string[] = [];
     for await (const chunk of adapter.stream({ requestId: "req-stream", alias: "general-prod", messages: [{ role: "user", content: "Hi" }] })) output.push(chunk);

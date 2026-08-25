@@ -1,52 +1,4 @@
 services:
-  qwen-v3-q8:
-    image: "${LLAMA_CPP_IMAGE:?Set an immutable llama.cpp image reference with @sha256 digest}"
-    restart: unless-stopped
-    command:
-      - --model
-      - /models/Qwen3.8-27B-OBLITERATED-Q8_0.gguf
-      - --alias
-      - localai-qwen38-v3-q8
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8080"
-      - --ctx-size
-      - "${DIV3RSA_MODEL_CONTEXT_SIZE:-32768}"
-      - --batch-size
-      - "${DIV3RSA_MODEL_BATCH_SIZE:-2048}"
-      - --parallel
-      - "${DIV3RSA_MODEL_PARALLEL:-4}"
-      - --n-gpu-layers
-      - "999"
-      - --metrics
-      - --jinja
-      - --api-key
-      - "${QWEN_INFERENCE_API_KEY:?Set a private inference API key}"
-    volumes:
-      - "${DIV3RSA_MODEL_DIR:?Set the verified model directory}:/models:ro"
-    expose:
-      - "8080"
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://127.0.0.1:8080/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 20
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp:size=2g,noexec,nosuid
-    networks:
-      - inference
-
   agent-worker:
     build:
       context: ../..
@@ -54,19 +6,17 @@ services:
       args:
         NODE_IMAGE: "${NODE_IMAGE:?Set an immutable Node image reference with @sha256 digest}"
     restart: unless-stopped
-    depends_on:
-      qwen-v3-q8:
-        condition: service_healthy
     environment:
       SUPABASE_URL: "${SUPABASE_URL:?Set Supabase URL}"
       SUPABASE_SECRET_KEY: "${SUPABASE_SECRET_KEY:?Set server-only Supabase secret}"
-      QWEN_INFERENCE_BASE_URL: http://qwen-v3-q8:8080/v1
-      QWEN_INFERENCE_API_KEY: "${QWEN_INFERENCE_API_KEY:?Set inference API key}"
+      QWEN_INFERENCE_BASE_URL: "${QWEN_INFERENCE_BASE_URL:?Set the external OpenAI-compatible inference base URL}"
+      QWEN_INFERENCE_API_KEY: "${QWEN_INFERENCE_API_KEY:?Set the server-only inference API key}"
       DIV3RSA_WORKER_ID: "${DIV3RSA_WORKER_ID:-agent-worker-1}"
       DIV3RSA_REPOSITORY_ROOT: /app
+      DIV3RSA_INTEGRATION_GATEWAY_URL: "${DIV3RSA_INTEGRATION_GATEWAY_URL:-https://system.div3rsa.com/api/internal/integrations/execute}"
       DIV3RSA_MODEL_CONTEXT_SIZE: "${DIV3RSA_MODEL_CONTEXT_SIZE:-32768}"
       DIV3RSA_MODEL_BATCH_SIZE: "${DIV3RSA_MODEL_BATCH_SIZE:-2048}"
-      DIV3RSA_ADMISSION_MAX_ACTIVE_SEQUENCES: "${DIV3RSA_ADMISSION_MAX_ACTIVE_SEQUENCES:-4}"
+      DIV3RSA_ADMISSION_MAX_ACTIVE_SEQUENCES: "${DIV3RSA_ADMISSION_MAX_ACTIVE_SEQUENCES:-1}"
       DIV3RSA_ADMISSION_MAX_DEFERRED_REQUESTS: "${DIV3RSA_ADMISSION_MAX_DEFERRED_REQUESTS:-4}"
       DIV3RSA_ADMISSION_MAX_KV_CACHE_RATIO: "${DIV3RSA_ADMISSION_MAX_KV_CACHE_RATIO:-0.90}"
       DIV3RSA_ADMISSION_MIN_TOKENS_PER_SECOND: "${DIV3RSA_ADMISSION_MIN_TOKENS_PER_SECOND:-8}"
@@ -85,10 +35,7 @@ services:
     security_opt:
       - no-new-privileges:true
     networks:
-      - inference
       - control-plane
 
 networks:
-  inference:
-    internal: true
   control-plane: {}
