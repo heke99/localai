@@ -1,10 +1,12 @@
 services:
-  qwen-v2-q8:
+  qwen-v3-q8:
     image: "${LLAMA_CPP_IMAGE:?Set an immutable llama.cpp image reference with @sha256 digest}"
     restart: unless-stopped
     command:
       - --model
       - /models/Qwen3.8-27B-OBLITERATED-Q8_0.gguf
+      - --alias
+      - localai-qwen38-v3-q8
       - --host
       - 0.0.0.0
       - --port
@@ -53,12 +55,12 @@ services:
         NODE_IMAGE: "${NODE_IMAGE:?Set an immutable Node image reference with @sha256 digest}"
     restart: unless-stopped
     depends_on:
-      qwen-v2-q8:
+      qwen-v3-q8:
         condition: service_healthy
     environment:
       SUPABASE_URL: "${SUPABASE_URL:?Set Supabase URL}"
       SUPABASE_SECRET_KEY: "${SUPABASE_SECRET_KEY:?Set server-only Supabase secret}"
-      QWEN_INFERENCE_BASE_URL: http://qwen-v2-q8:8080/v1
+      QWEN_INFERENCE_BASE_URL: http://qwen-v3-q8:8080/v1
       QWEN_INFERENCE_API_KEY: "${QWEN_INFERENCE_API_KEY:?Set inference API key}"
       DIV3RSA_WORKER_ID: "${DIV3RSA_WORKER_ID:-agent-worker-1}"
       DIV3RSA_REPOSITORY_ROOT: /app
