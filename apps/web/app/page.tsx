@@ -7,7 +7,7 @@ const workModes = [
   { number: "04", title: "Lab", text: "Arbeta med auktoriserad säkerhetsanalys i en avgränsad och dokumenterad miljö." }
 ];
 
-const outcomes = ["Plan som går att agera på", "Ändringar som är testade", "Källor som går att följa", "Arbete som går att återuppta"];
+const outcomes = ["Plan som går att agera på", "Ändringar med teststeg", "Källor som går att följa", "Arbete som går att återuppta"];
 
 export default function Home() {
   return <main className="shell public-home">
@@ -20,10 +20,11 @@ export default function Home() {
     <section className="public-hero">
       <div className="hero-copy">
         <div className="availability"><span className="availability-dot" aria-hidden="true"/>Privat tillgång för utvalda användare</div>
-        <h1>Från komplex uppgift till <span>verifierat resultat.</span></h1>
-        <p className="hero-lead">DIV3RSA samlar analys, kod, research och säkerhetsarbete i en fokuserad arbetsyta. Du beskriver målet. Systemet hjälper dig hela vägen från första tanke till färdigt, kontrollerat arbete.</p>
+        <h1>Från komplex uppgift till <span>ett resultat du kan kontrollera.</span></h1>
+        <p className="hero-lead">DIV3RSA är en AI-assisterad arbetsyta för analys, kod, research och auktoriserat säkerhetsarbete. Du beskriver målet och får stöd genom planering, genomförande och kontroll av resultatet.</p>
         <div className="hero-actions"><Link className="button primary hero-primary" href="/request-access">Ansök om åtkomst <span aria-hidden="true">↗</span></Link><Link className="text-link" href="#capabilities">Se vad du får <span aria-hidden="true">↓</span></Link></div>
-        <div className="trust-line" aria-label="Viktiga produktegenskaper"><span>Privat arbetsyta</span><span>Spårbara resultat</span><span>Mänsklig kontroll</span></div>
+        <div className="trust-line" aria-label="Viktiga produktegenskaper"><span>Privat arbetsyta</span><span>Spårbara arbetssteg</span><span>Mänsklig kontroll</span></div>
+        <p className="hero-disclaimer">AI-genererat innehåll kan vara ofullständigt eller felaktigt. Viktiga beslut, produktionsändringar och säkerhetsåtgärder ska granskas och verifieras av användaren.</p>
       </div>
 
       <div className="work-preview" aria-label="Exempel på ett arbetsflöde">
@@ -34,27 +35,31 @@ export default function Home() {
           <div className="work-step active"><span className="step-mark">02</span><div><strong>Genomför ändringarna</strong><small>Arbetar genom berörda filer</small></div><em>nu</em></div>
           <div className="work-step"><span className="step-mark">03</span><div><strong>Verifiera resultatet</strong><small>Tester, build och slutkontroll</small></div><em>nästa</em></div>
         </div>
-        <div className="preview-footer"><span>Allt arbete sparas och kan följas</span><span className="preview-progress"><i/></span></div>
+        <div className="preview-footer"><span>Arbetssteg kan sparas och följas i tjänsten</span><span className="preview-progress"><i/></span></div>
       </div>
     </section>
 
-    <div className="proof-strip" aria-label="Vad systemet levererar">{outcomes.map((outcome) => <span key={outcome}><i aria-hidden="true"/> {outcome}</span>)}</div>
+    <div className="proof-strip" aria-label="Vad systemet stödjer">{outcomes.map((outcome) => <span key={outcome}><i aria-hidden="true"/> {outcome}</span>)}</div>
 
     <section className="capability-section" id="capabilities">
-      <div className="section-heading"><p className="section-label">Fyra sätt att arbeta</p><h2>En arbetsyta för det som kräver mer.</h2><p>Välj arbetssätt efter uppgiften. Kontext, historik och resultat följer med utan att du behöver börja om.</p></div>
+      <div className="section-heading"><p className="section-label">Fyra sätt att arbeta</p><h2>En arbetsyta för det som kräver mer.</h2><p>Välj arbetssätt efter uppgiften. Kontext, historik och resultat kan följa med så att arbetet blir lättare att fortsätta.</p></div>
       <div className="mode-grid">{workModes.map((mode) => <article className="mode-card" key={mode.title}><span>{mode.number}</span><div><h3>{mode.title}</h3><p>{mode.text}</p></div><span className="mode-arrow" aria-hidden="true">↗</span></article>)}</div>
     </section>
 
     <section className="workflow-section" id="workflow">
-      <div className="workflow-copy"><p className="section-label">Från brief till bevis</p><h2>Du behåller kontrollen. Systemet driver arbetet framåt.</h2></div>
+      <div className="workflow-copy"><p className="section-label">Från brief till kontroll</p><h2>Du behåller kontrollen. Systemet hjälper arbetet framåt.</h2></div>
       <ol className="workflow-list">
         <li><span>1</span><div><strong>Beskriv målet</strong><p>Ge uppgiften, materialet och ramarna som är viktiga.</p></div></li>
         <li><span>2</span><div><strong>Följ arbetet</strong><p>Se planen, framstegen och vad som faktiskt genomförs.</p></div></li>
-        <li><span>3</span><div><strong>Få ett verifierat resultat</strong><p>Ta emot svar, kod eller underlag tillsammans med tydliga bevis.</p></div></li>
+        <li><span>3</span><div><strong>Verifiera resultatet</strong><p>Granska svar, kod eller underlag tillsammans med tillgängliga tester, källor och andra kontrollpunkter.</p></div></li>
       </ol>
     </section>
 
     <section className="public-cta"><div><p className="section-label">Invitation only</p><h2>Redo för ett smartare sätt att arbeta?</h2></div><Link className="button primary hero-primary" href="/request-access">Ansök om åtkomst <span aria-hidden="true">↗</span></Link></section>
-    <footer className="public-footer"><span className="brand">DIV3RSA</span><span>En privat arbetsyta för avancerat arbete.</span><span>© 2026</span></footer>
+    <footer className="public-footer">
+      <span className="brand">DIV3RSA</span>
+      <span className="public-footer-links"><Link href="/legal/privacy">Integritet</Link><Link href="/legal/cookies">Cookies</Link><Link href="/legal/eula">Villkor</Link><Link href="/support">Kontakt</Link></span>
+      <span className="public-footer-company">Attmos AB · Org.nr 556855-4884<br/><a href="mailto:info@div3rsa.com">info@div3rsa.com</a> · © 2026</span>
+    </footer>
   </main>;
 }
