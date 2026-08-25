@@ -1,4 +1,4 @@
-const modules = [
+const projectModules = [
   "../services/model-gateway/src/index.ts",
   "../packages/agent-runtime/src/index.ts",
   "../packages/integrations/src/index.ts",
@@ -18,8 +18,14 @@ const modules = [
   "../services/agent-worker/src/worker-verification.ts"
 ];
 
-for (const specifier of modules) {
+const dependencyModules = ["@supabase/supabase-js"];
+
+for (const specifier of projectModules) {
   await import(new URL(specifier, import.meta.url));
 }
 
-console.info(`[native-ts-runtime] loaded ${modules.length} production modules`);
+for (const specifier of dependencyModules) {
+  await import(specifier);
+}
+
+console.info(`[native-ts-runtime] loaded ${projectModules.length} production modules and ${dependencyModules.length} runtime dependencies`);
