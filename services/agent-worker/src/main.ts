@@ -108,7 +108,16 @@ async function waitForHealthyModel() {
 
 await waitForHealthyModel();
 
+const idlePollMs = Math.max(100, numericEnvironment("DIV3RSA_QUEUE_IDLE_POLL_MS", 200));
+const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BACKOFF_MS", 1000));
+
 while (!stopping) {
-  const processed = await processor.processOnce();
-  if (!processed) await sleep(1000);
+  try {
+    const processed = await processor.processOnce();
+    if (!processed) await sleep(idlePollMs);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "worker_loop_failed";
+    console.error(`[agent-worker] processing loop error; worker=${workerId}; detail=${detail}`);
+    if (!stopping) await sleep(errorBackoffMs);
+  }
 }
