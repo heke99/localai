@@ -59,6 +59,34 @@ if [[ ! -d "$REPO_DIR/node_modules" ]]; then
 fi
 
 mkdir -p "$LOG_DIR"
+RUN_STARTED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+printf '\n=== %s runtime start ===\n' "$RUN_STARTED_AT" >>"$LOG_DIR/llama-server.log"
+printf '\n=== %s runtime start ===\n' "$RUN_STARTED_AT" >>"$LOG_DIR/agent-worker.log"
+
+log "validating native TypeScript agent runtime"
+if ! (
+  cd "$REPO_DIR"
+  node --experimental-transform-types \
+    --import ./infra/runpod/native-typescript-register.mjs \
+    scripts/smoke_native_ts_runtime.mjs
+) >>"$LOG_DIR/agent-worker.log" 2>&1; then
+  log "agent runtime module preflight failed; inspect ${LOG_DIR}/agent-worker.log"
+  exit 69
+fi
+log "agent runtime module preflight healthy"
+
+check_model_port_available() {
+  DIV3RSA_CHECK_PORT="$MODEL_PORT" node --input-type=module -e '
+    import net from "node:net";
+    const port = Number(process.env.DIV3RSA_CHECK_PORT);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) process.exit(64);
+    const server = net.createServer();
+    server.once("error", () => process.exit(1));
+    server.listen({ host: "0.0.0.0", port, exclusive: true }, () => {
+      server.close((error) => process.exit(error ? 1 : 0));
+    });
+  ' >/dev/null 2>&1
+}
 
 BASE_PID=""
 MODEL_PID=""
@@ -84,6 +112,11 @@ if [[ "${DIV3RSA_START_RUNPOD_BASE_SERVICES:-1}" == "1" && -x /start.sh ]]; then
   log "starting RunPod base services"
   /start.sh >>"$LOG_DIR/runpod-base.log" 2>&1 &
   BASE_PID=$!
+fi
+
+if ! check_model_port_available; then
+  log "model port ${MODEL_PORT} is already in use; stop the existing listener or set DIV3RSA_MODEL_PORT"
+  exit 70
 fi
 
 log "starting Qwen V3 Q8 inference on 0.0.0.0:${MODEL_PORT}"
@@ -129,20 +162,26 @@ export DIV3RSA_MODEL_STARTUP_POLL_MS="${DIV3RSA_MODEL_STARTUP_POLL_MS:-5000}"
 log "starting agent queue worker ${DIV3RSA_WORKER_ID}"
 (
   cd "$REPO_DIR"
-  exec node --experimental-strip-types services/agent-worker/src/main.ts
+  exec node --experimental-transform-types \
+    --import ./infra/runpod/native-typescript-register.mjs \
+    services/agent-worker/src/main.ts
 ) >>"$LOG_DIR/agent-worker.log" 2>&1 &
 WORKER_PID=$!
 
 while true; do
   if ! kill -0 "$MODEL_PID" 2>/dev/null; then
+    status=0
     wait "$MODEL_PID" || status=$?
-    log "llama-server stopped unexpectedly"
-    exit "${status:-1}"
+    if (( status == 0 )); then status=1; fi
+    log "llama-server stopped unexpectedly (exit=${status}); inspect ${LOG_DIR}/llama-server.log"
+    exit "$status"
   fi
   if ! kill -0 "$WORKER_PID" 2>/dev/null; then
+    status=0
     wait "$WORKER_PID" || status=$?
-    log "agent worker stopped unexpectedly"
-    exit "${status:-1}"
+    if (( status == 0 )); then status=1; fi
+    log "agent worker stopped unexpectedly (exit=${status}); inspect ${LOG_DIR}/agent-worker.log"
+    exit "$status"
   fi
   sleep 5
 done
