@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./workspace-shell-v3.module.css";
 import { IntegrationIdentityDetails } from "./integration-identity-details";
 
@@ -16,7 +16,7 @@ type Resource = { id: string; connection_id: string; provider: string; resource_
 type ProjectResource = { project_id: string; resource_id: string; enabled: boolean; connection_id: string; provider: string; resource_type: string; external_resource_id: string; display_name: string; metadata?: Record<string, unknown>; capabilities?: string[] };
 type Capability = { provider: string; capability: string; label: string; risk: "read" | "write" | "destructive" | "sensitive"; resource_type: string; description?: string | null };
 type Message = { id: string; role: string; content: unknown; created_at: string };
-type Run = { id: string; conversationId: string; status: string; mode: string; model_alias: string; failure_code?: string | null; output_content?: string | null };
+type Run = { id: string; conversationId: string; conversation_id?: string | null; status: string; mode: string; model_alias: string; failure_code?: string | null; output_content?: string | null; input_message_id?: string | null; output_message_id?: string | null };
 export type WorkspaceSnapshot = { projects?: Project[]; conversations?: Conversation[]; integrations?: Integration[]; available_resources?: Resource[]; project_resources?: ProjectResource[]; capability_catalog?: Capability[] };
 
 const modeMeta: Record<Mode, { label: string; short: string; description: string; placeholder: string }> = {
@@ -86,6 +86,7 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
   const [activeSection, setActiveSection] = useState<Section>("chat");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(initialChat?.project_id ?? null);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(initialChat?.id ?? null);
+  const selectedConversationIdRef = useRef<string | null>(initialChat?.id ?? null);
   const [selectedResourceIds, setSelectedResourceIds] = useState<string[]>(initialChat?.selected_resource_ids ?? []);
   const [messages, setMessages] = useState<Message[]>([]);
   const [prompt, setPrompt] = useState("");
@@ -124,6 +125,7 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
   const selectedProjectChats = selectedProjectId ? conversations.filter((conversation) => conversation.mode === activeMode && conversation.project_id === selectedProjectId) : [];
   const manageProject = projects.find((project) => project.id === manageProjectId) ?? null;
   const showChat = ["chat", "code", "lab", "research"].includes(activeSection);
+  const runInProgress = Boolean(run && !terminalStatuses.has(run.status));
 
   const resourceGroups = useMemo(() => {
     const query = resourceSearch.trim().toLowerCase();
@@ -134,20 +136,33 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
   }, [connectedResources, resourceSearch]);
 
   useEffect(() => {
+    selectedConversationIdRef.current = selectedConversationId;
+    setRun((current) => current && current.conversationId !== selectedConversationId ? null : current);
+  }, [selectedConversationId]);
+
+  useEffect(() => {
     const conversation = conversations.find((item) => item.id === selectedConversationId);
     setSelectedResourceIds(conversation?.selected_resource_ids ?? []);
-    setRun(null);
   }, [selectedConversationId, conversations]);
 
   async function loadConversation(conversationId: string) {
+    if (selectedConversationIdRef.current !== conversationId) return;
     setLoadingConversation(true); setError(null);
     try {
       const response = await fetch(`/api/conversations/${conversationId}`, { cache: "no-store" });
-      const body = await response.json() as { messages?: Message[]; error?: string };
+      const body = await response.json() as { conversation?: { id?: string }; messages?: Message[]; error?: string };
       if (!response.ok) throw new Error(body.error ?? "conversation_load_failed");
+      if (!body.conversation?.id || body.conversation.id !== conversationId) throw new Error("conversation_identity_mismatch");
+      if (selectedConversationIdRef.current !== conversationId) return;
       setMessages(body.messages ?? []);
-    } catch { setMessages([]); setError("Chatten kunde inte laddas. Försök igen."); }
-    finally { setLoadingConversation(false); }
+    } catch {
+      if (selectedConversationIdRef.current === conversationId) {
+        setMessages([]);
+        setError("Chatten kunde inte laddas. Försök igen.");
+      }
+    } finally {
+      if (selectedConversationIdRef.current === conversationId) setLoadingConversation(false);
+    }
   }
   useEffect(() => { if (!selectedConversationId) { setMessages([]); return; } void loadConversation(selectedConversationId); }, [selectedConversationId]);
   useEffect(() => {
@@ -156,9 +171,14 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
       const response = await fetch(`/api/runs/${run.id}`, { cache: "no-store" });
       if (!response.ok) return;
       const next = await response.json() as Run;
+      if (next.conversation_id && next.conversation_id !== run.conversationId) {
+        setError("Svarskedjan matchade inte den öppna chatten. Svaret renderades inte i fel chatt.");
+        setRun({ ...next, conversationId: run.conversationId, failure_code: "conversation_identity_mismatch" });
+        return;
+      }
       const nextRun = { ...next, conversationId: run.conversationId };
       setRun(nextRun);
-      if (terminalStatuses.has(next.status)) void loadConversation(run.conversationId);
+      if (terminalStatuses.has(next.status) && selectedConversationIdRef.current === run.conversationId) void loadConversation(run.conversationId);
     }, 1500);
     return () => window.clearInterval(timer);
   }, [run]);
@@ -231,18 +251,26 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
   function toggleResource(resourceId: string) { const next = selectedResourceIds.includes(resourceId) ? selectedResourceIds.filter((id) => id !== resourceId) : [...new Set([...selectedResourceIds, resourceId])]; void persistConversationResources(next); }
 
   async function submitPrompt() {
-    const text = prompt.trim(); if (!text || busy) return;
+    const text = prompt.trim(); if (!text || busy || runInProgress) return;
+    let optimisticId: string | null = null;
     setBusy(true); setError(null);
     try {
       const conversationId = await ensureConversation(activeMode);
-      setMessages((current) => [...current, { id: `local-${Date.now()}`, role: "user", content: { text }, created_at: new Date().toISOString() }]); setPrompt("");
+      optimisticId = `local-${crypto.randomUUID()}`;
+      setMessages((current) => [...current, { id: optimisticId!, role: "user", content: { text }, created_at: new Date().toISOString() }]); setPrompt("");
       const response = await fetch("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId, conversationId, mode: activeMode, prompt: text, resourceIds: selectedResourceIds }) });
       const body = await response.json() as { runId?: string; conversationId?: string; error?: string };
       if (!response.ok || !body.runId || !body.conversationId) throw new Error(body.error ?? "run_start_failed");
+      if (body.conversationId !== conversationId) throw new Error("conversation_identity_mismatch");
       const title = text.slice(0, 100);
+      setRun({ id: body.runId, conversationId: body.conversationId, conversation_id: body.conversationId, status: "queued", mode: activeMode, model_alias: `${activeMode === "chat" ? "general" : activeMode}-prod` });
       setConversations((current) => current.map((conversation) => conversation.id === conversationId ? { ...conversation, title: conversation.title === "Ny chatt" || !conversation.title ? title : conversation.title, updated_at: new Date().toISOString(), last_message_at: new Date().toISOString(), selected_resource_ids: selectedResourceIds } : conversation));
-      setRun({ id: body.runId, conversationId: body.conversationId, status: "queued", mode: activeMode, model_alias: `${activeMode === "chat" ? "general" : activeMode}-prod` });
-    } catch (caught) { setError(caught instanceof Error && /resource|access|permission|mode/.test(caught.message) ? "Projektet eller en vald resurs passar inte den här arbetsytan längre. Uppdatera valet och försök igen." : "Uppgiften kunde inte startas. Försök igen."); }
+    } catch (caught) {
+      if (optimisticId) setMessages((current) => current.filter((message) => message.id !== optimisticId));
+      setPrompt((current) => current || text);
+      if (caught instanceof Error && caught.message === "conversation_identity_mismatch") setError("Chatten tappade sin identitet mellan request och run. Inget svar renderades i fel chatt.");
+      else setError(caught instanceof Error && /resource|access|permission|mode/.test(caught.message) ? "Projektet eller en vald resurs passar inte den här arbetsytan längre. Uppdatera valet och försök igen." : "Uppgiften kunde inte startas. Försök igen.");
+    }
     finally { setBusy(false); }
   }
   async function cancelRun() { if (!run) return; const response = await fetch(`/api/runs/${run.id}`, { method: "DELETE" }); if (response.ok) setRun({ ...run, status: "cancelled" }); }
@@ -293,7 +321,7 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
     <main className={styles.main}>
       {showChat && <><header className={styles.chatHeader}><div><div className={styles.breadcrumb}>{selectedProject ? selectedProject.name : "Fristående"} <span>/</span> {modeMeta[activeMode].label}</div><h1>{selectedConversation?.title && selectedConversation.title !== "Ny chatt" ? selectedConversation.title : "Ny chatt"}</h1></div><button className={styles.headerNewChat} type="button" onClick={() => startNewChat(activeMode, selectedProjectId)}>＋ Ny chatt</button></header>
         <section className={styles.chatCanvas}>{loadingConversation ? <div className={styles.centerState}>Laddar chatt…</div> : messages.length ? <div className={styles.messageStream}>{messages.map((message) => <article key={message.id} className={`${styles.message} ${message.role === "user" ? styles.userMessage : styles.assistantMessage}`}><div className={styles.messageMeta}>{message.role === "user" ? "Du" : "DIV3RSA"}</div><div className={styles.messageBody}>{messageText(message.content)}</div></article>)}</div> : <div className={styles.emptyChat}><div className={styles.emptyIcon}>{modeMeta[activeMode].short}</div><h2>{selectedProject ? `Arbeta i ${selectedProject.name}` : "Vad vill du göra?"}</h2><p>{modeMeta[activeMode].description}</p><button className={styles.emptyResourceButton} type="button" onClick={() => setResourcePickerOpen(true)}>＋ Lägg till repo eller resurs</button><small>När relationer kan bevisas kopplar DIV3RSA även in rätt deployment och databas som read-only kontext automatiskt.</small></div>}{run && <div className={styles.runBar}><span className={`${styles.runDot} ${terminalStatuses.has(run.status) ? styles.runDotIdle : ""}`}/><strong>{run.status}</strong><span>{run.model_alias}</span>{run.failure_code && <span className={styles.runError}>{run.failure_code}</span>}{!terminalStatuses.has(run.status) && <button onClick={cancelRun}>Stoppa</button>}</div>}</section>
-        <footer className={styles.composerArea}><div className={styles.contextLine}><span className={styles.locationChip}>{selectedProject?.name ?? "Fristående chatt"}</span>{selectedResources.map((resource) => <button type="button" className={styles.resourceChip} key={resource.id} onClick={() => toggleResource(resource.id)} title="Ta bort resurs"><span className={styles.chipMark}>{providerMark(resource.provider)}</span><span>{resource.display_name}</span><span className={styles.chipClose}>×</span></button>)}</div><div className={styles.composer}><button className={`${styles.addResourceButton} ${selectedResources.length ? styles.addResourceButtonActive : ""}`} type="button" title="Lägg till repo, projekt eller plugin" onClick={() => setResourcePickerOpen(true)}>＋</button><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submitPrompt(); } }} placeholder={modeMeta[activeMode].placeholder} disabled={busy} rows={2}/><button className={styles.sendButton} type="button" onClick={() => void submitPrompt()} disabled={busy || !prompt.trim()}>{busy ? "…" : "↑"}</button></div><div className={styles.composerHelp}><span>{selectedResources.length ? `${selectedResources.length} aktiv${selectedResources.length === 1 ? " resurs" : "a resurser"}` : "Ingen extern resurs vald"}</span><span>Enter för att skicka · Shift+Enter för ny rad</span></div>{error && <p className={styles.error}>{error}</p>}</footer></>}
+        <footer className={styles.composerArea}><div className={styles.contextLine}><span className={styles.locationChip}>{selectedProject?.name ?? "Fristående chatt"}</span>{selectedResources.map((resource) => <button type="button" className={styles.resourceChip} key={resource.id} onClick={() => toggleResource(resource.id)} title="Ta bort resurs"><span className={styles.chipMark}>{providerMark(resource.provider)}</span><span>{resource.display_name}</span><span className={styles.chipClose}>×</span></button>)}</div><div className={styles.composer}><button className={`${styles.addResourceButton} ${selectedResources.length ? styles.addResourceButtonActive : ""}`} type="button" title="Lägg till repo, projekt eller plugin" onClick={() => setResourcePickerOpen(true)}>＋</button><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submitPrompt(); } }} placeholder={runInProgress ? "Väntar på svar…" : modeMeta[activeMode].placeholder} disabled={busy || runInProgress} rows={2}/><button className={styles.sendButton} type="button" onClick={() => void submitPrompt()} disabled={busy || runInProgress || !prompt.trim()}>{busy ? "…" : "↑"}</button></div><div className={styles.composerHelp}><span>{selectedResources.length ? `${selectedResources.length} aktiv${selectedResources.length === 1 ? " resurs" : "a resurser"}` : "Ingen extern resurs vald"}</span><span>{runInProgress ? "Svar genereras för den här chatten" : "Enter för att skicka · Shift+Enter för ny rad"}</span></div>{error && <p className={styles.error}>{error}</p>}</footer></>}
 
       {activeSection === "projects" && <section className={styles.page}>
         <div className={styles.pageHeader}><div><span className={styles.kicker}>Arbetsytor</span><h1>Projekt</h1><p>Projekt tillhör en arbetsdel. Ett Code-projekt syns i Code, ett Research-projekt i Research — här ser du allt grupperat.</p></div><button className={styles.primaryButton} onClick={() => { setProjectCreateMode("code"); setProjectFormOpen(true); }}>＋ Nytt projekt</button></div>
