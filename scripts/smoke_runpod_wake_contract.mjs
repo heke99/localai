@@ -1,0 +1,27 @@
+import { readFile } from "node:fs/promises";
+
+const files = {
+  runtime: "apps/web/lib/runpod/runtime.ts",
+  prewarm: "apps/web/app/api/runtime/prewarm/route.ts",
+  shell: "apps/web/app/dashboard/workspace-shell-v5.tsx",
+  runRoute: "apps/web/app/api/runs/route.ts",
+  autoStart: "infra/runpod/auto-start.sh"
+};
+
+const loaded = Object.fromEntries(await Promise.all(Object.entries(files).map(async ([key, path]) => [key, await readFile(path, "utf8")])));
+
+const checks = [
+  [loaded.runtime.includes("https://rest.runpod.io/v1"), "RunPod REST base URL missing"],
+  [loaded.runtime.includes("/start"), "RunPod start path missing"],
+  [loaded.runtime.includes("/restart"), "RunPod restart path missing"],
+  [loaded.prewarm.includes("my_agent_access_snapshot"), "prewarm access gate missing"],
+  [loaded.shell.includes("/api/runtime/prewarm"), "composer prewarm hook missing"],
+  [loaded.runRoute.includes("ensureRunpodRuntimeAwake"), "run-submit wake fallback missing"],
+  [loaded.autoStart.includes("start-production.sh"), "Pod resume supervisor handoff missing"]
+];
+
+for (const [passed, message] of checks) {
+  if (!passed) throw new Error(message);
+}
+
+console.log("[runpod-wake-contract] wake-on-demand wiring present");
