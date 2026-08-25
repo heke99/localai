@@ -94,7 +94,7 @@ For a self-contained GPU host, start the local inference server and worker toget
 docker compose -f infra/docker/model-worker.compose.yaml up --build
 ```
 
-For the current architecture, where the agent worker talks to the external authenticated RunPod llama.cpp endpoint, provide the server-only environment variables and start only the worker profile:
+For an agent worker that talks to an already-running external authenticated llama.cpp endpoint, provide the server-only environment variables and start only the worker profile:
 
 ```bash
 QWEN_INFERENCE_BASE_URL=https://b8kxzn86fvrejm-8080.proxy.runpod.net/v1 \
@@ -102,3 +102,30 @@ QWEN_INFERENCE_BASE_URL=https://b8kxzn86fvrejm-8080.proxy.runpod.net/v1 \
 ```
 
 `QWEN_INFERENCE_API_KEY`, `SUPABASE_SECRET_KEY` and other secrets must come from the deployment secret store; they are intentionally absent from the command and repository.
+
+## RunPod production autostart
+
+Production Pods must not rely on a terminal session to start either inference or the queue worker. `infra/runpod/start-production.sh` is the canonical Pod boot supervisor. It starts the RunPod base services when present, launches the verified llama.cpp model, waits until `/health` is ready, then launches the durable agent queue worker. If either managed process exits, the supervisor exits so the Pod/container lifecycle can restart the runtime cleanly.
+
+Store the repository, llama.cpp binary and GGUF artifact on persistent storage. Set these server-only template variables to the **exact** paths used by the Pod:
+
+```text
+DIV3RSA_REPO_DIR
+DIV3RSA_LLAMA_SERVER_BIN
+DIV3RSA_MODEL_PATH
+SUPABASE_URL
+SUPABASE_SECRET_KEY
+QWEN_INFERENCE_API_KEY
+```
+
+The RunPod template/container start command is:
+
+```bash
+bash -lc 'bash "${DIV3RSA_REPO_DIR:-/workspace/localai}/infra/runpod/start-production.sh"'
+```
+
+The start command must be configured in the RunPod template so it runs whenever the Pod starts; merely having `restart: unless-stopped` inside a Compose file does not start that Compose project after a fresh Pod boot.
+
+The agent worker also tolerates a model cold start. `DIV3RSA_MODEL_STARTUP_TIMEOUT_MS` controls how long it waits for inference to become healthy before failing the container, and `DIV3RSA_MODEL_STARTUP_POLL_MS` controls the readiness poll interval. Defaults are 15 minutes and 5 seconds.
+
+Runtime logs are written under `DIV3RSA_RUNPOD_LOG_DIR` (default `/workspace/logs/div3rsa`) so model and worker boot failures can be diagnosed independently.
