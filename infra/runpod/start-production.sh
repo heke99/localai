@@ -23,6 +23,8 @@ MODEL_BATCH_SIZE="${DIV3RSA_MODEL_BATCH_SIZE:-2048}"
 MODEL_PARALLEL="${DIV3RSA_MODEL_PARALLEL:-4}"
 MODEL_BOOT_TIMEOUT_SECONDS="${DIV3RSA_MODEL_BOOT_TIMEOUT_SECONDS:-900}"
 LOG_DIR="${DIV3RSA_RUNPOD_LOG_DIR:-/workspace/logs/div3rsa}"
+WORKER_MAX_RESTARTS="${DIV3RSA_WORKER_MAX_RESTARTS:-5}"
+WORKER_RESTART_WINDOW_SECONDS="${DIV3RSA_WORKER_RESTART_WINDOW_SECONDS:-300}"
 
 require_env SUPABASE_URL
 require_env SUPABASE_SECRET_KEY
@@ -91,6 +93,8 @@ check_model_port_available() {
 BASE_PID=""
 MODEL_PID=""
 WORKER_PID=""
+WORKER_RESTARTS=0
+WORKER_RESTART_WINDOW_STARTED=$SECONDS
 
 shutdown() {
   local status="${1:-0}"
@@ -158,15 +162,21 @@ export DIV3RSA_REPOSITORY_ROOT="$REPO_DIR"
 export DIV3RSA_WORKER_ID="${DIV3RSA_WORKER_ID:-agent-worker-${RUNPOD_POD_ID:-runpod}}"
 export DIV3RSA_MODEL_STARTUP_TIMEOUT_MS="${DIV3RSA_MODEL_STARTUP_TIMEOUT_MS:-900000}"
 export DIV3RSA_MODEL_STARTUP_POLL_MS="${DIV3RSA_MODEL_STARTUP_POLL_MS:-5000}"
+export DIV3RSA_QUEUE_IDLE_POLL_MS="${DIV3RSA_QUEUE_IDLE_POLL_MS:-200}"
+export DIV3RSA_QUEUE_ERROR_BACKOFF_MS="${DIV3RSA_QUEUE_ERROR_BACKOFF_MS:-1000}"
 
-log "starting agent queue worker ${DIV3RSA_WORKER_ID}"
-(
-  cd "$REPO_DIR"
-  exec node --experimental-transform-types \
-    --import ./infra/runpod/native-typescript-register.mjs \
-    services/agent-worker/src/main.ts
-) >>"$LOG_DIR/agent-worker.log" 2>&1 &
-WORKER_PID=$!
+start_worker() {
+  log "starting agent queue worker ${DIV3RSA_WORKER_ID}"
+  (
+    cd "$REPO_DIR"
+    exec node --experimental-transform-types \
+      --import ./infra/runpod/native-typescript-register.mjs \
+      services/agent-worker/src/main.ts
+  ) >>"$LOG_DIR/agent-worker.log" 2>&1 &
+  WORKER_PID=$!
+}
+
+start_worker
 
 while true; do
   if ! kill -0 "$MODEL_PID" 2>/dev/null; then
@@ -180,8 +190,22 @@ while true; do
     status=0
     wait "$WORKER_PID" || status=$?
     if (( status == 0 )); then status=1; fi
-    log "agent worker stopped unexpectedly (exit=${status}); inspect ${LOG_DIR}/agent-worker.log"
-    exit "$status"
+
+    if (( SECONDS - WORKER_RESTART_WINDOW_STARTED > WORKER_RESTART_WINDOW_SECONDS )); then
+      WORKER_RESTARTS=0
+      WORKER_RESTART_WINDOW_STARTED=$SECONDS
+    fi
+    WORKER_RESTARTS=$((WORKER_RESTARTS + 1))
+
+    if (( WORKER_RESTARTS > WORKER_MAX_RESTARTS )); then
+      log "agent worker exceeded restart budget (${WORKER_MAX_RESTARTS} within ${WORKER_RESTART_WINDOW_SECONDS}s); last exit=${status}; inspect ${LOG_DIR}/agent-worker.log"
+      exit "$status"
+    fi
+
+    log "agent worker stopped unexpectedly (exit=${status}); restarting ${WORKER_RESTARTS}/${WORKER_MAX_RESTARTS}; inspect ${LOG_DIR}/agent-worker.log"
+    sleep 1
+    start_worker
+    continue
   fi
-  sleep 5
+  sleep 2
 done
