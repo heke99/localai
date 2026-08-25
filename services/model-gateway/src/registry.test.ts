@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { MODEL_ALIASES, QWEN_Q8, resolveModel } from "./registry";
+import { MODEL_ALIASES, QWEN_Q8, QWEN_RUNTIME_MODEL, resolveModel } from "./registry";
 
 describe("model registry", () => {
-  it("pins the requested Q8 artifact and immutable revision", () => {
+  it("pins the verified V3 Q8 artifact and immutable revision", () => {
+    expect(QWEN_Q8.id).toBe("qwen38-27b-obliterated-v3-q8-0");
     expect(QWEN_Q8.quantization).toBe("Q8_0");
-    expect(QWEN_Q8.revision).toBe("e335d239dbdfae590687e24b800e81a18d070ebe");
-    expect(QWEN_Q8.artifactSha256).toBe("4cfb568f17fb58a0373279cc3b73602a350e25aea2953ce087dcea6b51fa6f3c");
-    expect(QWEN_Q8.artifactBytes).toBeGreaterThan(27_000_000_000);
+    expect(QWEN_Q8.revision).toBe("768dd4ca58e1af3593605d93abef2c1c45647a07");
+    expect(QWEN_Q8.artifactSha256).toBe("afa839b2fa5bc890e5735031dda2c6239d3b6bba3b6ffa29477cbc14a2e1f221");
+    expect(QWEN_Q8.artifactBytes).toBe(29047075872);
+    expect(QWEN_RUNTIME_MODEL).toBe("localai-qwen38-v3-q8");
   });
 
   it("routes logical product aliases without model-specific business conditions", () => {
