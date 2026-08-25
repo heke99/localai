@@ -34,23 +34,15 @@ export async function POST(request: Request) {
     if (resourceIds.length) await inferConversationRelationships(body.conversationId);
   }
 
-  const wakePromise = ensureRunpodRuntimeAwake().catch((wakeError) => {
-    console.error("[run-start] runtime wake failed", wakeError);
-    return null;
+  const { data, error } = await rpc.rpc<Array<{ run_id: string; resolved_conversation_id: string }>>("start_agent_run", {
+    workspace_id: body.workspaceId,
+    conversation_id: body.conversationId ?? null,
+    mode: body.mode,
+    prompt,
+    request_id: requestId,
+    trace_id: traceId,
+    resource_ids: body.conversationId ? null : resourceIds
   });
-
-  const [{ data, error }, runtimeWake] = await Promise.all([
-    rpc.rpc<Array<{ run_id: string; resolved_conversation_id: string }>>("start_agent_run", {
-      workspace_id: body.workspaceId,
-      conversation_id: body.conversationId ?? null,
-      mode: body.mode,
-      prompt,
-      request_id: requestId,
-      trace_id: traceId,
-      resource_ids: body.conversationId ? null : resourceIds
-    }),
-    wakePromise
-  ]);
 
   if (error) {
     const subscriptionRequired = /subscription_access_required/.test(error.message);
@@ -64,5 +56,11 @@ export async function POST(request: Request) {
 
   const run = data?.[0];
   if (!run) return NextResponse.json({ error: "run_start_failed", requestId }, { status: 500 });
+
+  const runtimeWake = await ensureRunpodRuntimeAwake().catch((wakeError) => {
+    console.error("[run-start] runtime wake failed", wakeError);
+    return null;
+  });
+
   return NextResponse.json({ runId: run.run_id, conversationId: run.resolved_conversation_id, requestId, traceId, runtimeWake }, { status: 202 });
 }
