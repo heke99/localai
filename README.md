@@ -107,12 +107,17 @@ QWEN_INFERENCE_BASE_URL=https://b8kxzn86fvrejm-8080.proxy.runpod.net/v1 \
 
 Production Pods must not rely on a terminal session to start either inference or the queue worker. `infra/runpod/start-production.sh` is the canonical Pod boot supervisor. It starts the RunPod base services when present, launches the verified llama.cpp model, waits until `/health` is ready, then launches the durable agent queue worker. If either managed process exits, the supervisor exits so the Pod/container lifecycle can restart the runtime cleanly.
 
-Store the repository, llama.cpp binary and GGUF artifact on persistent storage. Set these server-only template variables to the **exact** paths used by the Pod:
+The currently verified persistent production paths are:
 
 ```text
-DIV3RSA_REPO_DIR
-DIV3RSA_LLAMA_SERVER_BIN
-DIV3RSA_MODEL_PATH
+DIV3RSA_REPO_DIR=/workspace/localai-app
+DIV3RSA_LLAMA_SERVER_BIN=/workspace/localai/llama.cpp/build/bin/llama-server
+DIV3RSA_MODEL_PATH=/workspace/localai/models/qwen38-v3-q8/Qwen3.8-27B-OBLITERATED-Q8_0.gguf
+```
+
+These remain overridable through environment variables for future GPU/provider moves. The RunPod template must also provide the server-only secrets:
+
+```text
 SUPABASE_URL
 SUPABASE_SECRET_KEY
 QWEN_INFERENCE_API_KEY
@@ -121,7 +126,7 @@ QWEN_INFERENCE_API_KEY
 The RunPod template/container start command is:
 
 ```bash
-bash -lc 'bash "${DIV3RSA_REPO_DIR:-/workspace/localai}/infra/runpod/start-production.sh"'
+bash -lc 'bash "${DIV3RSA_REPO_DIR:-/workspace/localai-app}/infra/runpod/start-production.sh"'
 ```
 
 The start command must be configured in the RunPod template so it runs whenever the Pod starts; merely having `restart: unless-stopped` inside a Compose file does not start that Compose project after a fresh Pod boot.
