@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "id": "qwen38-27b-obliterated-v3-q8-0",
+  "repository": "OBLITERATUS/Qwen3.8-27B-OBLITERATED",
+  "revision": "768dd4ca58e1af3593605d93abef2c1c45647a07",
+  "license": "apache-2.0",
+  "artifact": {
+    "filename": "Qwen3.8-27B-OBLITERATED-Q8_0.gguf",
+    "quantization": "Q8_0",
+    "bytes": 29047075872,
+    "sha256": "afa839b2fa5bc890e5735031dda2c6239d3b6bba3b6ffa29477cbc14a2e1f221"
+  },
+  "tokenizer_sha256": null,
+  "chat_template_sha256": null,
+  "context_window": 262144,
+  "runtime": {
+    "adapter": "llama.cpp-openai",
+    "model_name": "localai-qwen38-v3-q8",
+    "verified_llama_cpp_build": "b10618-eb25b7263",
+    "verified_runtime_context": 32768,
+    "container_digest": null,
+    "cuda_version": null,
+    "promotion_blocked_until_runtime_pinned": true
+  },
+  "verification": {
+    "artifact_checksum_verified": true,
+    "artifact_size_verified": true,
+    "gpu_offload_layers": "66/66",
+    "inference_chat_verified": true,
+    "external_endpoint_auth_verified": true
+  }
+}
