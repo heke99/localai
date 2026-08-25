@@ -14,8 +14,8 @@ require_env() {
 }
 
 REPO_DIR="${DIV3RSA_REPO_DIR:-/workspace/localai}"
-LLAMA_SERVER_BIN="${DIV3RSA_LLAMA_SERVER_BIN:-}"
-MODEL_PATH="${DIV3RSA_MODEL_PATH:-}"
+LLAMA_SERVER_BIN="${DIV3RSA_LLAMA_SERVER_BIN:-/workspace/localai/llama.cpp/build/bin/llama-server}"
+MODEL_PATH="${DIV3RSA_MODEL_PATH:-/workspace/localai/models/qwen38-v3-q8/Qwen3.8-27B-OBLITERATED-Q8_0.gguf}"
 MODEL_ALIAS="${DIV3RSA_MODEL_RUNTIME_ALIAS:-localai-qwen38-v3-q8}"
 MODEL_PORT="${DIV3RSA_MODEL_PORT:-8080}"
 MODEL_CONTEXT_SIZE="${DIV3RSA_MODEL_CONTEXT_SIZE:-32768}"
@@ -27,8 +27,6 @@ LOG_DIR="${DIV3RSA_RUNPOD_LOG_DIR:-/workspace/logs/div3rsa}"
 require_env SUPABASE_URL
 require_env SUPABASE_SECRET_KEY
 require_env QWEN_INFERENCE_API_KEY
-require_env DIV3RSA_LLAMA_SERVER_BIN
-require_env DIV3RSA_MODEL_PATH
 
 if [[ ! -d "$REPO_DIR/.git" ]]; then
   log "repository not found at ${REPO_DIR}; set DIV3RSA_REPO_DIR to the persistent LocalAI checkout"
