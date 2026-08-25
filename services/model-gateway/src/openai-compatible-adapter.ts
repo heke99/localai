@@ -1,6 +1,6 @@
 import type { GenerateRequest, GenerateResult, ModelAdapter, ModelCapability, ModelHealth, ModelMessage, ModelToolCall } from "@div3rsa/model-sdk";
 import type { AdmissionController, ModelTimingObservation } from "./admission-control";
-import { QWEN_Q8 } from "./registry";
+import { QWEN_Q8, QWEN_RUNTIME_MODEL } from "./registry";
 
 type Fetch = typeof fetch;
 
@@ -75,7 +75,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "x-request-id": request.requestId },
       body: JSON.stringify({
-        model: QWEN_Q8.id,
+        model: QWEN_RUNTIME_MODEL,
         messages: request.messages.map(encodeMessage),
         max_tokens: request.maxOutputTokens,
         temperature: request.temperature,
@@ -111,7 +111,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     const response = await this.fetcher(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "x-request-id": request.requestId },
-      body: JSON.stringify({ model: QWEN_Q8.id, messages: request.messages.map(encodeMessage), max_tokens: request.maxOutputTokens, temperature: request.temperature, stream: true })
+      body: JSON.stringify({ model: QWEN_RUNTIME_MODEL, messages: request.messages.map(encodeMessage), max_tokens: request.maxOutputTokens, temperature: request.temperature, stream: true })
     });
     if (!response.ok || !response.body) throw new Error(`Inference stream failed with status ${response.status}`);
     const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
