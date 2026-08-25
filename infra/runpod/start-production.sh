@@ -13,7 +13,7 @@ require_env() {
   fi
 }
 
-REPO_DIR="${DIV3RSA_REPO_DIR:-/workspace/localai}"
+REPO_DIR="${DIV3RSA_REPO_DIR:-/workspace/localai-app}"
 LLAMA_SERVER_BIN="${DIV3RSA_LLAMA_SERVER_BIN:-/workspace/localai/llama.cpp/build/bin/llama-server}"
 MODEL_PATH="${DIV3RSA_MODEL_PATH:-/workspace/localai/models/qwen38-v3-q8/Qwen3.8-27B-OBLITERATED-Q8_0.gguf}"
 MODEL_ALIAS="${DIV3RSA_MODEL_RUNTIME_ALIAS:-localai-qwen38-v3-q8}"
