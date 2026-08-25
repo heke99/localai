@@ -16,7 +16,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
-    "model:fetch:q8": "bash scripts/fetch_qwen_v2_q8.sh",
+    "model:fetch:q8": "bash scripts/fetch_qwen_v3_q8.sh",
     "validate:skills": "python3 scripts/validate_skills.py",
     "build:skill-manifest": "python3 scripts/build_skill_manifest.py",
     "verify": "npm run validate:skills && npm run build:skill-manifest && npm run test && npm run typecheck && npm run build"
