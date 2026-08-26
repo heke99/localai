@@ -61,7 +61,7 @@ begin
   end if;
 
   if position('last_heartbeat_at' in lower(resolve_definition)) = 0
-     or position('45 seconds' in lower(resolve_definition)) = 0 then
+     or position('90 seconds' in lower(resolve_definition)) = 0 then
     raise exception 'managed ready runtime routes are not heartbeat freshness guarded';
   end if;
 
