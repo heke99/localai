@@ -13,6 +13,7 @@ type RuntimeManagerOptions = {
   profile?: string;
   providerOrder?: string[];
   cacheMs?: number;
+  leaseTtlSeconds?: number;
   logger?: Pick<Console, "info" | "warn" | "error">;
 };
 
@@ -79,6 +80,7 @@ export class RuntimeManager {
   private readonly profile: string;
   private readonly providerOrder: string[];
   private readonly cacheMs: number;
+  private readonly leaseTtlSeconds: number;
   private readonly logger: Pick<Console, "info" | "warn" | "error">;
 
   constructor(private readonly registry: RuntimeRegistry, adapters: RuntimeProviderAdapter[], options: RuntimeManagerOptions = {}) {
@@ -89,6 +91,7 @@ export class RuntimeManager {
     this.profile = options.profile ?? DEFAULT_RUNTIME_PROFILE;
     this.providerOrder = options.providerOrder ?? [];
     this.cacheMs = Math.max(0, options.cacheMs ?? 15_000);
+    this.leaseTtlSeconds = Math.min(900, Math.max(15, options.leaseTtlSeconds ?? 120));
     this.logger = options.logger ?? console;
   }
 
@@ -145,7 +148,14 @@ export class RuntimeManager {
     const failures: string[] = [];
     for (const adapter of providers) {
       const preferred = registered.find((route) => route.providerKey === adapter.key) ?? null;
+      const holderId = `runtime-manager-${crypto.randomUUID()}`;
+      let leaseAcquired = false;
       try {
+        if (adapter.kind === "managed") {
+          leaseAcquired = await this.registry.acquireProvisioningLease(alias, adapter.key, holderId, this.leaseTtlSeconds);
+          if (!leaseAcquired) throw new Error("runtime_provisioning_in_progress");
+        }
+
         const instance = await adapter.ensure({ alias, profile: this.profile, preferred });
         const provider = catalog.get(adapter.key);
         const normalized: RuntimeInstance = {
@@ -163,10 +173,17 @@ export class RuntimeManager {
         return result;
       } catch (error) {
         const code = safeErrorCode(error);
+        if (code === "runtime_provisioning_in_progress") throw error;
         failures.push(`${adapter.key}:${code}`);
         this.logger.warn("[runtime-manager] provider failed", { alias, provider: adapter.key, code });
         if (preferred) {
           await this.registry.markHealth(adapter.key, preferred.externalId, "failed", code, { failedBy: "runtime-manager" }).catch(() => undefined);
+        }
+      } finally {
+        if (leaseAcquired) {
+          await this.registry.releaseProvisioningLease(alias, adapter.key, holderId).catch((error) => {
+            this.logger.warn("[runtime-manager] provisioning lease release failed", { alias, provider: adapter.key, code: safeErrorCode(error) });
+          });
         }
       }
     }
