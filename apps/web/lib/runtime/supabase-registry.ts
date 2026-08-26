@@ -14,7 +14,7 @@ type RpcResponse<T> = Promise<{ data: T | null; error: RpcError | null }>;
 type RuntimeRpcClient = { rpc<T>(name: string, args?: Record<string, unknown>): RpcResponse<T> };
 
 function rolloutMissing(error: RpcError | null) {
-  return Boolean(error && (error.code === "PGRST202" || /runtime_(enabled_providers|resolve_model_routes|register_worker|mark_worker_health)|could not find the function/i.test(error.message ?? "")));
+  return Boolean(error && (error.code === "PGRST202" || /runtime_(enabled_providers|resolve_model_routes|register_worker|mark_worker_health|acquire_provisioning_lease|release_provisioning_lease)|could not find the function/i.test(error.message ?? "")));
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -126,5 +126,30 @@ export class SupabaseRuntimeRegistry implements RuntimeRegistry {
       if (rolloutMissing(error)) return;
       throw new Error(`runtime_registry_health_failed:${error.code ?? "unknown"}`);
     }
+  }
+
+  async acquireProvisioningLease(alias: RuntimeAlias, providerKey: string, holderId: string, ttlSeconds = 120): Promise<boolean> {
+    const { data, error } = await this.client.rpc<boolean>("runtime_acquire_provisioning_lease", {
+      target_alias: alias,
+      target_provider_key: providerKey,
+      target_holder_id: holderId,
+      target_ttl_seconds: ttlSeconds
+    });
+    if (error) {
+      // During a staggered web/DB rollout, preserve the old in-process behavior
+      // until the migration lands rather than taking run submission down.
+      if (rolloutMissing(error)) return true;
+      throw new Error(`runtime_registry_lease_acquire_failed:${error.code ?? "unknown"}`);
+    }
+    return data === true;
+  }
+
+  async releaseProvisioningLease(alias: RuntimeAlias, providerKey: string, holderId: string): Promise<void> {
+    const { error } = await this.client.rpc<boolean>("runtime_release_provisioning_lease", {
+      target_alias: alias,
+      target_provider_key: providerKey,
+      target_holder_id: holderId
+    });
+    if (error && !rolloutMissing(error)) throw new Error(`runtime_registry_lease_release_failed:${error.code ?? "unknown"}`);
   }
 }
