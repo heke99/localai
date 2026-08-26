@@ -1,5 +1,5 @@
 import { ensureRunpodRuntimeAwake } from "../../runpod/runtime";
-import type { RegisteredRuntimeRoute, RuntimeEnsureRequest, RuntimeInstance, RuntimeProviderAdapter, RuntimeState } from "../contracts";
+import type { RegisteredRuntimeRoute, RuntimeEnsureRequest, RuntimeInstance, RuntimeProviderAdapter } from "../contracts";
 
 function positiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number(value);
@@ -19,10 +19,6 @@ function healthUrlForPod(podId: string) {
 function inferenceEndpointForPod(podId: string) {
   const port = positiveInteger(process.env.DIV3RSA_MODEL_PORT, 8080);
   return `https://${podId}-${port}.proxy.runpod.net/v1`;
-}
-
-function workerState(state: string): RuntimeState {
-  return state === "healthy" ? "ready" : "warming";
 }
 
 async function healthy(url: string) {
@@ -60,7 +56,9 @@ export class RunpodRuntimeProvider implements RuntimeProviderAdapter {
       providerPriority: this.defaultPriority,
       externalId: wake.podId,
       profile: request.profile,
-      state: workerState(wake.state),
+      // Provider/model health does not prove the queue worker is alive. The
+      // agent worker promotes this route to ready through runtime_worker_heartbeat.
+      state: "warming",
       endpoint: inferenceEndpointForPod(wake.podId),
       healthUrl: healthUrlForPod(wake.podId),
       gpuCount: gpuCount && Number.isInteger(Number(gpuCount)) ? Number(gpuCount) : null,
@@ -68,7 +66,8 @@ export class RunpodRuntimeProvider implements RuntimeProviderAdapter {
       metadata: {
         replacement: Boolean(wake.replacement),
         desiredStatus: wake.desiredStatus ?? null,
-        wakeState: wake.state
+        wakeState: wake.state,
+        modelHealthy: wake.state === "healthy"
       }
     };
   }
