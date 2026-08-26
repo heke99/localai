@@ -106,8 +106,9 @@ export class RuntimeManager {
 
     const catalog = new Map((await this.registry.enabledProviders()).map((provider) => [provider.key, provider]));
     const explicitOrder = new Map(this.providerOrder.map((key, index) => [key, index]));
+    const enforceCatalog = catalog.size > 0;
     const providers = [...this.adapters.values()]
-      .filter((adapter) => adapter.configured())
+      .filter((adapter) => adapter.configured() && (!enforceCatalog || catalog.has(adapter.key)))
       .sort((left, right) => {
         const a = providerRank(left, catalog, explicitOrder);
         const b = providerRank(right, catalog, explicitOrder);
