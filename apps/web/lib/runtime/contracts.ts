@@ -93,6 +93,8 @@ export interface RuntimeRegistry {
   resolve(alias: RuntimeAlias): Promise<RegisteredRuntimeRoute[]>;
   register(alias: RuntimeAlias, instance: RuntimeInstance): Promise<string>;
   markHealth(providerKey: string, externalId: string, state: RuntimeState, errorCode?: string | null, metadata?: Record<string, unknown>): Promise<void>;
+  acquireProvisioningLease(alias: RuntimeAlias, providerKey: string, holderId: string, ttlSeconds?: number): Promise<boolean>;
+  releaseProvisioningLease(alias: RuntimeAlias, providerKey: string, holderId: string): Promise<void>;
 }
 
 export type RuntimeManagerResult = {
