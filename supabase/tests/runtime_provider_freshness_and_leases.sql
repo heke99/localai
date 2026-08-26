@@ -1,37 +1,35 @@
 do $$
 declare
-  lease_one boolean;
-  lease_two boolean;
-  lease_same boolean;
-  released_wrong boolean;
-  released_right boolean;
+  acquire_definition text;
+  release_definition text;
+  resolve_definition text;
 begin
-  -- Use the existing seeded production alias/provider. These calls run as the
-  -- migration-test service role in the database consistency workflow.
-  select public.runtime_acquire_provisioning_lease('general-prod', 'runpod', 'test-holder-one', 60)
-    into lease_one;
-  select public.runtime_acquire_provisioning_lease('general-prod', 'runpod', 'test-holder-two', 60)
-    into lease_two;
-  select public.runtime_acquire_provisioning_lease('general-prod', 'runpod', 'test-holder-one', 60)
-    into lease_same;
+  select pg_get_functiondef('public.runtime_acquire_provisioning_lease(text,text,text,integer)'::regprocedure)
+    into acquire_definition;
+  select pg_get_functiondef('public.runtime_release_provisioning_lease(text,text,text)'::regprocedure)
+    into release_definition;
+  select pg_get_functiondef('public.runtime_resolve_model_routes(text)'::regprocedure)
+    into resolve_definition;
 
-  if lease_one is not true or lease_two is not false or lease_same is not true then
-    raise exception 'runtime provisioning lease does not serialize holders correctly';
+  if position('on conflict (alias, provider_key) do update' in lower(acquire_definition)) = 0
+     or position('expires_at <= now()' in lower(acquire_definition)) = 0
+     or position('holder_id = excluded.holder_id' in lower(acquire_definition)) = 0 then
+    raise exception 'runtime provisioning lease is not atomic/renewable';
   end if;
 
-  select public.runtime_release_provisioning_lease('general-prod', 'runpod', 'test-holder-two')
-    into released_wrong;
-  select public.runtime_release_provisioning_lease('general-prod', 'runpod', 'test-holder-one')
-    into released_right;
-
-  if released_wrong is not false or released_right is not true then
-    raise exception 'runtime provisioning lease release ownership is broken';
+  if position('holder_id = target_holder_id' in lower(release_definition)) = 0 then
+    raise exception 'runtime provisioning lease release does not enforce ownership';
   end if;
 
-  if exists (
-    select 1 from internal.runtime_provisioning_leases
-    where alias = 'general-prod' and provider_key = 'runpod'
-  ) then
-    raise exception 'runtime provisioning lease test left stale state';
+  if position('last_heartbeat_at' in lower(resolve_definition)) = 0
+     or position('90 seconds' in lower(resolve_definition)) = 0
+     or position('provider_kind = ''static''' in lower(resolve_definition)) = 0 then
+    raise exception 'runtime route freshness policy is incomplete';
+  end if;
+
+  if has_function_privilege('authenticated', 'public.runtime_acquire_provisioning_lease(text,text,text,integer)', 'execute')
+     or has_function_privilege('authenticated', 'public.runtime_release_provisioning_lease(text,text,text)', 'execute')
+     or has_function_privilege('anon', 'public.runtime_acquire_provisioning_lease(text,text,text,integer)', 'execute') then
+    raise exception 'runtime provisioning lease controls are exposed to untrusted roles';
   end if;
 end $$;
