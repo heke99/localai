@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
-import { inferConversationRelationships } from "../../../lib/integrations/relationship-inference";
 import { ensureRunpodRuntimeAwake } from "../../../lib/runpod/runtime";
 
 const modes = new Set(["chat", "code", "lab", "research"]);
@@ -31,7 +30,6 @@ export async function POST(request: Request) {
       const denied = /permission_denied|workspace_access_denied|conversation_access_denied|resource_not_available/.test(selectionError.message);
       return NextResponse.json({ error: denied ? "resource_or_access_denied" : "run_start_failed", requestId }, { status: denied ? 403 : 500 });
     }
-    if (resourceIds.length) await inferConversationRelationships(body.conversationId);
   }
 
   const { data, error } = await rpc.rpc<Array<{ run_id: string; resolved_conversation_id: string }>>("start_agent_run", {
