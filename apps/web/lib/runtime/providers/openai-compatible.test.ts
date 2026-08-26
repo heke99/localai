@@ -21,15 +21,21 @@ describe("OpenAiCompatibleRuntimeProvider", () => {
     expect(() => provider.configured()).toThrow("generic_runtime_url_must_not_contain_credentials");
   });
 
-  it("keeps provider credentials out of registered runtime metadata", async () => {
+  it("requires the full provider-neutral runtime contract and keeps credentials out of metadata", async () => {
     process.env.GENERIC_RUNTIME_BASE_URL = "https://gpu.example/v1";
     process.env.GENERIC_RUNTIME_API_KEY = "super-secret-token";
+    process.env.GENERIC_RUNTIME_CONTRACT = "div3rsa-runtime-v1";
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("ok", { status: 200 })));
     const provider = new OpenAiCompatibleRuntimeProvider();
 
     const instance = await provider.ensure({ alias: "general-prod", profile: "large_96gb" });
 
-    expect(instance.metadata).toEqual({ adapter: "openai-compatible", lifecycle: "externally-managed" });
+    expect(instance.state).toBe("warming");
+    expect(instance.metadata).toEqual({
+      adapter: "openai-compatible",
+      lifecycle: "externally-managed",
+      contract: "div3rsa-runtime-v1"
+    });
     expect(JSON.stringify(instance)).not.toContain("super-secret-token");
   });
 });
