@@ -87,13 +87,16 @@ export class RuntimeManager {
   private async ensureUncached(alias: RuntimeAlias): Promise<RuntimeManagerResult> {
     const registered = await this.registry.resolve(alias);
 
-    for (const route of registered) {
+    // Only a route marked ready by the actual agent worker can be reused. A
+    // provider/model health check alone is not sufficient to prove queue work
+    // can be processed end-to-end.
+    for (const route of registered.filter((candidate) => candidate.state === "ready")) {
       const adapter = this.adapters.get(route.providerKey);
       if (!adapter?.configured()) continue;
       try {
         if (!(await adapter.health(route))) continue;
         await this.registry.markHealth(route.providerKey, route.externalId, "ready", null, { verifiedBy: "runtime-manager" });
-        const result: RuntimeManagerResult = { configured: true, alias, instance: { ...routeAsInstance(route), state: "ready" }, reused: true };
+        const result: RuntimeManagerResult = { configured: true, alias, instance: routeAsInstance(route), reused: true };
         this.remember(alias, result);
         return result;
       } catch (error) {
@@ -128,9 +131,6 @@ export class RuntimeManager {
           routePriority: instance.routePriority ?? 100
         };
         await this.registry.register(alias, normalized);
-        if (normalized.state === "ready") {
-          await this.registry.markHealth(normalized.providerKey, normalized.externalId, "ready", null, { verifiedBy: "runtime-manager" });
-        }
         const result: RuntimeManagerResult = { configured: true, alias, instance: normalized, reused: false };
         if (normalized.state === "ready") this.remember(alias, result);
         this.logger.info("[runtime-manager] runtime selected", { alias, provider: normalized.providerKey, state: normalized.state, reused: false });
