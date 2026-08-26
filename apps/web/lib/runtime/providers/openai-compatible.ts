@@ -1,5 +1,7 @@
 import type { RegisteredRuntimeRoute, RuntimeEnsureRequest, RuntimeInstance, RuntimeProviderAdapter } from "../contracts";
 
+const RUNTIME_CONTRACT = "div3rsa-runtime-v1";
+
 function providerKey() {
   const value = process.env.GENERIC_RUNTIME_PROVIDER_KEY?.trim() || "generic-openai";
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(value)) throw new Error("generic_runtime_provider_key_invalid");
@@ -17,12 +19,25 @@ function baseUrl() {
   return value.replace(/\/$/, "");
 }
 
+function contractConfigured() {
+  return process.env.GENERIC_RUNTIME_CONTRACT?.trim() === RUNTIME_CONTRACT;
+}
+
 function apiKey() {
-  return process.env.GENERIC_RUNTIME_API_KEY?.trim() || process.env.QWEN_INFERENCE_API_KEY?.trim() || "";
+  return process.env.GENERIC_RUNTIME_API_KEY?.trim()
+    || process.env.DIV3RSA_INFERENCE_API_KEY?.trim()
+    || process.env.QWEN_INFERENCE_API_KEY?.trim()
+    || "";
 }
 
 function healthUrl(endpoint: string) {
-  return process.env.GENERIC_RUNTIME_HEALTH_URL?.trim() || `${endpoint}/models`;
+  const explicit = process.env.GENERIC_RUNTIME_HEALTH_URL?.trim();
+  if (explicit) return explicit;
+  const parsed = new URL(endpoint);
+  parsed.pathname = parsed.pathname.replace(/\/v1\/?$/, "").replace(/\/$/, "") + "/health";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
 }
 
 async function probe(url: string, token: string) {
@@ -51,18 +66,18 @@ export class OpenAiCompatibleRuntimeProvider implements RuntimeProviderAdapter {
   }
 
   configured() {
-    return Boolean(baseUrl());
+    return Boolean(baseUrl() && contractConfigured());
   }
 
   async health(route: RegisteredRuntimeRoute) {
     const configuredEndpoint = baseUrl();
-    if (!configuredEndpoint || route.endpoint !== configuredEndpoint) return false;
+    if (!configuredEndpoint || !contractConfigured() || route.endpoint !== configuredEndpoint) return false;
     return probe(route.healthUrl || healthUrl(configuredEndpoint), apiKey());
   }
 
   async ensure(request: RuntimeEnsureRequest): Promise<RuntimeInstance> {
     const endpoint = baseUrl();
-    if (!endpoint) throw new Error("generic_runtime_unconfigured");
+    if (!endpoint || !contractConfigured()) throw new Error("generic_runtime_contract_required");
     const targetHealthUrl = healthUrl(endpoint);
     if (!(await probe(targetHealthUrl, apiKey()))) throw new Error("generic_runtime_unhealthy");
 
@@ -77,7 +92,10 @@ export class OpenAiCompatibleRuntimeProvider implements RuntimeProviderAdapter {
       providerPriority: this.defaultPriority,
       externalId,
       profile: request.profile,
-      state: "ready",
+      // A healthy inference endpoint is still warming until its agent worker
+      // registers/heartbeats, unless an operator explicitly attests that an
+      // external supervisor implements the complete runtime contract.
+      state: process.env.GENERIC_RUNTIME_ASSUME_READY?.trim() === "1" ? "ready" : "warming",
       endpoint,
       healthUrl: targetHealthUrl,
       region: process.env.GENERIC_RUNTIME_REGION?.trim() || null,
@@ -85,7 +103,7 @@ export class OpenAiCompatibleRuntimeProvider implements RuntimeProviderAdapter {
       gpuCount: Number.isInteger(gpuCountValue) && gpuCountValue >= 0 ? gpuCountValue : null,
       vramTotalBytes: Number.isFinite(vramGbValue) && vramGbValue >= 0 ? Math.round(vramGbValue * 1024 ** 3) : null,
       routePriority: 100,
-      metadata: { adapter: "openai-compatible", lifecycle: "externally-managed" }
+      metadata: { adapter: "openai-compatible", lifecycle: "externally-managed", contract: RUNTIME_CONTRACT }
     };
   }
 }
