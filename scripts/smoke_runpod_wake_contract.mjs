@@ -21,6 +21,9 @@ const checks = [
   [loaded.runtime.includes("networkVolumeId"), "RunPod replacement volume attachment missing"],
   [loaded.runtime.includes("gpuTypePriority"), "RunPod availability-based GPU failover missing"],
   [loaded.runtime.includes('state: "replacing"'), "RunPod replacement state missing"],
+  [loaded.runtime.includes("git fetch --prune --no-tags"), "replacement latest-main fetch bootstrap missing"],
+  [loaded.runtime.includes("git reset --hard FETCH_HEAD"), "replacement exact main reset bootstrap missing"],
+  [loaded.runtime.includes("DIV3RSA_GIT_SYNC_ON_BOOT"), "replacement persistent sync handoff missing"],
   [loaded.runtime.includes("/restart"), "RunPod restart path missing"],
   [loaded.prewarm.includes("my_agent_access_snapshot"), "prewarm access gate missing"],
   [loaded.shell.includes("/api/runtime/prewarm"), "composer prewarm hook missing"],
@@ -36,4 +39,4 @@ for (const [passed, message] of checks) {
   if (!passed) throw new Error(message);
 }
 
-console.log("[runpod-wake-contract] wake-on-demand, managed failover and boot sync wiring present");
+console.log("[runpod-wake-contract] wake-on-demand, managed failover, bootstrap and boot sync wiring present");

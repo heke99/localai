@@ -218,6 +218,27 @@ function failoverGpuTypes(config: RuntimeConfig, source: RunpodPod, gpuCount: nu
   return [...new Set(candidates.filter((value): value is string => Boolean(value)))];
 }
 
+function safeRepoPath(value: string | undefined) {
+  return value && /^\/[A-Za-z0-9_./-]+$/.test(value) ? value : "/workspace/localai-app";
+}
+
+function safeGitRef(value: string | undefined, fallback: string) {
+  return value && /^[A-Za-z0-9_./-]+$/.test(value) ? value : fallback;
+}
+
+function replacementBootstrap(source: RunpodPod) {
+  const repoDir = safeRepoPath(source.env?.DIV3RSA_REPO_DIR);
+  const remote = safeGitRef(source.env?.DIV3RSA_GIT_REMOTE, "origin");
+  const branch = safeGitRef(source.env?.DIV3RSA_GIT_BRANCH, "main");
+  return [
+    "set -Eeuo pipefail",
+    `cd ${repoDir}`,
+    `GIT_TERMINAL_PROMPT=0 git fetch --prune --no-tags ${remote} ${branch}`,
+    "git reset --hard FETCH_HEAD",
+    "exec env DIV3RSA_GIT_SYNC_ON_BOOT=1 bash infra/runpod/auto-start.sh"
+  ].join("; ");
+}
+
 async function getPod(config: RuntimeConfig, podId: string) {
   return runpodRequest<RunpodPod>(config, `/pods/${encodeURIComponent(podId)}`, "GET");
 }
@@ -306,7 +327,7 @@ function replacementCreateBody(config: RuntimeConfig, source: RunpodPod) {
   const family = runtimeFamilyName(config, source);
   const name = `${family}-failover-${Date.now().toString(36)}`.slice(0, 191);
   const dataCenterId = source.networkVolume?.dataCenterId;
-  const templateId = config.failoverTemplateId || source.templateId || null;
+  const templateId = config.failoverTemplateId || null;
   const base: Record<string, unknown> = {
     name,
     cloudType: "SECURE",
@@ -334,9 +355,9 @@ function replacementCreateBody(config: RuntimeConfig, source: RunpodPod) {
   if (!imageName) throw new Error("runpod_failover_image_required");
   base.imageName = imageName;
   base.containerDiskInGb = source.containerDiskInGb ?? 50;
-  base.dockerEntrypoint = source.dockerEntrypoint ?? [];
-  base.dockerStartCmd = source.dockerStartCmd ?? [];
-  base.env = source.env ?? {};
+  base.dockerEntrypoint = ["bash", "-lc"];
+  base.dockerStartCmd = [replacementBootstrap(source)];
+  base.env = { ...(source.env ?? {}), DIV3RSA_GIT_SYNC_ON_BOOT: "1" };
   base.ports = source.ports?.length ? source.ports : ["8080/http", "22/tcp"];
   base.globalNetworking = source.globalNetworking ?? false;
   return base;
@@ -374,7 +395,7 @@ async function useExistingReplacement(config: RuntimeConfig, source: RunpodPod):
 
   return {
     configured: true,
-    state: startedRecently(replacement.lastStartedAt, config.restartGraceMs) ? "booting" : "booting",
+    state: "booting",
     desiredStatus: "RUNNING",
     podId: replacement.id,
     replacement: true
@@ -431,9 +452,6 @@ async function performWake(): Promise<RuntimeWakeResult> {
     }
   }
 
-  // Runpod can report RUNNING after resume while assigning zero GPUs when the
-  // original host capacity is gone. Treat that as unavailable instead of
-  // leaving queued agent runs waiting on a runtime that cannot load the model.
   if (gpuCount === 0) {
     return replaceUnavailablePod(config, pod);
   }
