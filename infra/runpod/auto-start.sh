@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Run the sync logic from a temporary snapshot so `git reset --hard` can safely
+# replace this tracked script while it is executing.
+if [[ -z "${DIV3RSA_AUTO_START_SNAPSHOT:-}" ]]; then
+  snapshot="$(mktemp /tmp/div3rsa-auto-start.XXXXXX.sh)"
+  cp "$0" "$snapshot"
+  chmod 700 "$snapshot"
+  exec env DIV3RSA_AUTO_START_SNAPSHOT="$snapshot" bash "$snapshot"
+fi
+
 log() {
   printf '[runpod-auto-start] %s\n' "$*"
 }
@@ -13,6 +22,7 @@ GIT_BRANCH="${DIV3RSA_GIT_BRANCH:-main}"
 
 if [[ ! -d "$REPO_DIR/.git" ]]; then
   log "repository not found at ${REPO_DIR}"
+  rm -f "${DIV3RSA_AUTO_START_SNAPSHOT:-}" || true
   exit 66
 fi
 
@@ -63,6 +73,8 @@ sync_checkout() {
 }
 
 sync_checkout
+rm -f "${DIV3RSA_AUTO_START_SNAPSHOT:-}" || true
+unset DIV3RSA_AUTO_START_SNAPSHOT
 
 exec env DIV3RSA_START_RUNPOD_BASE_SERVICES="${DIV3RSA_START_RUNPOD_BASE_SERVICES:-1}" \
   bash infra/runpod/start-production.sh
