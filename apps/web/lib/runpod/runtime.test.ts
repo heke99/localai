@@ -50,7 +50,12 @@ function stoppedSourcePod() {
     containerDiskInGb: 50,
     dockerEntrypoint: [],
     dockerStartCmd: ["bash", "/workspace/localai-app/infra/runpod/auto-start.sh"],
-    env: { TEST_ENV: "value" },
+    env: {
+      TEST_ENV: "value",
+      DIV3RSA_REPO_DIR: "/workspace/localai-app",
+      DIV3RSA_GIT_REMOTE: "origin",
+      DIV3RSA_GIT_BRANCH: "main"
+    },
     gpu: { id: "NVIDIA L40S", count: 2 },
     machine: { gpuTypeId: "NVIDIA L40S", dataCenterId: "EU-SE-1", supportPublicIp: true },
     networkVolume: { id: "volume-test", dataCenterId: "EU-SE-1", name: "localai" },
@@ -171,7 +176,7 @@ describe("ensureRunpodRuntimeAwake", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
-  it("creates a replacement Pod on the same network volume after resume fails for capacity", async () => {
+  it("creates a replacement Pod on the same network volume and bootstraps latest main after resume fails for capacity", async () => {
     configure();
     process.env.RUNPOD_START_ATTEMPTS = "1";
     process.env.RUNPOD_START_RETRY_BASE_MS = "0";
@@ -205,7 +210,8 @@ describe("ensureRunpodRuntimeAwake", () => {
       gpuCount: 2,
       networkVolumeId: "volume-test",
       dataCenterIds: ["EU-SE-1"],
-      imageName: "runpod/pytorch:test"
+      imageName: "runpod/pytorch:test",
+      dockerEntrypoint: ["bash", "-lc"]
     });
     expect(body.gpuTypeIds).toEqual(expect.arrayContaining([
       "NVIDIA L40S",
@@ -214,6 +220,11 @@ describe("ensureRunpodRuntimeAwake", () => {
       "NVIDIA A40",
       "NVIDIA RTX 6000 Ada Generation"
     ]));
+    expect(body.dockerStartCmd).toHaveLength(1);
+    expect(body.dockerStartCmd[0]).toContain("git fetch --prune --no-tags origin main");
+    expect(body.dockerStartCmd[0]).toContain("git reset --hard FETCH_HEAD");
+    expect(body.dockerStartCmd[0]).toContain("bash infra/runpod/auto-start.sh");
+    expect(body.env).toMatchObject({ TEST_ENV: "value", DIV3RSA_GIT_SYNC_ON_BOOT: "1" });
   });
 
   it("replaces a RUNNING Pod that Runpod explicitly reports with zero GPUs", async () => {
