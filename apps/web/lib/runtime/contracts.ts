@@ -56,6 +56,22 @@ export type RuntimeEnsureRequest = {
   preferred?: RegisteredRuntimeRoute | null;
 };
 
+export type RuntimeBootstrapGrant = {
+  token: string;
+  bootstrapUrl: string;
+  expiresInSeconds: number;
+};
+
+export interface RuntimeBootstrapIssuer {
+  issue(input: {
+    providerKey: string;
+    alias: RuntimeAlias;
+    externalId: string;
+    profile: string;
+    ttlSeconds?: number;
+  }): Promise<RuntimeBootstrapGrant>;
+}
+
 export interface RuntimeProviderAdapter {
   readonly key: string;
   readonly kind: RuntimeProviderKind;
