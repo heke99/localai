@@ -102,7 +102,7 @@ function startedRecently(lastStartedAt: string | null | undefined, graceMs: numb
 }
 
 function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+  return new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
 
 async function podIsRunning(config: NonNullable<ReturnType<typeof configuration>>) {
@@ -115,7 +115,7 @@ async function podIsRunning(config: NonNullable<ReturnType<typeof configuration>
 }
 
 async function resumeViaGraphql(config: NonNullable<ReturnType<typeof configuration>>) {
-  const query = `mutation { podResume(input: { podId: ${JSON.stringify(config.podId)}, gpuCount: 1 }) { id desiredStatus lastStartedAt } }`;
+  const query = `mutation { podResume(input: { podId: ${JSON.stringify(config.podId)}, gpuCount: 1 }) { id desiredStatus } }`;
   const response = await fetchWithTimeout(`${config.graphqlUrl}?api_key=${encodeURIComponent(config.apiKey)}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
