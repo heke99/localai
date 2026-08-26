@@ -8,10 +8,21 @@ type WorkspaceShellV5Props = Parameters<typeof WorkspaceShellV4>[0];
 
 const PREWARM_DEBOUNCE_MS = 250;
 const PREWARM_COOLDOWN_MS = 30_000;
+const DELETE_RETRY_TIMEOUT_MS = 3_000;
+
+function isDeleteButton(target: EventTarget | null): target is HTMLButtonElement {
+  if (!(target instanceof Element)) return false;
+  const button = target.closest("button");
+  if (!(button instanceof HTMLButtonElement)) return false;
+  if (button.title === "Radera chatt") return true;
+  if (button.getAttribute("aria-label")?.startsWith("Radera projektet ")) return true;
+  return Boolean(button.closest(`.${styles.projectActions}`) && button.textContent?.trim().startsWith("Radera"));
+}
 
 export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
   const prewarmTimer = useRef<number | null>(null);
   const lastPrewarmAt = useRef(0);
+  const deleteRetrying = useRef(false);
 
   useEffect(() => {
     function schedulePrewarm(event: Event) {
@@ -33,9 +44,50 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
       }, PREWARM_DEBOUNCE_MS);
     }
 
+    function retryDeleteAfterAutomaticCancel(event: MouseEvent) {
+      if (!isDeleteButton(event.target) || event.target.disabled || deleteRetrying.current) return;
+      const deleteButton = event.target;
+
+      window.requestAnimationFrame(() => {
+        const errorText = document.querySelector(`.${styles.error}`)?.textContent ?? "";
+        const blockedByRun = errorText.includes("Stoppa") && errorText.includes("rader");
+        if (!blockedByRun) return;
+
+        const stopButton = Array.from(document.querySelectorAll(`.${styles.runBar} button`))
+          .find((button): button is HTMLButtonElement => button instanceof HTMLButtonElement && button.textContent?.trim() === "Stoppa");
+        if (!stopButton) return;
+
+        deleteRetrying.current = true;
+        stopButton.click();
+        const startedAt = Date.now();
+
+        const retryWhenCancelled = () => {
+          const stillRunning = Array.from(document.querySelectorAll(`.${styles.runBar} button`))
+            .some((button) => button instanceof HTMLButtonElement && button.textContent?.trim() === "Stoppa");
+
+          if (!stillRunning) {
+            deleteRetrying.current = false;
+            if (deleteButton.isConnected && !deleteButton.disabled) deleteButton.click();
+            return;
+          }
+
+          if (Date.now() - startedAt >= DELETE_RETRY_TIMEOUT_MS) {
+            deleteRetrying.current = false;
+            return;
+          }
+
+          window.setTimeout(retryWhenCancelled, 100);
+        };
+
+        window.setTimeout(retryWhenCancelled, 100);
+      });
+    }
+
     document.addEventListener("input", schedulePrewarm, true);
+    document.addEventListener("click", retryDeleteAfterAutomaticCancel, true);
     return () => {
       document.removeEventListener("input", schedulePrewarm, true);
+      document.removeEventListener("click", retryDeleteAfterAutomaticCancel, true);
       if (prewarmTimer.current !== null) window.clearTimeout(prewarmTimer.current);
     };
   }, [props.workspaceId]);
