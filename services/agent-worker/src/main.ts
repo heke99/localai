@@ -17,6 +17,14 @@ function required(name: string): string {
   return value;
 }
 
+function requiredAny(names: string[]): string {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  throw new Error(`missing_environment:${names.join("_or_")}`);
+}
+
 function numericEnvironment(name: string, fallback: number): number {
   const raw = process.env[name]?.trim();
   if (!raw) return fallback;
@@ -30,8 +38,11 @@ function sleep(ms: number) {
 }
 
 const supabase = createClient<Database>(required("SUPABASE_URL"), required("SUPABASE_SECRET_KEY"), { auth: { persistSession: false, autoRefreshToken: false } });
-const inferenceBaseUrl = required("QWEN_INFERENCE_BASE_URL");
-const inferenceApiKey = required("QWEN_INFERENCE_API_KEY");
+const modelPort = numericEnvironment("DIV3RSA_MODEL_PORT", 8080);
+const inferenceBaseUrl = process.env.DIV3RSA_INFERENCE_BASE_URL?.trim()
+  || process.env.QWEN_INFERENCE_BASE_URL?.trim()
+  || `http://127.0.0.1:${modelPort}/v1`;
+const inferenceApiKey = requiredAny(["DIV3RSA_INFERENCE_API_KEY", "QWEN_INFERENCE_API_KEY"]);
 const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApiKey, {
   contextLimit: numericEnvironment("DIV3RSA_MODEL_CONTEXT_SIZE", 32768),
   batchSize: numericEnvironment("DIV3RSA_MODEL_BATCH_SIZE", 2048),
@@ -89,7 +100,7 @@ async function waitForHealthyModel() {
     try {
       const health = await adapter.healthCheck();
       if (health.ok) {
-        console.info(`[agent-worker] model ready; worker=${workerId}`);
+        console.info(`[agent-worker] model ready; worker=${workerId}; endpoint=${new URL(inferenceBaseUrl).origin}`);
         return;
       }
       lastDetail = health.detail ?? "unhealthy";
