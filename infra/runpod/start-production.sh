@@ -25,10 +25,14 @@ MODEL_BOOT_TIMEOUT_SECONDS="${DIV3RSA_MODEL_BOOT_TIMEOUT_SECONDS:-900}"
 LOG_DIR="${DIV3RSA_RUNPOD_LOG_DIR:-/workspace/logs/div3rsa}"
 WORKER_MAX_RESTARTS="${DIV3RSA_WORKER_MAX_RESTARTS:-5}"
 WORKER_RESTART_WINDOW_SECONDS="${DIV3RSA_WORKER_RESTART_WINDOW_SECONDS:-300}"
+INFERENCE_API_KEY="${DIV3RSA_INFERENCE_API_KEY:-${QWEN_INFERENCE_API_KEY:-}}"
 
 require_env SUPABASE_URL
 require_env SUPABASE_SECRET_KEY
-require_env QWEN_INFERENCE_API_KEY
+if [[ -z "$INFERENCE_API_KEY" ]]; then
+  log "missing required environment: DIV3RSA_INFERENCE_API_KEY (legacy QWEN_INFERENCE_API_KEY is also accepted)"
+  exit 64
+fi
 
 if [[ ! -d "$REPO_DIR/.git" ]]; then
   log "repository not found at ${REPO_DIR}; set DIV3RSA_REPO_DIR to the persistent LocalAI checkout"
@@ -135,7 +139,7 @@ log "starting Qwen V3 Q8 inference on 0.0.0.0:${MODEL_PORT}"
   --n-gpu-layers 999 \
   --metrics \
   --jinja \
-  --api-key "$QWEN_INFERENCE_API_KEY" \
+  --api-key "$INFERENCE_API_KEY" \
   >>"$LOG_DIR/llama-server.log" 2>&1 &
 MODEL_PID=$!
 
@@ -157,7 +161,12 @@ while true; do
 done
 log "model healthy"
 
-export QWEN_INFERENCE_BASE_URL="http://127.0.0.1:${MODEL_PORT}/v1"
+# The worker always talks to its co-located model process. This deliberately
+# overrides any stale Pod-specific legacy endpoint inherited from an old runtime.
+export DIV3RSA_INFERENCE_BASE_URL="http://127.0.0.1:${MODEL_PORT}/v1"
+export DIV3RSA_INFERENCE_API_KEY="$INFERENCE_API_KEY"
+export QWEN_INFERENCE_BASE_URL="$DIV3RSA_INFERENCE_BASE_URL"
+export QWEN_INFERENCE_API_KEY="$INFERENCE_API_KEY"
 export DIV3RSA_REPOSITORY_ROOT="$REPO_DIR"
 export DIV3RSA_WORKER_ID="${DIV3RSA_WORKER_ID:-agent-worker-${RUNPOD_POD_ID:-runpod}}"
 export DIV3RSA_MODEL_STARTUP_TIMEOUT_MS="${DIV3RSA_MODEL_STARTUP_TIMEOUT_MS:-900000}"
