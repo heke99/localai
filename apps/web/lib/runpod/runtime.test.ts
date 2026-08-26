@@ -8,7 +8,10 @@ const managedEnvironment = [
   "RUNPOD_API_TIMEOUT_MS",
   "RUNPOD_RUNTIME_HEALTH_TIMEOUT_MS",
   "RUNPOD_RUNTIME_RUNNING_CACHE_MS",
-  "RUNPOD_RUNTIME_RESTART_GRACE_MS"
+  "RUNPOD_RUNTIME_RESTART_GRACE_MS",
+  "RUNPOD_START_ATTEMPTS",
+  "RUNPOD_START_RETRY_BASE_MS",
+  "RUNPOD_GRAPHQL_API_URL"
 ] as const;
 
 const originalEnvironment = Object.fromEntries(managedEnvironment.map((key) => [key, process.env[key]]));
@@ -63,6 +66,45 @@ describe("ensureRunpodRuntimeAwake", () => {
 
     await expect(ensureRunpodRuntimeAwake()).resolves.toMatchObject({ configured: true, state: "starting", desiredStatus: "RUNNING" });
     expect(fetchMock).toHaveBeenNthCalledWith(3, "https://rest.runpod.io/v1/pods/pod-test/start", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("accepts a control-plane 5xx when the Pod actually reached RUNNING", async () => {
+    configure();
+    process.env.RUNPOD_START_ATTEMPTS = "2";
+    process.env.RUNPOD_START_RETRY_BASE_MS = "0";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response("offline", { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "pod-test", desiredStatus: "EXITED" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response("internal", { status: 500 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "pod-test", desiredStatus: "RUNNING" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { ensureRunpodRuntimeAwake } = await import("./runtime");
+
+    await expect(ensureRunpodRuntimeAwake()).resolves.toMatchObject({ configured: true, state: "starting" });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("falls back to GraphQL podResume after retryable REST start failures", async () => {
+    configure();
+    process.env.RUNPOD_START_ATTEMPTS = "2";
+    process.env.RUNPOD_START_RETRY_BASE_MS = "0";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response("offline", { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "pod-test", desiredStatus: "EXITED" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response("internal", { status: 500 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "pod-test", desiredStatus: "EXITED" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response("internal", { status: 500 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "pod-test", desiredStatus: "EXITED" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { podResume: { id: "pod-test", desiredStatus: "RUNNING" } } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { ensureRunpodRuntimeAwake } = await import("./runtime");
+
+    await expect(ensureRunpodRuntimeAwake()).resolves.toMatchObject({ configured: true, state: "starting", desiredStatus: "RUNNING" });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      7,
+      "https://api.runpod.io/graphql?api_key=test-key",
+      expect.objectContaining({ method: "POST" })
+    );
   });
 
   it("restarts a stale running Pod when runtime health is down and restart is enabled", async () => {
