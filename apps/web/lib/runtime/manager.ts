@@ -50,6 +50,28 @@ function providerRank(provider: RuntimeProviderAdapter, catalog: Map<string, Ena
   return { order: order ?? Number.MAX_SAFE_INTEGER, priority };
 }
 
+function isProviderNeutralWorker(route: RegisteredRuntimeRoute) {
+  return route.metadata.runtimeContract === "div3rsa-runtime-v1";
+}
+
+async function probeSelfRegisteredRoute(route: RegisteredRuntimeRoute) {
+  if (!route.healthUrl) return false;
+  let parsed: URL;
+  try { parsed = new URL(route.healthUrl); } catch { return false; }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password) return false;
+  const timeout = Number(process.env.DIV3RSA_RUNTIME_REGISTERED_HEALTH_TIMEOUT_MS ?? "3000");
+  try {
+    const response = await fetch(parsed, {
+      method: "GET",
+      cache: "no-store",
+      signal: AbortSignal.timeout(Number.isFinite(timeout) && timeout > 0 ? timeout : 3000)
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 export class RuntimeManager {
   private readonly adapters = new Map<string, RuntimeProviderAdapter>();
   private readonly cache = new Map<RuntimeAlias, CacheEntry>();
@@ -89,12 +111,15 @@ export class RuntimeManager {
 
     // Only a route marked ready by the actual agent worker can be reused. A
     // provider/model health check alone is not sufficient to prove queue work
-    // can be processed end-to-end.
+    // can be processed end-to-end. Provider-neutral workers may self-register
+    // even when the control plane has no lifecycle adapter for their GPU vendor.
     for (const route of registered.filter((candidate) => candidate.state === "ready")) {
       const adapter = this.adapters.get(route.providerKey);
-      if (!adapter?.configured()) continue;
       try {
-        if (!(await adapter.health(route))) continue;
+        const healthy = adapter?.configured()
+          ? await adapter.health(route)
+          : isProviderNeutralWorker(route) && await probeSelfRegisteredRoute(route);
+        if (!healthy) continue;
         await this.registry.markHealth(route.providerKey, route.externalId, "ready", null, { verifiedBy: "runtime-manager" });
         const result: RuntimeManagerResult = { configured: true, alias, instance: routeAsInstance(route), reused: true };
         this.remember(alias, result);
