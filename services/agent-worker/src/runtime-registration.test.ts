@@ -52,7 +52,7 @@ describe("runtime registration", () => {
     process.env.DIV3RSA_RUNTIME_PUBLIC_HEALTH_URL = "https://runtime.example/health";
     process.env.DIV3RSA_RUNTIME_ALIASES = "general-prod,code-prod";
     const config = runtimeRegistrationConfigFromEnvironment(8080)!;
-    const rpc = vi.fn(async (name: string) => ({ data: name === "runtime_worker_heartbeat" ? true : "worker-db-id", error: null }));
+    const rpc = vi.fn(async (name: string, _args: Record<string, unknown>) => ({ data: name === "runtime_worker_heartbeat" ? true : "worker-db-id", error: null }));
     const registration = new RuntimeRegistration({ rpc } as unknown as RuntimeRpcClient, config, "agent-worker-x");
 
     await expect(registration.sync()).resolves.toBe(true);
