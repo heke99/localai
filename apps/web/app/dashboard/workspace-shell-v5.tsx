@@ -8,6 +8,8 @@ type WorkspaceShellV5Props = Parameters<typeof WorkspaceShellV4>[0];
 
 const PREWARM_DEBOUNCE_MS = 250;
 const PREWARM_COOLDOWN_MS = 30_000;
+const PREWARM_FAILURE_RETRY_MS = 2_000;
+const PREWARM_MAX_FAILURE_RETRIES = 2;
 const DELETE_RETRY_TIMEOUT_MS = 3_000;
 
 function isDeleteButton(target: EventTarget | null): target is HTMLButtonElement {
@@ -21,27 +23,76 @@ function isDeleteButton(target: EventTarget | null): target is HTMLButtonElement
 
 export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
   const prewarmTimer = useRef<number | null>(null);
-  const lastPrewarmAt = useRef(0);
+  const prewarmRetryTimer = useRef<number | null>(null);
+  const prewarmInFlight = useRef(false);
+  const prewarmFailures = useRef(0);
+  const lastSuccessfulPrewarmAt = useRef(0);
   const deleteRetrying = useRef(false);
 
   useEffect(() => {
-    function schedulePrewarm(event: Event) {
-      const target = event.target;
-      if (!(target instanceof HTMLTextAreaElement)) return;
-      if (!target.closest(`.${styles.composer}`) || !target.value.trim()) return;
-      if (Date.now() - lastPrewarmAt.current < PREWARM_COOLDOWN_MS) return;
-      if (prewarmTimer.current !== null) window.clearTimeout(prewarmTimer.current);
+    let disposed = false;
 
-      prewarmTimer.current = window.setTimeout(() => {
-        prewarmTimer.current = null;
-        lastPrewarmAt.current = Date.now();
-        void fetch("/api/runtime/prewarm", {
+    async function requestPrewarm(force = false) {
+      if (disposed || prewarmInFlight.current) return;
+      if (!force && Date.now() - lastSuccessfulPrewarmAt.current < PREWARM_COOLDOWN_MS) return;
+
+      prewarmInFlight.current = true;
+      try {
+        const response = await fetch("/api/runtime/prewarm", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ workspaceId: props.workspaceId }),
           keepalive: true
-        }).catch(() => undefined);
-      }, PREWARM_DEBOUNCE_MS);
+        });
+
+        if (response.ok) {
+          lastSuccessfulPrewarmAt.current = Date.now();
+          prewarmFailures.current = 0;
+          if (prewarmRetryTimer.current !== null) {
+            window.clearTimeout(prewarmRetryTimer.current);
+            prewarmRetryTimer.current = null;
+          }
+          return;
+        }
+
+        if (response.status >= 500 && prewarmFailures.current < PREWARM_MAX_FAILURE_RETRIES) {
+          prewarmFailures.current += 1;
+          if (prewarmRetryTimer.current !== null) window.clearTimeout(prewarmRetryTimer.current);
+          prewarmRetryTimer.current = window.setTimeout(() => {
+            prewarmRetryTimer.current = null;
+            void requestPrewarm(true);
+          }, PREWARM_FAILURE_RETRY_MS);
+        }
+      } catch {
+        if (prewarmFailures.current < PREWARM_MAX_FAILURE_RETRIES) {
+          prewarmFailures.current += 1;
+          if (prewarmRetryTimer.current !== null) window.clearTimeout(prewarmRetryTimer.current);
+          prewarmRetryTimer.current = window.setTimeout(() => {
+            prewarmRetryTimer.current = null;
+            void requestPrewarm(true);
+          }, PREWARM_FAILURE_RETRY_MS);
+        }
+      } finally {
+        prewarmInFlight.current = false;
+      }
+    }
+
+    function composerAvailable() {
+      return document.querySelector(`.${styles.composer} textarea`) instanceof HTMLTextAreaElement;
+    }
+
+    function schedulePrewarm(event: Event) {
+      const target = event.target;
+      if (!(target instanceof HTMLTextAreaElement)) return;
+      if (!target.closest(`.${styles.composer}`)) return;
+      if (event.type === "input" && !target.value.trim()) return;
+      if (Date.now() - lastSuccessfulPrewarmAt.current < PREWARM_COOLDOWN_MS) return;
+      if (prewarmTimer.current !== null) window.clearTimeout(prewarmTimer.current);
+
+      prewarmTimer.current = window.setTimeout(() => {
+        prewarmTimer.current = null;
+        void requestPrewarm();
+      }, event.type === "focusin" ? 0 : PREWARM_DEBOUNCE_MS);
     }
 
     function retryDeleteAfterAutomaticCancel(event: MouseEvent) {
@@ -84,11 +135,20 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
     }
 
     document.addEventListener("input", schedulePrewarm, true);
+    document.addEventListener("focusin", schedulePrewarm, true);
     document.addEventListener("click", retryDeleteAfterAutomaticCancel, true);
+
+    // Start warming as soon as a chat composer is rendered. This gives the GPU
+    // boot process a head start before the user has finished typing a prompt.
+    if (composerAvailable()) void requestPrewarm();
+
     return () => {
+      disposed = true;
       document.removeEventListener("input", schedulePrewarm, true);
+      document.removeEventListener("focusin", schedulePrewarm, true);
       document.removeEventListener("click", retryDeleteAfterAutomaticCancel, true);
       if (prewarmTimer.current !== null) window.clearTimeout(prewarmTimer.current);
+      if (prewarmRetryTimer.current !== null) window.clearTimeout(prewarmRetryTimer.current);
     };
   }, [props.workspaceId]);
 
