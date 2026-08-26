@@ -7,6 +7,7 @@ import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
 import { RemoteProviderToolExecutor } from "./remote-provider-executor";
 import { RemoteRepositoryWorkspaceRuntime } from "./repository-runtime";
 import { SandboxVerificationRuntime } from "./sandbox-verification";
+import { RuntimeRegistration, runtimeRegistrationConfigFromEnvironment, type RuntimeRpcClient } from "./runtime-registration";
 import { SkillEngine, type SkillManifest } from "@div3rsa/skill-engine";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -15,6 +16,14 @@ function required(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`missing_environment:${name}`);
   return value;
+}
+
+function requiredAny(names: string[]): string {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  throw new Error(`missing_environment:${names.join("_or_")}`);
 }
 
 function numericEnvironment(name: string, fallback: number): number {
@@ -30,8 +39,11 @@ function sleep(ms: number) {
 }
 
 const supabase = createClient<Database>(required("SUPABASE_URL"), required("SUPABASE_SECRET_KEY"), { auth: { persistSession: false, autoRefreshToken: false } });
-const inferenceBaseUrl = required("QWEN_INFERENCE_BASE_URL");
-const inferenceApiKey = required("QWEN_INFERENCE_API_KEY");
+const modelPort = numericEnvironment("DIV3RSA_MODEL_PORT", 8080);
+const inferenceBaseUrl = process.env.DIV3RSA_INFERENCE_BASE_URL?.trim()
+  || process.env.QWEN_INFERENCE_BASE_URL?.trim()
+  || `http://127.0.0.1:${modelPort}/v1`;
+const inferenceApiKey = requiredAny(["DIV3RSA_INFERENCE_API_KEY", "QWEN_INFERENCE_API_KEY"]);
 const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApiKey, {
   contextLimit: numericEnvironment("DIV3RSA_MODEL_CONTEXT_SIZE", 32768),
   batchSize: numericEnvironment("DIV3RSA_MODEL_BATCH_SIZE", 2048),
@@ -52,6 +64,10 @@ const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApi
 const adapter = new OpenAiCompatibleAdapter(inferenceBaseUrl, inferenceApiKey, fetch, admission);
 const queue = new SupabaseAgentQueue(supabase);
 const workerId = process.env.DIV3RSA_WORKER_ID ?? `agent-worker-${process.pid}`;
+const runtimeConfig = runtimeRegistrationConfigFromEnvironment(modelPort);
+const runtimeRegistration = runtimeConfig
+  ? new RuntimeRegistration(supabase as unknown as RuntimeRpcClient, runtimeConfig, workerId)
+  : null;
 const repositoryRoot = process.env.DIV3RSA_REPOSITORY_ROOT ?? process.cwd();
 const manifest = JSON.parse(await readFile(resolve(repositoryRoot, "skills/runtime-manifest.json"), "utf8")) as SkillManifest;
 const skillEngine = new SkillEngine(manifest, { read: (path) => readFile(resolve(repositoryRoot, path), "utf8") });
@@ -75,9 +91,14 @@ const processor = new AgentWorkerProcessor(queue, { resolve: () => adapter }, wo
   }
 }, toolRuntime, repositoryRuntime, sandboxRuntime);
 let stopping = false;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
-process.on("SIGTERM", () => { stopping = true; });
-process.on("SIGINT", () => { stopping = true; });
+function requestStop() {
+  stopping = true;
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+}
+process.on("SIGTERM", requestStop);
+process.on("SIGINT", requestStop);
 
 async function waitForHealthyModel() {
   const timeoutMs = Math.max(1_000, numericEnvironment("DIV3RSA_MODEL_STARTUP_TIMEOUT_MS", 15 * 60_000));
@@ -89,7 +110,7 @@ async function waitForHealthyModel() {
     try {
       const health = await adapter.healthCheck();
       if (health.ok) {
-        console.info(`[agent-worker] model ready; worker=${workerId}`);
+        console.info(`[agent-worker] model ready; worker=${workerId}; endpoint=${new URL(inferenceBaseUrl).origin}`);
         return;
       }
       lastDetail = health.detail ?? "unhealthy";
@@ -106,7 +127,23 @@ async function waitForHealthyModel() {
   }
 }
 
+async function syncRuntimeRegistration() {
+  if (!runtimeRegistration) return;
+  try {
+    const registered = await runtimeRegistration.sync();
+    if (registered) console.info(`[agent-worker] runtime registry ready; worker=${workerId}; provider=${runtimeConfig?.providerKey}`);
+  } catch (error) {
+    console.warn(`[agent-worker] runtime registry sync failed; worker=${workerId}; detail=${error instanceof Error ? error.message : "runtime_registry_failed"}`);
+  }
+}
+
 await waitForHealthyModel();
+await syncRuntimeRegistration();
+if (runtimeRegistration) {
+  const heartbeatMs = Math.max(5_000, numericEnvironment("DIV3RSA_RUNTIME_HEARTBEAT_MS", 30_000));
+  heartbeatTimer = setInterval(() => { void syncRuntimeRegistration(); }, heartbeatMs);
+  heartbeatTimer.unref?.();
+}
 
 const idlePollMs = Math.max(100, numericEnvironment("DIV3RSA_QUEUE_IDLE_POLL_MS", 200));
 const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BACKOFF_MS", 1000));

@@ -92,3 +92,41 @@ export interface GpuProvider {
   getStatus(id: string): Promise<WorkerState>;
   getMetrics(id: string): Promise<WorkerMetrics>;
 }
+
+/**
+ * Provider-neutral runtime contract used by the production Runtime Manager.
+ * A provider adapter owns provider-specific lifecycle APIs. Callers only see
+ * a stable model alias, an OpenAI-compatible inference endpoint and health.
+ * Secrets are deliberately absent from this contract and stay in server env/vaults.
+ */
+export type RuntimeProviderKind = "managed" | "static";
+
+export interface RuntimeProviderRoute {
+  providerKey: string;
+  providerKind: RuntimeProviderKind;
+  externalId: string;
+  profile: string;
+  state: WorkerState;
+  endpoint: string;
+  healthUrl: string | null;
+  region?: string | null;
+  gpuType?: string | null;
+  gpuCount?: number | null;
+  vramTotalBytes?: number | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RuntimeProviderRequest {
+  alias: string;
+  profile: string;
+  preferred?: RuntimeProviderRoute | null;
+}
+
+export interface RuntimeProviderAdapter {
+  readonly key: string;
+  readonly kind: RuntimeProviderKind;
+  readonly defaultPriority: number;
+  configured(): boolean;
+  health(route: RuntimeProviderRoute): Promise<boolean>;
+  ensure(request: RuntimeProviderRequest): Promise<RuntimeProviderRoute>;
+}

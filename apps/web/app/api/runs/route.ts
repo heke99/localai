@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
-import { ensureRunpodRuntimeAwake } from "../../../lib/runpod/runtime";
+import { publicRuntimeWake, runtimeAliasForMode } from "../../../lib/runtime/contracts";
+import { ensureModelRuntime } from "../../../lib/runtime/production";
 
 const modes = new Set(["chat", "code", "lab", "research"]);
 type RpcClient = { rpc: <T>(name: string, args: Record<string, unknown>) => Promise<{ data: T | null; error: { message: string } | null }> };
@@ -55,10 +56,13 @@ export async function POST(request: Request) {
   const run = data?.[0];
   if (!run) return NextResponse.json({ error: "run_start_failed", requestId }, { status: 500 });
 
-  const runtimeWake = await ensureRunpodRuntimeAwake().catch((wakeError) => {
-    console.error("[run-start] runtime wake failed", wakeError);
-    return null;
-  });
+  const alias = runtimeAliasForMode(body.mode);
+  const runtimeWake = await ensureModelRuntime(alias)
+    .then(publicRuntimeWake)
+    .catch((wakeError) => {
+      console.error("[run-start] runtime ensure failed", wakeError instanceof Error ? wakeError.message : "runtime_wake_failed");
+      return null;
+    });
 
   return NextResponse.json({ runId: run.run_id, conversationId: run.resolved_conversation_id, requestId, traceId, runtimeWake }, { status: 202 });
 }
