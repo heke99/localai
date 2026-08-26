@@ -75,10 +75,11 @@ describe("HyperstackRuntimeProvider", () => {
         ] });
       }
       if (url.endsWith("/core/virtual-machines") && init?.method === "POST") {
-        createBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        createBody = body;
         return jsonResponse({ instances: [{
           id: 123,
-          name: createBody.name,
+          name: body.name,
           status: "CREATING",
           environment: { region: "CANADA-1" },
           flavor: { name: "n3-L40x2", gpu: "L40", gpu_count: 2 }
@@ -90,17 +91,18 @@ describe("HyperstackRuntimeProvider", () => {
     const provider = new HyperstackRuntimeProvider(bootstrapIssuer, fetchMock as unknown as typeof fetch);
 
     const result = await provider.ensure({ alias: "general-prod", profile: "large_96gb", preferred: null });
+    const body = createBody as unknown as Record<string, unknown>;
 
     expect(result.state).toBe("provisioning");
     expect(result.metadata?.vmId).toBe(123);
     expect(result.gpuType).toBe("L40");
     expect(result.gpuCount).toBe(2);
     expect(bootstrapIssuer.issue).toHaveBeenCalledTimes(1);
-    expect(createBody?.flavor_name).toBe("n3-L40x2");
-    expect(createBody?.assign_floating_ip).toBe(true);
-    const rules = createBody?.security_rules as Array<Record<string, unknown>>;
+    expect(body.flavor_name).toBe("n3-L40x2");
+    expect(body.assign_floating_ip).toBe(true);
+    const rules = body.security_rules as Array<Record<string, unknown>>;
     expect(rules.map((rule) => rule.port_range_min)).toEqual([80, 443]);
-    const userData = String(createBody?.user_data ?? "");
+    const userData = String(body.user_data ?? "");
     expect(userData).toContain("short-lived-bootstrap-token");
     expect(userData).toContain("/api/internal/runtime/bootstrap");
     expect(userData).not.toContain("SUPABASE_SECRET_KEY");
