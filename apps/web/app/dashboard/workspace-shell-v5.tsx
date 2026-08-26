@@ -41,6 +41,40 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
   }, [props.workspaceId]);
 
   const statusStyles = `
+    .${styles.messageStream} {
+      align-items: start;
+    }
+    .${styles.userMessage} {
+      justify-self: end;
+      width: min(76%, 680px);
+      grid-template-columns: minmax(0, 1fr) !important;
+      gap: 6px !important;
+    }
+    .${styles.userMessage} .${styles.messageMeta} {
+      text-align: right;
+      padding: 0 8px 0 0;
+    }
+    .${styles.userMessage} .${styles.messageBody} {
+      justify-self: end;
+      width: fit-content;
+      max-width: 100%;
+      padding: 10px 13px;
+      border: 1px solid #30333a;
+      border-radius: 16px 16px 4px 16px;
+      background: #1b1e23;
+    }
+    .${styles.assistantMessage} {
+      justify-self: start;
+      width: min(88%, 760px);
+      grid-template-columns: minmax(0, 1fr) !important;
+      gap: 6px !important;
+    }
+    .${styles.assistantMessage} .${styles.messageMeta} {
+      padding: 0 0 0 2px;
+    }
+    .${styles.assistantMessage} .${styles.messageBody} {
+      max-width: 100%;
+    }
     .${styles.runBar} {
       position: fixed !important;
       right: 22px !important;
@@ -63,6 +97,10 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
     }
     .${styles.runBar}:has(.${styles.runDotIdle}):not(:has(.${styles.runError})) {
       display: none !important;
+    }
+    @media (max-width: 700px) {
+      .${styles.userMessage} { width: 88%; }
+      .${styles.assistantMessage} { width: 96%; }
     }
   `;
 

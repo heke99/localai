@@ -92,6 +92,7 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
   const [prompt, setPrompt] = useState("");
   const [run, setRun] = useState<Run | null>(null);
   const [busy, setBusy] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resourcePickerOpen, setResourcePickerOpen] = useState(false);
@@ -179,7 +180,7 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
       const nextRun = { ...next, conversationId: run.conversationId };
       setRun(nextRun);
       if (terminalStatuses.has(next.status) && selectedConversationIdRef.current === run.conversationId) void loadConversation(run.conversationId);
-    }, 1500);
+    }, 750);
     return () => window.clearInterval(timer);
   }, [run]);
 
@@ -223,6 +224,57 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
       setActiveSection(project.mode); resetChatState(); setSelectedProjectId(project.id);
     } catch { setError("Projektet kunde inte skapas. Kontrollera din åtkomst och försök igen."); }
     finally { setBusy(false); }
+  }
+
+  async function deleteConversation(conversation: Conversation) {
+    if (deletingId) return;
+    if (runInProgress && run?.conversationId === conversation.id) {
+      setError("Stoppa den pågående körningen innan du raderar chatten.");
+      return;
+    }
+    if (!window.confirm(`Radera chatten “${conversation.title || "Ny chatt"}”? Detta går inte att ångra.`)) return;
+    setDeletingId(conversation.id); setError(null);
+    try {
+      const response = await fetch(`/api/conversations/${conversation.id}`, { method: "DELETE" });
+      const body = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "conversation_delete_failed");
+      setConversations((current) => current.filter((item) => item.id !== conversation.id));
+      if (selectedConversationId === conversation.id) {
+        resetChatState();
+        setSelectedProjectId(conversation.project_id);
+        setActiveSection(conversation.mode);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error && caught.message === "conversation_has_active_run" ? "Stoppa den pågående körningen innan du raderar chatten." : "Chatten kunde inte raderas. Försök igen.");
+    } finally { setDeletingId(null); }
+  }
+
+  async function deleteProject(project: Project) {
+    if (deletingId) return;
+    const projectChats = conversations.filter((conversation) => conversation.project_id === project.id);
+    if (runInProgress && projectChats.some((conversation) => conversation.id === run?.conversationId)) {
+      setError("Stoppa den pågående körningen innan du raderar projektet.");
+      return;
+    }
+    const suffix = projectChats.length === 1 ? "1 chatt" : `${projectChats.length} chattar`;
+    if (!window.confirm(`Radera projektet “${project.name}” och ${suffix}? Detta går inte att ångra.`)) return;
+    setDeletingId(project.id); setError(null);
+    try {
+      const response = await fetch(`/api/projects/${project.id}`, { method: "DELETE" });
+      const body = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "project_delete_failed");
+      setProjects((current) => current.filter((item) => item.id !== project.id));
+      setConversations((current) => current.filter((conversation) => conversation.project_id !== project.id));
+      setProjectResources((current) => current.filter((resource) => resource.project_id !== project.id));
+      if (manageProjectId === project.id) setManageProjectId(projects.find((item) => item.id !== project.id)?.id ?? "");
+      if (selectedProjectId === project.id) {
+        setSelectedProjectId(null);
+        resetChatState();
+        if (showChat) setActiveSection(project.mode);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error && caught.message === "project_has_active_run" ? "Stoppa pågående körningar i projektet innan du raderar det." : "Projektet kunde inte raderas. Kontrollera din åtkomst och försök igen.");
+    } finally { setDeletingId(null); }
   }
 
   async function ensureConversation(mode: Mode) {
@@ -313,8 +365,8 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
     {showChat && <aside className={styles.chatSidebar}>
       <div className={styles.chatSidebarHeader}><div><small>{modeMeta[activeMode].label}</small><strong>{selectedProject?.name ?? "Fristående"}</strong></div><button type="button" title="Ny fristående chatt" onClick={() => startNewChat(activeMode, null)}>＋</button></div>
       <div className={styles.sidebarScroll}>
-        <section className={styles.sidebarSection}><div className={styles.sidebarTitle}><span>Fristående</span><button type="button" onClick={() => startNewChat(activeMode, null)}>＋</button></div>{standaloneChats.map((conversation) => <button key={conversation.id} className={`${styles.chatRow} ${selectedConversationId === conversation.id ? styles.chatRowActive : ""}`} onClick={() => selectConversation(conversation)}><span>{conversation.title || "Ny chatt"}</span><small>{relative(conversation.last_message_at || conversation.updated_at)}</small></button>)}{!standaloneChats.length && <button className={styles.emptyRow} onClick={() => startNewChat(activeMode, null)}>Starta en fristående chatt</button>}</section>
-        <section className={styles.sidebarSection}><div className={styles.sidebarTitle}><span>{modeMeta[activeMode].label}-projekt</span><button type="button" title={`Nytt ${modeMeta[activeMode].label}-projekt`} onClick={() => beginProjectCreate(activeMode)}>＋</button></div>{modeProjects.map((project) => <div className={styles.projectTree} key={project.id}><div className={`${styles.projectRow} ${selectedProjectId === project.id ? styles.projectRowActive : ""}`}><button className={styles.projectOpen} onClick={() => openProject(project.id)}><span className={styles.projectDot}/><span>{project.name}</span></button><button className={styles.projectAddChat} title={`Ny chatt i ${project.name}`} onClick={() => startNewChat(project.mode, project.id)}>＋</button></div>{selectedProjectId === project.id && <div className={styles.projectChats}>{selectedProjectChats.map((conversation) => <button key={conversation.id} className={`${styles.chatRow} ${selectedConversationId === conversation.id ? styles.chatRowActive : ""}`} onClick={() => selectConversation(conversation)}><span>{conversation.title || "Ny chatt"}</span><small>{relative(conversation.last_message_at || conversation.updated_at)}</small></button>)}{!selectedProjectChats.length && <button className={styles.emptyRow} onClick={() => startNewChat(project.mode, project.id)}>Skapa första chatten</button>}</div>}</div>)}{!modeProjects.length && <button className={styles.emptyRow} onClick={() => beginProjectCreate(activeMode)}>Skapa ditt första {modeMeta[activeMode].label}-projekt</button>}</section>
+        <section className={styles.sidebarSection}><div className={styles.sidebarTitle}><span>Fristående</span><button type="button" onClick={() => startNewChat(activeMode, null)}>＋</button></div>{standaloneChats.map((conversation) => <div className={styles.projectRow} key={conversation.id}><button className={`${styles.chatRow} ${selectedConversationId === conversation.id ? styles.chatRowActive : ""}`} onClick={() => selectConversation(conversation)}><span>{conversation.title || "Ny chatt"}</span><small>{relative(conversation.last_message_at || conversation.updated_at)}</small></button><button type="button" className={styles.projectAddChat} title="Radera chatt" aria-label={`Radera ${conversation.title || "chatt"}`} disabled={deletingId === conversation.id} onClick={() => void deleteConversation(conversation)}>{deletingId === conversation.id ? "…" : "×"}</button></div>)}{!standaloneChats.length && <button className={styles.emptyRow} onClick={() => startNewChat(activeMode, null)}>Starta en fristående chatt</button>}</section>
+        <section className={styles.sidebarSection}><div className={styles.sidebarTitle}><span>{modeMeta[activeMode].label}-projekt</span><button type="button" title={`Nytt ${modeMeta[activeMode].label}-projekt`} onClick={() => beginProjectCreate(activeMode)}>＋</button></div>{modeProjects.map((project) => <div className={styles.projectTree} key={project.id}><div className={`${styles.projectRow} ${selectedProjectId === project.id ? styles.projectRowActive : ""}`}><button className={styles.projectOpen} onClick={() => openProject(project.id)}><span className={styles.projectDot}/><span>{project.name}</span></button><button className={styles.projectAddChat} title={`Ny chatt i ${project.name}`} onClick={() => startNewChat(project.mode, project.id)}>＋</button><button type="button" className={styles.projectAddChat} title={`Radera ${project.name}`} aria-label={`Radera projektet ${project.name}`} disabled={deletingId === project.id} onClick={() => void deleteProject(project)}>{deletingId === project.id ? "…" : "×"}</button></div>{selectedProjectId === project.id && <div className={styles.projectChats}>{selectedProjectChats.map((conversation) => <div className={styles.projectRow} key={conversation.id}><button className={`${styles.chatRow} ${selectedConversationId === conversation.id ? styles.chatRowActive : ""}`} onClick={() => selectConversation(conversation)}><span>{conversation.title || "Ny chatt"}</span><small>{relative(conversation.last_message_at || conversation.updated_at)}</small></button><button type="button" className={styles.projectAddChat} title="Radera chatt" aria-label={`Radera ${conversation.title || "chatt"}`} disabled={deletingId === conversation.id} onClick={() => void deleteConversation(conversation)}>{deletingId === conversation.id ? "…" : "×"}</button></div>)}{!selectedProjectChats.length && <button className={styles.emptyRow} onClick={() => startNewChat(project.mode, project.id)}>Skapa första chatten</button>}</div>}</div>)}{!modeProjects.length && <button className={styles.emptyRow} onClick={() => beginProjectCreate(activeMode)}>Skapa ditt första {modeMeta[activeMode].label}-projekt</button>}</section>
       </div>
     </aside>}
 
@@ -326,7 +378,7 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
       {activeSection === "projects" && <section className={styles.page}>
         <div className={styles.pageHeader}><div><span className={styles.kicker}>Arbetsytor</span><h1>Projekt</h1><p>Projekt tillhör en arbetsdel. Ett Code-projekt syns i Code, ett Research-projekt i Research — här ser du allt grupperat.</p></div><button className={styles.primaryButton} onClick={() => { setProjectCreateMode("code"); setProjectFormOpen(true); }}>＋ Nytt projekt</button></div>
         {projectFormOpen && <form className={styles.projectForm} onSubmit={createProject}><label>Typ<select value={projectCreateMode} onChange={(event) => setProjectCreateMode(event.target.value as Mode)}>{projectModeOrder.map((mode) => <option key={mode} value={mode}>{modeMeta[mode].label}</option>)}</select></label><label>Projektnamn<input value={projectName} onChange={(event) => setProjectName(event.target.value)} maxLength={120} required autoFocus/></label><label>Beskrivning<textarea value={projectDescription} onChange={(event) => setProjectDescription(event.target.value)} maxLength={2000} rows={3}/></label><div className={styles.formActions}><button type="button" onClick={() => setProjectFormOpen(false)}>Avbryt</button><button className={styles.primaryButton} disabled={busy}>Skapa {modeMeta[projectCreateMode].label}-projekt</button></div></form>}
-        {projectModeOrder.map((mode) => { const grouped = projects.filter((project) => project.mode === mode); if (!grouped.length) return null; return <section key={mode}><div className={styles.pageHeader}><div><span className={styles.kicker}>{modeMeta[mode].label}</span><h2>{modeMeta[mode].label}-projekt</h2></div><button onClick={() => beginProjectCreate(mode)}>＋ Nytt</button></div><div className={styles.projectGrid}>{grouped.map((project) => { const chats = conversations.filter((chat) => chat.project_id === project.id); const bound = projectResources.filter((resource) => resource.project_id === project.id && resource.enabled); return <article className={styles.projectCard} key={project.id}><div className={styles.projectCardTop}><span className={styles.projectMark}>{project.name.slice(0,2).toUpperCase()}</span><div><span className={styles.kicker}>{modeMeta[project.mode].label}</span><h2>{project.name}</h2><p>{project.description || "Inga anteckningar ännu."}</p></div></div><div className={styles.projectStats}><span><strong>{chats.length}</strong> chattar</span><span><strong>{bound.length}</strong> resurser</span><span><strong>{bound.filter((resource) => resource.provider === "github").length}</strong> repos</span></div><div className={styles.projectActions}><button className={styles.primaryButton} onClick={() => startNewChat(project.mode, project.id)}>＋ Ny chatt</button><button onClick={() => openProject(project.id)}>Öppna projekt</button></div></article>; })}</div></section>; })}
+        {projectModeOrder.map((mode) => { const grouped = projects.filter((project) => project.mode === mode); if (!grouped.length) return null; return <section key={mode}><div className={styles.pageHeader}><div><span className={styles.kicker}>{modeMeta[mode].label}</span><h2>{modeMeta[mode].label}-projekt</h2></div><button onClick={() => beginProjectCreate(mode)}>＋ Nytt</button></div><div className={styles.projectGrid}>{grouped.map((project) => { const chats = conversations.filter((chat) => chat.project_id === project.id); const bound = projectResources.filter((resource) => resource.project_id === project.id && resource.enabled); return <article className={styles.projectCard} key={project.id}><div className={styles.projectCardTop}><span className={styles.projectMark}>{project.name.slice(0,2).toUpperCase()}</span><div><span className={styles.kicker}>{modeMeta[project.mode].label}</span><h2>{project.name}</h2><p>{project.description || "Inga anteckningar ännu."}</p></div></div><div className={styles.projectStats}><span><strong>{chats.length}</strong> chattar</span><span><strong>{bound.length}</strong> resurser</span><span><strong>{bound.filter((resource) => resource.provider === "github").length}</strong> repos</span></div><div className={styles.projectActions}><button className={styles.primaryButton} onClick={() => startNewChat(project.mode, project.id)}>＋ Ny chatt</button><button onClick={() => openProject(project.id)}>Öppna projekt</button><button type="button" style={{ color: "#f08d86" }} disabled={deletingId === project.id} onClick={() => void deleteProject(project)}>{deletingId === project.id ? "Raderar…" : "Radera"}</button></div></article>; })}</div></section>; })}
         {!projects.length && <div className={styles.bigEmpty}><h2>Inga projekt ännu</h2><p>Skapa ett Code-, Research-, Lab- eller Chat-projekt. Fristående chattar fungerar fortfarande utan projekt.</p><div><button className={styles.primaryButton} onClick={() => { setProjectCreateMode("code"); setProjectFormOpen(true); }}>Skapa projekt</button><button onClick={() => startNewChat("chat", null)}>Fristående chatt</button></div></div>}{error && <p className={styles.error}>{error}</p>}
       </section>}
 
