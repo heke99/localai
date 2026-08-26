@@ -7,6 +7,7 @@ import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
 import { RemoteProviderToolExecutor } from "./remote-provider-executor";
 import { RemoteRepositoryWorkspaceRuntime } from "./repository-runtime";
 import { SandboxVerificationRuntime } from "./sandbox-verification";
+import { RuntimeRegistration, runtimeRegistrationConfigFromEnvironment, type RuntimeRpcClient } from "./runtime-registration";
 import { SkillEngine, type SkillManifest } from "@div3rsa/skill-engine";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -63,6 +64,10 @@ const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApi
 const adapter = new OpenAiCompatibleAdapter(inferenceBaseUrl, inferenceApiKey, fetch, admission);
 const queue = new SupabaseAgentQueue(supabase);
 const workerId = process.env.DIV3RSA_WORKER_ID ?? `agent-worker-${process.pid}`;
+const runtimeConfig = runtimeRegistrationConfigFromEnvironment(modelPort);
+const runtimeRegistration = runtimeConfig
+  ? new RuntimeRegistration(supabase as unknown as RuntimeRpcClient, runtimeConfig, workerId)
+  : null;
 const repositoryRoot = process.env.DIV3RSA_REPOSITORY_ROOT ?? process.cwd();
 const manifest = JSON.parse(await readFile(resolve(repositoryRoot, "skills/runtime-manifest.json"), "utf8")) as SkillManifest;
 const skillEngine = new SkillEngine(manifest, { read: (path) => readFile(resolve(repositoryRoot, path), "utf8") });
@@ -86,9 +91,14 @@ const processor = new AgentWorkerProcessor(queue, { resolve: () => adapter }, wo
   }
 }, toolRuntime, repositoryRuntime, sandboxRuntime);
 let stopping = false;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
-process.on("SIGTERM", () => { stopping = true; });
-process.on("SIGINT", () => { stopping = true; });
+function requestStop() {
+  stopping = true;
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+}
+process.on("SIGTERM", requestStop);
+process.on("SIGINT", requestStop);
 
 async function waitForHealthyModel() {
   const timeoutMs = Math.max(1_000, numericEnvironment("DIV3RSA_MODEL_STARTUP_TIMEOUT_MS", 15 * 60_000));
@@ -117,7 +127,23 @@ async function waitForHealthyModel() {
   }
 }
 
+async function syncRuntimeRegistration() {
+  if (!runtimeRegistration) return;
+  try {
+    const registered = await runtimeRegistration.sync();
+    if (registered) console.info(`[agent-worker] runtime registry ready; worker=${workerId}; provider=${runtimeConfig?.providerKey}`);
+  } catch (error) {
+    console.warn(`[agent-worker] runtime registry sync failed; worker=${workerId}; detail=${error instanceof Error ? error.message : "runtime_registry_failed"}`);
+  }
+}
+
 await waitForHealthyModel();
+await syncRuntimeRegistration();
+if (runtimeRegistration) {
+  const heartbeatMs = Math.max(5_000, numericEnvironment("DIV3RSA_RUNTIME_HEARTBEAT_MS", 30_000));
+  heartbeatTimer = setInterval(() => { void syncRuntimeRegistration(); }, heartbeatMs);
+  heartbeatTimer.unref?.();
+}
 
 const idlePollMs = Math.max(100, numericEnvironment("DIV3RSA_QUEUE_IDLE_POLL_MS", 200));
 const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BACKOFF_MS", 1000));
