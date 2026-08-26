@@ -85,7 +85,8 @@ keys = [
     "DIV3RSA_RUNTIME_REGION", "DIV3RSA_RUNTIME_GPU_TYPE",
     "DIV3RSA_RUNTIME_GPU_COUNT", "DIV3RSA_RUNTIME_VRAM_GB",
     "DIV3RSA_INTEGRATION_GATEWAY_URL", "DIV3RSA_RUNTIME_GIT_URL",
-    "DIV3RSA_RUNTIME_GIT_REF", "DIV3RSA_LLAMA_CPP_REVISION"
+    "DIV3RSA_RUNTIME_GIT_REF", "DIV3RSA_LLAMA_CPP_REVISION",
+    "DIV3RSA_RUNTIME_PUBLIC_ENDPOINT", "DIV3RSA_RUNTIME_PUBLIC_HEALTH_URL"
 ]
 with open(path, "w", encoding="utf-8") as handle:
     for key in keys:
@@ -112,10 +113,10 @@ print(json.dumps({"token": os.environ["DIV3RSA_BOOTSTRAP_TOKEN"]}))
 PY
   )" || fatal "runtime bootstrap exchange failed"
 
-  printf '%s' "$response" | python3 - "$ENV_FILE" <<'PY'
-import json, shlex, sys
+  RUNTIME_BOOTSTRAP_RESPONSE="$response" python3 - "$ENV_FILE" <<'PY'
+import json, os, shlex, sys
 path = sys.argv[1]
-data = json.load(sys.stdin)
+data = json.loads(os.environ["RUNTIME_BOOTSTRAP_RESPONSE"])
 if data.get("contract") != "div3rsa-runtime-v1":
     raise SystemExit("invalid runtime bootstrap contract")
 required = {
@@ -140,6 +141,7 @@ with open(path, "w", encoding="utf-8") as handle:
     for key, value in required.items():
         handle.write(f"export {key}={shlex.quote(str(value))}\n")
 PY
+  unset response
   chmod 600 "$ENV_FILE"
 }
 
