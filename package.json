@@ -20,7 +20,7 @@
     "typecheck": "tsc --noEmit",
     "model:fetch:q8": "bash scripts/fetch_qwen_v3_q8.sh",
     "validate:skills": "python3 scripts/validate_skills.py",
-    "validate:runpod-startup": "bash -n infra/runpod/start-production.sh && bash -n infra/runpod/auto-start.sh",
+    "validate:runpod-startup": "bash -n infra/runtime/start-production.sh && bash -n infra/runpod/start-production.sh && bash -n infra/runpod/auto-start.sh",
     "build:skill-manifest": "python3 scripts/build_skill_manifest.py",
     "verify": "npm run validate:skills && npm run validate:runpod-startup && npm run test:native-runtime && npm run test:runpod-wake && npm run build:skill-manifest && npm run test && npm run typecheck && npm run build"
   },
