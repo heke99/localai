@@ -175,7 +175,7 @@ begin
     and (
       w.state <> 'ready'
       or p.provider_kind = 'static'
-      or w.last_heartbeat_at >= now() - interval '45 seconds'
+      or w.last_heartbeat_at >= now() - interval '90 seconds'
     )
   order by
     case w.state when 'ready' then 0 when 'warming' then 1 else 2 end,
