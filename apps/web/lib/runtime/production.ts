@@ -1,6 +1,8 @@
 import "server-only";
 import type { RuntimeAlias, RuntimeProviderAdapter } from "./contracts";
+import { SupabaseRuntimeBootstrapIssuer } from "./bootstrap-issuer";
 import { RuntimeManager } from "./manager";
+import { HyperstackRuntimeProvider } from "./providers/hyperstack";
 import { OpenAiCompatibleRuntimeProvider } from "./providers/openai-compatible";
 import { RunpodRuntimeProvider } from "./providers/runpod";
 import { SupabaseRuntimeRegistry } from "./supabase-registry";
@@ -15,11 +17,15 @@ function providerOrder() {
 }
 
 function configuredAdapters() {
-  const adapters: RuntimeProviderAdapter[] = [new RunpodRuntimeProvider()];
+  const bootstrapIssuer = new SupabaseRuntimeBootstrapIssuer();
+  const adapters: RuntimeProviderAdapter[] = [
+    new RunpodRuntimeProvider(),
+    new HyperstackRuntimeProvider(bootstrapIssuer)
+  ];
   try {
     const generic = new OpenAiCompatibleRuntimeProvider();
     // Force key validation here so an invalid optional provider never prevents
-    // the primary managed provider from serving production traffic.
+    // managed providers from serving production traffic.
     void generic.key;
     adapters.push(generic);
   } catch (error) {
