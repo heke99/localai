@@ -13,10 +13,16 @@ const loaded = Object.fromEntries(await Promise.all(Object.entries(files).map(as
 const checks = [
   [loaded.runtime.includes("https://rest.runpod.io/v1"), "RunPod REST base URL missing"],
   [loaded.runtime.includes("/start"), "RunPod start path missing"],
+  [loaded.runtime.includes("podResume"), "RunPod GraphQL resume fallback missing"],
+  [loaded.runtime.includes("RUNPOD_START_ATTEMPTS"), "RunPod start retry policy missing"],
   [loaded.runtime.includes("/restart"), "RunPod restart path missing"],
   [loaded.prewarm.includes("my_agent_access_snapshot"), "prewarm access gate missing"],
   [loaded.shell.includes("/api/runtime/prewarm"), "composer prewarm hook missing"],
+  [loaded.shell.includes("focusin"), "composer focus prewarm trigger missing"],
+  [loaded.shell.includes("lastSuccessfulPrewarmAt"), "failed prewarm cooldown protection missing"],
   [loaded.runRoute.includes("ensureRunpodRuntimeAwake"), "run-submit wake fallback missing"],
+  [loaded.autoStart.includes("git fetch"), "Pod boot Git fetch missing"],
+  [loaded.autoStart.includes("git reset --hard"), "Pod boot exact commit sync missing"],
   [loaded.autoStart.includes("start-production.sh"), "Pod resume supervisor handoff missing"]
 ];
 
@@ -24,4 +30,4 @@ for (const [passed, message] of checks) {
   if (!passed) throw new Error(message);
 }
 
-console.log("[runpod-wake-contract] wake-on-demand wiring present");
+console.log("[runpod-wake-contract] wake-on-demand and boot sync wiring present");
