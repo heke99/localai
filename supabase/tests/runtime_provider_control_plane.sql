@@ -2,8 +2,6 @@ do $$
 declare
   register_definition text;
   resolve_definition text;
-  normalized_register text;
-  normalized_resolve text;
 begin
   if to_regclass('internal.model_runtime_routes') is null then
     raise exception 'model runtime route registry is missing';
@@ -27,13 +25,30 @@ begin
   select pg_get_functiondef('public.runtime_resolve_model_routes(text)'::regprocedure)
     into resolve_definition;
 
-  normalized_register := regexp_replace(lower(register_definition), '\s+', '', 'g');
-  normalized_resolve := regexp_replace(lower(resolve_definition), '\s+', '', 'g');
+  if not exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.proname in ('runtime_register_worker', 'runtime_resolve_model_routes', 'runtime_enabled_providers', 'runtime_mark_worker_health')
+      and array_to_string(coalesce(p.proconfig, array[]::text[]), ',') like '%search_path=%'
+  ) then
+    raise exception 'runtime control functions do not pin search_path';
+  end if;
 
-  if position('setsearch_path=''''::text' in normalized_register) = 0
-     and position('setsearch_pathto''''::text' in normalized_register) = 0
-     and position('setsearch_path=''''' in normalized_register) = 0 then
-    raise exception 'runtime register function does not pin an empty search_path';
+  if exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.proname in ('runtime_register_worker', 'runtime_resolve_model_routes', 'runtime_enabled_providers', 'runtime_mark_worker_health')
+      and (
+        array_to_string(coalesce(p.proconfig, array[]::text[]), ',') not like '%search_path=%'
+        or array_to_string(coalesce(p.proconfig, array[]::text[]), ',') like '%public%'
+        or array_to_string(coalesce(p.proconfig, array[]::text[]), ',') like '%$user%'
+      )
+  ) then
+    raise exception 'runtime control function has an unsafe search_path';
   end if;
 
   if position('internal.model_aliases' in lower(register_definition)) = 0
