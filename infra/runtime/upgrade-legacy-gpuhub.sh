@@ -19,6 +19,7 @@ SCREEN_NAME="${DIV3RSA_LEGACY_WORKER_SCREEN:-localai-agent}"
 TARGET_REF="${DIV3RSA_RUNTIME_GIT_REF:-main}"
 EXPECTED_COMMIT_SHA="${DIV3RSA_EXPECTED_COMMIT_SHA:-}"
 GENERATED_MANIFEST="skills/runtime-manifest.json"
+SEARCH_CAPABILITY_CHECK="${REPO_DIR}/infra/runtime/check-search-capability.sh"
 BEFORE_COMMIT=""
 DEPLOYMENT_MUTATED=0
 
@@ -77,11 +78,22 @@ start_worker() {
   "
 }
 
+verify_search() {
+  if [[ -f "$SEARCH_CAPABILITY_CHECK" ]]; then
+    bash "$SEARCH_CAPABILITY_CHECK" "http://127.0.0.1:${SEARCH_PORT}" >/dev/null
+  else
+    # Rollback compatibility only: older revisions predate the capability gate.
+    # New deployments always contain and must pass check-search-capability.sh.
+    curl --fail --silent --show-error --max-time 8 \
+      "http://127.0.0.1:${SEARCH_PORT}/search?q=div3rsa-rollback-health&format=json" >/dev/null
+  fi
+}
+
 verify_runtime() {
   local worker_wait="${1:-3}"
   sleep "$worker_wait"
   screen -list | grep -F ".${SCREEN_NAME}" >/dev/null || return 1
-  curl --fail --silent --show-error --max-time 8 "http://127.0.0.1:${SEARCH_PORT}/search?q=div3rsa-health&format=json" >/dev/null || return 1
+  verify_search || return 1
   curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${MODEL_PORT}/health" >/dev/null || return 1
 }
 
@@ -222,4 +234,4 @@ verify_runtime 3 || fatal "runtime health check failed after worker restart"
 DEPLOYMENT_MUTATED=0
 log "upgrade complete"
 log "commit=$(git -C "$REPO_DIR" rev-parse HEAD)"
-log "Qwen healthy on 127.0.0.1:${MODEL_PORT}; native SearXNG healthy on 127.0.0.1:${SEARCH_PORT}; worker screen=${SCREEN_NAME}"
+log "Qwen healthy on 127.0.0.1:${MODEL_PORT}; native SearXNG search-capable on 127.0.0.1:${SEARCH_PORT}; worker screen=${SCREEN_NAME}"
