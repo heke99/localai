@@ -21,6 +21,23 @@ describe("prompt processor", () => {
     expect(contract.researchDepth).toBe("standard");
   });
 
+  it("does not treat a supplied internal policy as current web information", () => {
+    const contract = processPrompt("chat", "A service has 8 workers. Each worker can safely process 3 simultaneous requests, but production policy reserves 25% of total capacity for recovery traffic. What is the maximum normal concurrent request count?");
+    expect(contract.freshness).toBe("stable");
+    expect(contract.requires.web).toBe(false);
+    expect(contract.analysis.requiresCurrentInformation).toBe(false);
+    expect(contract.researchDepth).toBe("none");
+  });
+
+  it("keeps intrinsically changeable domains current even without the word latest", () => {
+    const visa = processPrompt("chat", "How do I get a work visa for Japan?");
+    const vat = processPrompt("chat", "What is the standard VAT rate in Sweden?");
+    expect(visa.freshness).toBe("current");
+    expect(visa.requires.web).toBe(true);
+    expect(vat.freshness).toBe("current");
+    expect(vat.requires.web).toBe(true);
+  });
+
   it("marks production database deployment work critical and mutation-sensitive", () => {
     const contract = processPrompt("code", "Update the production database RLS policy and deploy the migration");
     expect(contract.risk).toBe("critical");
