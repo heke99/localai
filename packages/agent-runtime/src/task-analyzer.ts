@@ -126,10 +126,10 @@ function informationRouting(mode: AgentMode, prompt: string, complexity: TaskCom
   return { informationFreshness, researchDepth, requiresCurrentInformation, requiresLiveData };
 }
 
-function reasoningFor(risk: TaskRisk, complexity: TaskComplexity, prompt: string, requiresCurrentInformation: boolean, requiresLiveData: boolean, requiresRepository: boolean): ReasoningLevel {
+function reasoningFor(risk: TaskRisk, complexity: TaskComplexity, prompt: string, requiresCurrentInformation: boolean, requiresLiveData: boolean, repositoryReasoningRequired: boolean): ReasoningLevel {
   if (requiresLiveData && complexity === "small" && risk === "low") return "fast";
   if (complexity === "large" || risk === "critical" || DEEP_REASONING.test(prompt)) return "deep";
-  if (risk === "high" || risk === "medium" || complexity === "medium" || requiresCurrentInformation || requiresRepository) return "standard";
+  if (risk === "high" || risk === "medium" || complexity === "medium" || requiresCurrentInformation || repositoryReasoningRequired) return "standard";
   return "fast";
 }
 
@@ -151,7 +151,7 @@ export function analyzeTask(mode: AgentMode, prompt: string, project: ProjectCon
   const requiresDeployment = categories.includes("deployment");
   const requiresSecurityReview = risk === "critical" || risk === "high" || categories.includes("security");
   const information = informationRouting(mode, prompt, complexity);
-  const reasoningLevel = reasoningFor(risk, complexity, prompt, information.requiresCurrentInformation, information.requiresLiveData, requiresRepository);
+  const reasoningLevel = reasoningFor(risk, complexity, prompt, information.requiresCurrentInformation, information.requiresLiveData, requiresRepository && mode === "code");
 
   const verificationRequirements = unique([
     "diff-review",
