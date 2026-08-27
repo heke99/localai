@@ -544,47 +544,55 @@ export class AgentWorkerProcessor {
                 const openedUrls = new Set(toolTrace
                   .filter((item) => item.name === "web_fetch" && typeof item.input.url === "string")
                   .map((item) => String(item.input.url)));
-                const candidate = rankSearchCandidates(searchOutput, contract.normalizedPrompt)
-                  .find((item) => !openedUrls.has(item.url) && !attemptedFallbackUrls.has(item.url));
-                if (!candidate) {
-                  await this.queue.step(run.runId, "tool", "blocked", "Deterministic evidence fallback found no new source", {
-                    verificationRound,
-                    researchAttempt,
-                    query: fallbackQuery
-                  });
-                  continue;
-                }
+                const candidates = rankSearchCandidates(searchOutput, contract.normalizedPrompt)
+        .filter((item) => !openedUrls.has(item.url) && !attemptedFallbackUrls.has(item.url))
+        .slice(0, 3);
+      if (!candidates.length) {
+        await this.queue.step(run.runId, "tool", "blocked", "Deterministic evidence fallback found no new source", {
+          verificationRound,
+          researchAttempt,
+          query: fallbackQuery
+        });
+        continue;
+      }
 
-                attemptedFallbackUrls.add(candidate.url);
+      let successfulFallbackFetches = 0;
+      for (const [candidateIndex, candidate] of candidates.entries()) {
+        if (successfulFallbackFetches >= 2) break;
+        attemptedFallbackUrls.add(candidate.url);
 
-                const fetchCall: ModelToolCall = {
-                  id: `${run.requestId}:grounding-fallback-fetch:${verificationRound}:${researchAttempt}`,
-                  name: "web_fetch",
-                  input: { url: candidate.url }
-                };
-                loopGuard.record({ action: fetchCall.name, inputHash: hashInput(fetchCall.input) });
-                await this.queue.step(run.runId, "tool", "waiting_for_tool", "web_fetch", {
-                  toolCallId: fetchCall.id,
-                  verificationRound,
-                  researchAttempt,
-                  url: candidate.url,
-                  deterministicEvidenceFallback: true
-                });
-                try {
-                  const output = await this.tools.execute(run, fetchCall);
-                  toolTrace.push({ sequence: toolTrace.length + 1, name: fetchCall.name, input: fetchCall.input, output });
-                  messages.push({ role: "assistant", content: "", toolCalls: [fetchCall] });
-                  messages.push({ role: "tool", name: fetchCall.name, toolCallId: fetchCall.id, content: compactToolOutput(output) });
-                  openedNewSource = true;
-                } catch (error) {
-                  await this.queue.step(run.runId, "tool", "blocked", "Deterministic evidence fallback source fetch failed", {
-                    verificationRound,
-                    researchAttempt,
-                    url: candidate.url,
-                    error: error instanceof Error ? error.message : "web_fetch_failed"
-                  });
-                }
-                continue;
+        const fetchCall: ModelToolCall = {
+          id: `${run.requestId}:grounding-fallback-fetch:${verificationRound}:${researchAttempt}:${candidateIndex}`,
+          name: "web_fetch",
+          input: { url: candidate.url }
+        };
+        loopGuard.record({ action: fetchCall.name, inputHash: hashInput(fetchCall.input) });
+        await this.queue.step(run.runId, "tool", "waiting_for_tool", "web_fetch", {
+          toolCallId: fetchCall.id,
+          verificationRound,
+          researchAttempt,
+          candidateIndex,
+          url: candidate.url,
+          deterministicEvidenceFallback: true
+        });
+        try {
+          const output = await this.tools.execute(run, fetchCall);
+          toolTrace.push({ sequence: toolTrace.length + 1, name: fetchCall.name, input: fetchCall.input, output });
+          messages.push({ role: "assistant", content: "", toolCalls: [fetchCall] });
+          messages.push({ role: "tool", name: fetchCall.name, toolCallId: fetchCall.id, content: compactToolOutput(output) });
+          openedNewSource = true;
+          successfulFallbackFetches += 1;
+        } catch (error) {
+          await this.queue.step(run.runId, "tool", "blocked", "Deterministic evidence fallback source fetch failed", {
+            verificationRound,
+            researchAttempt,
+            candidateIndex,
+            url: candidate.url,
+            error: error instanceof Error ? error.message : "web_fetch_failed"
+          });
+        }
+      }
+      continue;
               }
 
               const disallowedCall = research.toolCalls.find((call) => call.name !== "web_search" && call.name !== "web_fetch");
