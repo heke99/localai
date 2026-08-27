@@ -155,9 +155,20 @@ function hasTool(request: GenerateRequest, name: string): boolean {
   return Boolean(request.tools?.some((tool) => tool.name === name));
 }
 
+function systemInstructions(request: GenerateRequest): string {
+  return request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n");
+}
+
+function reasoningEffort(request: GenerateRequest): "none" | undefined {
+  const system = systemInstructions(request);
+  const stableFast = /Reasoning policy:\s*FAST(?:\b|:)/i.test(system) && /STABLE INFORMATION:/i.test(system);
+  const freshnessRequired = /(?:CURRENT|LIVE) INFORMATION REQUIRED:/i.test(system);
+  return stableFast && !freshnessRequired ? "none" : undefined;
+}
+
 function toolChoice(request: GenerateRequest): OpenAiToolChoice | undefined {
   if (!request.tools?.length) return undefined;
-  const system = request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n");
+  const system = systemInstructions(request);
   const currentRequired = system.includes("CURRENT INFORMATION REQUIRED") || system.includes("LIVE INFORMATION REQUIRED");
   if (!currentRequired) return "auto";
 
@@ -184,6 +195,7 @@ function requestBody(request: GenerateRequest, stream: boolean) {
     messages: request.messages.map(encodeMessage),
     max_tokens: request.maxOutputTokens,
     temperature: request.temperature,
+    reasoning_effort: reasoningEffort(request),
     stream,
     stream_options: stream ? { include_usage: true } : undefined,
     tools: request.tools?.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
@@ -261,80 +273,62 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
       await onDelta(visible);
     };
 
-    const consumePayload = async (data: string) => {
-      const parsed = JSON.parse(data) as StreamPayload;
-      const timing = timingObservation(parsed.timings);
-      if (timing) this.admission?.observeTimings(timing);
-      if (parsed.usage) {
-        usage = {
-          inputTokens: parsed.usage.prompt_tokens ?? usage.inputTokens,
-          outputTokens: parsed.usage.completion_tokens ?? usage.outputTokens,
-          cachedTokens: parsed.usage.prompt_tokens_details?.cached_tokens ?? usage.cachedTokens
-        };
-      }
-      const choice = parsed.choices?.[0];
-      if (!choice) return;
-      if (choice.finish_reason) finishReason = choice.finish_reason;
-      const delta = choice.delta;
-      if (delta?.content) await emitVisible(delta.content);
-      for (const part of delta?.tool_calls ?? []) {
-        const index = Number.isInteger(part.index) ? part.index! : 0;
-        const current = toolParts.get(index) ?? { id: `tool-call-${index}`, name: "", arguments: "" };
-        if (part.id) current.id = part.id;
-        if (part.function?.name) current.name += part.function.name;
-        if (part.function?.arguments) current.arguments += part.function.arguments;
-        toolParts.set(index, current);
-      }
-    };
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += value;
-        const events = buffer.split("\n\n");
-        buffer = events.pop() ?? "";
-        for (const event of events) {
-          for (const line of event.split("\n")) {
-            if (!line.startsWith("data:")) continue;
-            const data = line.slice(5).trim();
-            if (!data || data === "[DONE]") continue;
-            await consumePayload(data);
-          }
-        }
-      }
-      if (buffer.trim()) {
-        for (const line of buffer.split("\n")) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += value;
+      const events = buffer.split("\n\n");
+      buffer = events.pop() ?? "";
+      for (const event of events) {
+        for (const line of event.split("\n")) {
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
           if (!data || data === "[DONE]") continue;
-          await consumePayload(data);
+          const payload = JSON.parse(data) as StreamPayload;
+          const choice = payload.choices?.[0];
+          if (choice?.finish_reason) finishReason = choice.finish_reason;
+          const delta = choice?.delta;
+          if (delta?.content) await emitVisible(delta.content);
+          for (const part of delta?.tool_calls ?? []) {
+            const index = part.index ?? 0;
+            const current = toolParts.get(index) ?? { id: "", name: "", arguments: "" };
+            if (part.id) current.id = part.id;
+            if (part.function?.name) current.name += part.function.name;
+            if (part.function?.arguments) current.arguments += part.function.arguments;
+            toolParts.set(index, current);
+          }
+          if (payload.usage) {
+            usage = {
+              inputTokens: payload.usage.prompt_tokens ?? usage.inputTokens,
+              outputTokens: payload.usage.completion_tokens ?? usage.outputTokens,
+              cachedTokens: payload.usage.prompt_tokens_details?.cached_tokens ?? usage.cachedTokens
+            };
+          }
+          const observation = timingObservation(payload.timings);
+          if (observation) this.admission?.observeTimings(observation);
         }
       }
-      const tail = contentFilter.finish();
-      if (tail) {
-        if (!observedFirstToken) {
-          observedFirstToken = true;
-          this.admission?.observeTimings({ ttftMs: performance.now() - requestStartedAt });
-        }
-        content += tail;
-        await onDelta(tail);
-      }
-    } finally {
-      reader.releaseLock();
     }
 
-    const toolCalls = [...toolParts.entries()].sort(([a], [b]) => a - b).map(([index, part]) => {
-      const name = part.name.trim();
-      if (!name) throw new Error("Inference returned streamed tool call without name");
+    const tail = contentFilter.finish();
+    if (tail) {
+      if (!observedFirstToken) {
+        observedFirstToken = true;
+        this.admission?.observeTimings({ ttftMs: performance.now() - requestStartedAt });
+      }
+      content += tail;
+      await onDelta(tail);
+    }
+
+    const toolCalls: ModelToolCall[] = [...toolParts.entries()].sort(([left], [right]) => left - right).map(([index, part]) => {
+      if (!part.name) throw new Error("Inference stream returned tool call without name");
       let input: Record<string, unknown> = {};
-      const raw = part.arguments.trim();
-      if (raw) {
-        const parsed = JSON.parse(raw) as unknown;
-        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("Inference returned invalid streamed tool arguments");
+      if (part.arguments.trim()) {
+        const parsed = JSON.parse(part.arguments) as unknown;
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("Inference stream returned invalid tool arguments");
         input = parsed as Record<string, unknown>;
       }
-      return { id: part.id || `tool-call-${index}`, name, input } satisfies ModelToolCall;
+      return { id: part.id || `tool-call-${index}`, name: part.name, input };
     });
 
     return {
@@ -347,79 +341,25 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
   }
 
   async *stream(request: GenerateRequest): AsyncIterable<string> {
-    await this.admission?.waitForAdmission(this.estimateRequestContextTokens(request), request.signal);
-    const requestStartedAt = performance.now();
-    let observedFirstToken = false;
-    const response = await this.fetcher(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "x-request-id": request.requestId },
-      body: JSON.stringify(requestBody(request, true)),
-      signal: request.signal
-    });
-    if (!response.ok || !response.body) throw new Error(`Inference stream failed with status ${response.status}`);
-    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-    let buffer = "";
-    const contentFilter = new VisibleContentFilter();
-    const parseData = (data: string): string | null => {
-      const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string; reasoning_content?: string } }>; timings?: LlamaTimings };
-      const timing = timingObservation(parsed.timings);
-      if (timing) this.admission?.observeTimings(timing);
-      const content = parsed.choices?.[0]?.delta?.content;
-      if (!content) return null;
-      const visible = contentFilter.push(content);
-      if (visible && !observedFirstToken) {
-        observedFirstToken = true;
-        this.admission?.observeTimings({ ttftMs: performance.now() - requestStartedAt });
-      }
-      return visible || null;
-    };
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += value;
-        const events = buffer.split("\n\n");
-        buffer = events.pop() ?? "";
-        for (const event of events) {
-          for (const line of event.split("\n")) {
-            if (!line.startsWith("data:")) continue;
-            const data = line.slice(5).trim();
-            if (!data || data === "[DONE]") continue;
-            const content = parseData(data);
-            if (content) yield content;
-          }
-        }
-      }
-      if (buffer.trim()) {
-        for (const line of buffer.split("\n")) {
-          if (!line.startsWith("data:")) continue;
-          const data = line.slice(5).trim();
-          if (!data || data === "[DONE]") continue;
-          const content = parseData(data);
-          if (content) yield content;
-        }
-      }
-      const tail = contentFilter.finish();
-      if (tail) yield tail;
-    } finally {
-      reader.releaseLock();
-    }
+    const chunks: string[] = [];
+    const result = await this.generateStreamed(request, (delta) => { chunks.push(delta); });
+    for (const chunk of chunks) yield chunk;
+    if (!chunks.length && result.content) yield result.content;
   }
 
   async healthCheck(): Promise<ModelHealth> {
     const started = performance.now();
     try {
-      const response = await this.fetcher(`${this.baseUrl}/models`, { headers: { authorization: `Bearer ${this.apiKey}` } });
-      return { ok: response.ok, latencyMs: Math.round(performance.now() - started), detail: response.ok ? undefined : `HTTP ${response.status}` };
+      const response = await this.fetcher(`${this.baseUrl.replace(/\/v1$/, "")}/health`);
+      return { ok: response.ok, latencyMs: Math.round(performance.now() - started), detail: response.ok ? undefined : `status:${response.status}` };
     } catch (error) {
       return { ok: false, latencyMs: Math.round(performance.now() - started), detail: error instanceof Error ? error.message : "unknown" };
     }
   }
 
   private estimateRequestContextTokens(request: GenerateRequest): number {
-    const messageCharacters = request.messages.reduce((total, message) => total + message.content.length + JSON.stringify(message.toolCalls ?? []).length, 0);
-    const toolCharacters = JSON.stringify(request.tools ?? []).length;
-    const estimatedInput = Math.max(1, Math.ceil((messageCharacters + toolCharacters) / 3.5));
-    return estimatedInput + Math.max(0, request.maxOutputTokens ?? 1024);
+    const messageTokens = request.messages.reduce((sum, message) => sum + Math.max(1, Math.ceil(message.content.length / 3.5)), 0);
+    const toolTokens = (request.tools ?? []).reduce((sum, tool) => sum + Math.max(1, Math.ceil(JSON.stringify(tool).length / 3.5)), 0);
+    return messageTokens + toolTokens + (request.maxOutputTokens ?? 1024);
   }
 }
