@@ -194,25 +194,33 @@ describe("collectRequiredFreshnessEvidence", () => {
     ]);
   });
 
-  it("keeps ordinary current-state research on the first usable source", async () => {
-    const prompt = "What is the current standard VAT rate in Sweden? Use official Skatteverket sources.";
+  it("uses multiple sources from one search for ordinary current-state research", async () => {
+    const prompt = "What is the current standard VAT rate in Sweden? Use official sources.";
     const execute = vi.fn(async (_run: ClaimedRun, call: { name: string; input: Record<string, unknown> }) => {
       if (call.name === "web_search") {
         return {
-          results: [{
-            url: "https://www.skatteverket.se/foretag/moms/momssatser.html",
-            title: "Momssatser och undantag från moms",
-            snippet: "25 procent",
-            score: 10
-          }]
+          results: [
+            {
+              url: "https://www.skatteverket.se/foretag/moms/momssatser.html",
+              title: "Momssatser och undantag från moms",
+              snippet: "25 procent",
+              score: 100
+            },
+            {
+              url: "https://taxation-customs.ec.europa.eu/taxation/vat/vat-rates_en",
+              title: "VAT rates",
+              snippet: "Sweden standard VAT rate 25%",
+              score: 80
+            }
+          ]
         };
       }
-      if (call.name === "web_fetch") return { url: call.input.url, status: 200, text: "25 procent" };
+      if (call.name === "web_fetch") return { url: call.input.url, status: 200, text: "25 percent" };
       throw new Error(`unexpected tool:${call.name}`);
     });
     const queue = { step: vi.fn(async () => undefined) } as unknown as AgentQueue;
     const tools = { execute } as unknown as WorkerToolRuntime;
-    const run = { runId: "run-vat", requestId: "request-vat" } as ClaimedRun;
+    const run = { runId: "run-vat-multi", requestId: "request-vat-multi" } as ClaimedRun;
 
     await collectRequiredFreshnessEvidence({
       task: webTask(),
@@ -225,23 +233,38 @@ describe("collectRequiredFreshnessEvidence", () => {
       trace: []
     });
 
-    expect(execute.mock.calls.map(([, call]) => call.name)).toEqual(["web_search", "web_fetch"]);
+    const calls = execute.mock.calls.map(([, call]) => call);
+    expect(calls.map((call) => call.name)).toEqual(["web_search", "web_fetch", "web_fetch"]);
+    expect(calls.filter((call) => call.name === "web_fetch").map((call) => String(call.input.url))).toEqual([
+      "https://www.skatteverket.se/foretag/moms/momssatser.html",
+      "https://taxation-customs.ec.europa.eu/taxation/vat/vat-rates_en"
+    ]);
   });
 
-  it("retries ordinary current-information research when the first search returns no sources", async () => {
+  it("uses a focused fallback search only when the first search has too little evidence", async () => {
     const execute = vi.fn(async (_run: ClaimedRun, call: { name: string; input: Record<string, unknown> }) => {
       if (call.name === "web_search") {
-        if (execute.mock.calls.filter(([, called]) => called.name === "web_search").length === 1) return { results: [] };
+        const searchNumber = execute.mock.calls.filter(([, called]) => called.name === "web_search").length;
+        if (searchNumber === 1) {
+          return {
+            results: [{
+              url: "https://www.skatteverket.se/foretag/moms/momssatser.html",
+              title: "Momssatser och undantag från moms",
+              snippet: "25 procent",
+              score: 100
+            }]
+          };
+        }
         return {
           results: [{
-            url: "https://www.skatteverket.se/foretag/moms/momssatser.html",
-            title: "Momssatser och undantag från moms",
-            snippet: "25 procent",
-            score: 10
+            url: "https://taxation-customs.ec.europa.eu/taxation/vat/vat-rates_en",
+            title: "VAT rates",
+            snippet: "Sweden standard VAT rate 25%",
+            score: 80
           }]
         };
       }
-      if (call.name === "web_fetch") return { url: call.input.url, status: 200, text: "25 procent" };
+      if (call.name === "web_fetch") return { url: call.input.url, status: 200, text: "25 percent" };
       throw new Error(`unexpected tool:${call.name}`);
     });
     const queue = { step: vi.fn(async () => undefined) } as unknown as AgentQueue;
@@ -250,7 +273,7 @@ describe("collectRequiredFreshnessEvidence", () => {
 
     await collectRequiredFreshnessEvidence({
       task: webTask(),
-      normalizedPrompt: "Find the current standard VAT rate in Sweden from official Skatteverket information. Search the web and verify it now.",
+      normalizedPrompt: "Find the current standard VAT rate in Sweden from official information. Search the web and verify it now.",
       definitions: webDefinitions(),
       queue,
       tools,
@@ -259,6 +282,48 @@ describe("collectRequiredFreshnessEvidence", () => {
       trace: []
     });
 
-    expect(execute.mock.calls.map(([, call]) => call.name)).toEqual(["web_search", "web_search", "web_fetch"]);
+    expect(execute.mock.calls.map(([, call]) => call.name)).toEqual([
+      "web_search",
+      "web_search",
+      "web_fetch",
+      "web_fetch"
+    ]);
+  });
+
+  it("still proceeds when only one distinct source exists after all fallback searches", async () => {
+    const execute = vi.fn(async (_run: ClaimedRun, call: { name: string; input: Record<string, unknown> }) => {
+      if (call.name === "web_search") {
+        return {
+          results: [{
+            url: "https://www.skatteverket.se/foretag/moms/momssatser.html",
+            title: "Momssatser och undantag från moms",
+            snippet: "25 procent",
+            score: 100
+          }]
+        };
+      }
+      if (call.name === "web_fetch") return { url: call.input.url, status: 200, text: "25 percent" };
+      throw new Error(`unexpected tool:${call.name}`);
+    });
+    const queue = { step: vi.fn(async () => undefined) } as unknown as AgentQueue;
+    const tools = { execute } as unknown as WorkerToolRuntime;
+    const run = { runId: "run-single", requestId: "request-single" } as ClaimedRun;
+
+    await collectRequiredFreshnessEvidence({
+      task: webTask(),
+      normalizedPrompt: "What is the current standard VAT rate in Sweden?",
+      definitions: webDefinitions(),
+      queue,
+      tools,
+      run,
+      messages: [],
+      trace: []
+    });
+
+    const calls = execute.mock.calls.map(([, call]) => call);
+    expect(calls.filter((call) => call.name === "web_search").length).toBeGreaterThanOrEqual(1);
+    expect(calls.filter((call) => call.name === "web_fetch").map((call) => String(call.input.url))).toEqual([
+      "https://www.skatteverket.se/foretag/moms/momssatser.html"
+    ]);
   });
 });
