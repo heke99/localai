@@ -106,9 +106,10 @@ export function evaluateResearchEvidence(task: TaskAnalysis, trace: WorkerToolTr
   const fetchUsed = sources.length > 0;
   const blockers: string[] = [];
 
-  // A direct clock/date question can be satisfied by the deterministic current_time
-  // tool. Other changing facts require search plus opened source evidence.
-  if (task.requiresLiveData && currentTimeUsed && !searchUsed) {
+  // Only direct clock/date questions can be satisfied by current_time alone.
+  // Weather, prices, availability and other live external facts still require
+  // current external evidence.
+  if (task.liveDataKind === "time" && currentTimeUsed && !searchUsed) {
     return {
       required: true,
       passed: true,
