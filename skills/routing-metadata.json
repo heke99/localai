@@ -1,0 +1,30 @@
+{
+  "defaults": {
+    "cost": { "context": "low", "latency": "low" },
+    "conflicts": [],
+    "verification": []
+  },
+  "skills": {
+    "brainstorming-design": { "dependencies": ["using-skills"], "cost": { "context": "medium", "latency": "low" } },
+    "system-design": { "dependencies": ["using-skills"], "cost": { "context": "medium", "latency": "medium" }, "verification": ["completion-proof"] },
+    "writing-plans": { "dependencies": ["using-skills"] },
+    "reasoning-router": { "dependencies": ["using-skills"] },
+    "current-information-research": { "dependencies": ["reasoning-router"], "verification": ["current-information-evidence"] },
+    "capacity-benchmarking": { "dependencies": ["performance-profiling", "evals-benchmarking"], "cost": { "context": "medium", "latency": "high" }, "verification": ["performance-regression"] },
+    "test-driven-development": { "dependencies": ["writing-plans"], "verification": ["targeted-tests"] },
+    "systematic-debugging": { "dependencies": ["using-skills"], "cost": { "context": "medium", "latency": "medium" } },
+    "code-review": { "dependencies": ["verification-before-completion"], "verification": ["diff-review"] },
+    "browser-e2e": { "dependencies": ["verification-before-completion"], "cost": { "context": "low", "latency": "high" }, "verification": ["browser-e2e"] },
+    "knowledge-ingestion": { "dependencies": ["data-poisoning-defense", "secrets-handling"], "verification": ["completion-proof"] },
+    "memory-learning": { "dependencies": ["data-poisoning-defense"], "verification": ["completion-proof"] },
+    "authorized-pentest": { "dependencies": ["policy-access-control", "sandbox-execution", "network-egress-control"], "cost": { "context": "medium", "latency": "medium" }, "verification": ["security-review"] },
+    "audit-context-building": { "dependencies": ["using-skills"], "cost": { "context": "medium", "latency": "medium" } },
+    "differential-security-review": { "dependencies": ["audit-context-building", "verification-before-completion"], "verification": ["security-review"] },
+    "static-analysis": { "dependencies": ["audit-context-building"], "verification": ["security-review"] },
+    "gpu-model-operations": { "dependencies": ["supply-chain-security", "evals-benchmarking"], "cost": { "context": "medium", "latency": "high" }, "verification": ["performance-regression"] },
+    "incident-recovery": { "dependencies": ["observability"], "verification": ["deployment-health"] },
+    "agentic-ci-security": { "dependencies": ["policy-access-control", "secrets-handling", "supply-chain-security"], "verification": ["security-review"] },
+    "performance-profiling": { "cost": { "context": "medium", "latency": "medium" }, "verification": ["performance-regression"] },
+    "verification-before-completion": { "cost": { "context": "low", "latency": "medium" }, "verification": ["completion-proof"] }
+  }
+}
