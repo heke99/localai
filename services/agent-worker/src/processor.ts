@@ -18,7 +18,7 @@ import type { PreparedRepositoryWorkspace, WorkerRepositoryRuntime } from "./rep
 import { executeRepositoryTool, repositoryToolDefinitions } from "./repository-tools";
 import { SandboxVerificationRuntime } from "./sandbox-verification";
 import { compactToolOutput } from "./tool-output";
-import { collectRequiredFreshnessEvidence } from "./freshness-preflight";
+import { collectRequiredFreshnessEvidence, freshnessSearchQueries, rankSearchCandidates } from "./freshness-preflight";
 import {
   deterministicTimeResult,
   groundedEvidenceReviewMessages,
@@ -503,7 +503,85 @@ export class AgentWorkerProcessor {
               modelTurns += 1;
               repairUsage = mergeUsage(repairUsage, research.usage);
               if (research.finishReason !== "tool_call" || !research.toolCalls?.length) {
-                throw new Error("grounded_evidence_research_retry_no_new_evidence");
+                const fallbackQueries = [
+                  `${contract.normalizedPrompt} official current source`,
+                  `${contract.normalizedPrompt} ${groundingReview.reason}`,
+                  ...freshnessSearchQueries(contract.normalizedPrompt)
+                ]
+                  .map((query) => query.replace(/\s+/g, " ").trim().slice(0, 500))
+                  .filter((query, index, all) => query.length >= 4 && all.indexOf(query) === index);
+                const fallbackQuery = fallbackQueries[Math.min(researchAttempt, Math.max(0, fallbackQueries.length - 1))]
+                  ?? contract.normalizedPrompt.slice(0, 500);
+                const searchCall: ModelToolCall = {
+                  id: `${run.requestId}:grounding-fallback-search:${verificationRound}:${researchAttempt}`,
+                  name: "web_search",
+                  input: { query: fallbackQuery, limit: 12 }
+                };
+                loopGuard.record({ action: searchCall.name, inputHash: hashInput(searchCall.input) });
+                await this.queue.step(run.runId, "tool", "waiting_for_tool", "web_search", {
+                  toolCallId: searchCall.id,
+                  verificationRound,
+                  researchAttempt,
+                  deterministicEvidenceFallback: true
+                });
+                let searchOutput: unknown;
+                try {
+                  searchOutput = await this.tools.execute(run, searchCall);
+                } catch (error) {
+                  await this.queue.step(run.runId, "tool", "blocked", "Deterministic evidence fallback search failed", {
+                    verificationRound,
+                    researchAttempt,
+                    query: fallbackQuery,
+                    error: error instanceof Error ? error.message : "web_search_failed"
+                  });
+                  continue;
+                }
+                toolTrace.push({ sequence: toolTrace.length + 1, name: searchCall.name, input: searchCall.input, output: searchOutput });
+                messages.push({ role: "assistant", content: "", toolCalls: [searchCall] });
+                messages.push({ role: "tool", name: searchCall.name, toolCallId: searchCall.id, content: compactToolOutput(searchOutput) });
+
+                const openedUrls = new Set(toolTrace
+                  .filter((item) => item.name === "web_fetch" && typeof item.input.url === "string")
+                  .map((item) => String(item.input.url)));
+                const candidate = rankSearchCandidates(searchOutput, contract.normalizedPrompt)
+                  .find((item) => !openedUrls.has(item.url));
+                if (!candidate) {
+                  await this.queue.step(run.runId, "tool", "blocked", "Deterministic evidence fallback found no new source", {
+                    verificationRound,
+                    researchAttempt,
+                    query: fallbackQuery
+                  });
+                  continue;
+                }
+
+                const fetchCall: ModelToolCall = {
+                  id: `${run.requestId}:grounding-fallback-fetch:${verificationRound}:${researchAttempt}`,
+                  name: "web_fetch",
+                  input: { url: candidate.url }
+                };
+                loopGuard.record({ action: fetchCall.name, inputHash: hashInput(fetchCall.input) });
+                await this.queue.step(run.runId, "tool", "waiting_for_tool", "web_fetch", {
+                  toolCallId: fetchCall.id,
+                  verificationRound,
+                  researchAttempt,
+                  url: candidate.url,
+                  deterministicEvidenceFallback: true
+                });
+                try {
+                  const output = await this.tools.execute(run, fetchCall);
+                  toolTrace.push({ sequence: toolTrace.length + 1, name: fetchCall.name, input: fetchCall.input, output });
+                  messages.push({ role: "assistant", content: "", toolCalls: [fetchCall] });
+                  messages.push({ role: "tool", name: fetchCall.name, toolCallId: fetchCall.id, content: compactToolOutput(output) });
+                  openedNewSource = true;
+                } catch (error) {
+                  await this.queue.step(run.runId, "tool", "blocked", "Deterministic evidence fallback source fetch failed", {
+                    verificationRound,
+                    researchAttempt,
+                    url: candidate.url,
+                    error: error instanceof Error ? error.message : "web_fetch_failed"
+                  });
+                }
+                continue;
               }
 
               const disallowedCall = research.toolCalls.find((call) => call.name !== "web_search" && call.name !== "web_fetch");
