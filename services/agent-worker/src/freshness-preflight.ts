@@ -37,6 +37,35 @@ const downloadIndexPattern = /(?:^|\/)downloads?(?:\/|$)/i;
 const releaseIndexPattern = /\b(?:release\s+schedule|release\s+index|versions?|releases?)\b/i;
 const versionSpecificPathPattern = /(?:^|\/)v?\d+\.\d+\.\d+(?:\/|$)/i;
 
+function normalizedSearchQuery(value: string, maxLength = 500): string {
+  return value.replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "").slice(0, maxLength).trim();
+}
+
+function compactSearchSentence(sentence: string): string {
+  let compact = normalizedSearchQuery(sentence, 240)
+    .replace(/^(?:please\s+)?(?:find|search(?:\s+the\s+web)?(?:\s+for)?|look\s+up|verify|check|tell\s+me|show\s+me|what(?:'s|\s+is)|which\s+is)\s+/i, "")
+    .replace(/^(?:the|a|an)\s+/i, "")
+    .trim();
+  const officialBoundary = compact.search(/\s+(?:from|using)\s+official\b/i);
+  if (officialBoundary >= 8) compact = compact.slice(0, officialBoundary).trim();
+  return normalizedSearchQuery(compact, 180);
+}
+
+export function freshnessSearchQueries(prompt: string): string[] {
+  const normalized = normalizedSearchQuery(prompt);
+  if (!normalized) return [];
+  const sentences = normalized
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => normalizedSearchQuery(sentence, 240))
+    .filter((sentence) => sentence.length >= 4);
+  const intentSentence = sentences.find((sentence) => latestIntentPattern.test(sentence))
+    ?? sentences[0]
+    ?? normalized;
+  const compact = compactSearchSentence(intentSentence);
+  const queries = [normalized, intentSentence, compact];
+  return [...new Set(queries.filter((query) => query.length >= 4))].slice(0, 3);
+}
+
 function currentIntentScore(url: URL, title: string, snippet: string): number {
   if (explicitCurrentPathPattern.test(url.pathname)) return 6;
   if (versionSpecificPathPattern.test(url.pathname)) return 0;
@@ -149,20 +178,36 @@ export async function collectRequiredFreshnessEvidence(input: {
   if (!available(definitions, "web_search")) throw new Error("required_web_search_tool_unavailable");
   if (!available(definitions, "web_fetch")) throw new Error("required_web_fetch_tool_unavailable");
 
-  const searchOutput = await executeRequiredTool({
-    queue,
-    tools,
-    run,
-    messages,
-    trace,
-    call: {
-      id: `${run.requestId}:freshness:search`,
-      name: "web_search",
-      input: { query: normalizedPrompt.slice(0, 500), limit: 12 }
+  const searchQueries = freshnessSearchQueries(normalizedPrompt);
+  let candidates: RankedSearchCandidate[] = [];
+  for (let index = 0; index < searchQueries.length; index += 1) {
+    const query = searchQueries[index]!;
+    try {
+      const searchOutput = await executeRequiredTool({
+        queue,
+        tools,
+        run,
+        messages,
+        trace,
+        call: {
+          id: index === 0 ? `${run.requestId}:freshness:search` : `${run.requestId}:freshness:search:${index + 1}`,
+          name: "web_search",
+          input: { query, limit: 12 }
+        }
+      });
+      candidates = rankSearchCandidates(searchOutput, normalizedPrompt);
+      if (candidates.length) break;
+    } catch (error) {
+      await queue.step(run.runId, "tool", "blocked", "web_search", {
+        runtimeRequired: true,
+        freshnessPreflight: true,
+        searchAttempt: index + 1,
+        query,
+        error: error instanceof Error ? error.message : "web_search_failed"
+      });
     }
-  });
+  }
 
-  const candidates = rankSearchCandidates(searchOutput, normalizedPrompt);
   if (!candidates.length) throw new Error("current_information_search_returned_no_sources");
   const targetSources = task.researchDepth === "deep" || task.risk === "high" || task.risk === "critical" ? 2 : 1;
   const fetchedHosts = new Set<string>();
