@@ -122,8 +122,9 @@ export function evaluateResearchEvidence(task: TaskAnalysis, trace: WorkerToolTr
   if (!fetchUsed) blockers.push("current-information:opened-source-required");
 
   const needsCorroboration = task.researchDepth === "deep" || task.risk === "high" || task.risk === "critical";
+  const needsAuthority = task.risk === "high" || task.risk === "critical";
   if (needsCorroboration && sources.length < 2) blockers.push("current-information:two-source-corroboration-required");
-  if (needsCorroboration && sources.length > 0 && !sources.some((source) => source.authority !== "unclassified")) {
+  if (needsAuthority && sources.length > 0 && !sources.some((source) => source.authority !== "unclassified")) {
     blockers.push("current-information:authoritative-source-required");
   }
 
