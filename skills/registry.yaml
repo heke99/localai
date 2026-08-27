@@ -8,6 +8,7 @@ skills:
   - {name: brainstorming-design, path: skills/planning/brainstorming-design/SKILL.md, category: planning}
   - {name: system-design, path: skills/planning/system-design/SKILL.md, category: planning}
   - {name: writing-plans, path: skills/planning/writing-plans/SKILL.md, category: planning}
+  - {name: reasoning-router, path: skills/planning/reasoning-router/SKILL.md, category: planning}
   - {name: executing-plans, path: skills/execution/executing-plans/SKILL.md, category: execution}
   - {name: parallel-agent-orchestration, path: skills/execution/parallel-agent-orchestration/SKILL.md, category: execution}
   - {name: agent-checkpointing, path: skills/execution/agent-checkpointing/SKILL.md, category: execution}
@@ -20,6 +21,7 @@ skills:
   - {name: vercel-operations, path: skills/platform/vercel-operations/SKILL.md, category: platform}
   - {name: browser-e2e, path: skills/platform/browser-e2e/SKILL.md, category: platform}
   - {name: web-research, path: skills/research/web-research/SKILL.md, category: research}
+  - {name: current-information-research, path: skills/research/current-information-research/SKILL.md, category: research}
   - {name: knowledge-ingestion, path: skills/knowledge/knowledge-ingestion/SKILL.md, category: knowledge}
   - {name: memory-learning, path: skills/knowledge/memory-learning/SKILL.md, category: knowledge}
   - {name: model-routing, path: skills/models/model-routing/SKILL.md, category: models}
@@ -42,4 +44,5 @@ skills:
   - {name: observability, path: skills/ops/observability/SKILL.md, category: ops}
   - {name: incident-recovery, path: skills/ops/incident-recovery/SKILL.md, category: ops}
   - {name: performance-profiling, path: skills/ops/performance-profiling/SKILL.md, category: ops}
+  - {name: capacity-benchmarking, path: skills/ops/capacity-benchmarking/SKILL.md, category: ops}
   - {name: supply-chain-security, path: skills/ops/supply-chain-security/SKILL.md, category: ops}
