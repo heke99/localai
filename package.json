@@ -17,7 +17,7 @@
     "test:e2e": "playwright test",
     "test:native-runtime": "node --experimental-transform-types --import ./infra/runpod/native-typescript-register.mjs scripts/smoke_native_ts_runtime.mjs",
     "test:search-runtime": "node scripts/smoke_search_runtime_contract.mjs",
-    "test:p8-soak-gate": "vitest run scripts/p8_soak_gate.test.ts",
+    "test:p8-soak-gate": "vitest run services/agent-worker/src/p8-soak-gate.test.ts",
     "test:runpod-wake": "node scripts/smoke_runpod_wake_contract.mjs",
     "test:runtime-bootstrap": "node scripts/smoke_runtime_bootstrap_contract.mjs",
     "typecheck": "tsc --noEmit",
