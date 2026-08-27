@@ -58,6 +58,19 @@ describe("current-information evidence gate", () => {
     expect(verified.sources).toHaveLength(1);
   });
 
+  it("accepts two distinct corroborated sources for low-risk deep research without a government-style hostname", () => {
+    const report = evaluateResearchEvidence(task({ risk: "low", researchDepth: "deep" }), trace([
+      { name: "web_search", output: { results: [
+        { url: "https://nodejs.org/en/download", title: "Node.js" },
+        { url: "https://deno.com/runtime", title: "Deno" }
+      ] } },
+      { name: "web_fetch", output: { url: "https://nodejs.org/en/download", retrievedAt: "2026-08-27T10:00:00Z", text: "Node release" } },
+      { name: "web_fetch", output: { url: "https://deno.com/runtime", retrievedAt: "2026-08-27T10:01:00Z", text: "Deno release" } }
+    ]));
+    expect(report).toMatchObject({ passed: true, blockers: [] });
+    expect(report.sources).toHaveLength(2);
+  });
+
   it("requires corroboration and an authoritative source for high-risk current facts", () => {
     const report = evaluateResearchEvidence(task({ risk: "high", researchDepth: "deep" }), trace([
       { name: "web_search", output: { results: [
