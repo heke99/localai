@@ -16,6 +16,7 @@ function queue(claimed: ClaimedRun | null = run): AgentQueue & {
   recordVerificationRun: ReturnType<typeof vi.fn>;
   complete: ReturnType<typeof vi.fn>;
   fail: ReturnType<typeof vi.fn>;
+  isCancelled: ReturnType<typeof vi.fn>;
 } {
   return {
     claim: vi.fn(async () => claimed),
@@ -35,6 +36,7 @@ describe("AgentWorkerProcessor", () => {
     const jobs = queue();
     await expect(new AgentWorkerProcessor(jobs, { resolve: () => adapter }, "worker-1").processOnce()).resolves.toBe(true);
     expect(jobs.recordRunIntelligence).toHaveBeenCalledOnce();
+    expect(jobs.recordVerificationRunIntelligence).toBeUndefined;
     expect(jobs.recordVerificationRun).toHaveBeenCalledOnce();
     expect(jobs.complete).toHaveBeenCalledOnce();
     expect(jobs.recordVerificationRun.mock.invocationCallOrder[0]).toBeLessThan(jobs.complete.mock.invocationCallOrder[0]!);
@@ -52,6 +54,24 @@ describe("AgentWorkerProcessor", () => {
     expect(generate).toHaveBeenCalledTimes(2);
     expect(jobs.recordVerificationRun).toHaveBeenCalledOnce();
     expect(jobs.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ content: "read complete" }));
+  });
+
+  it("aborts in-flight model generation when the run is cancelled", async () => {
+    const jobs = queue();
+    let cancellationChecks = 0;
+    jobs.isCancelled.mockImplementation(async () => {
+      cancellationChecks += 1;
+      return cancellationChecks >= 4;
+    });
+    const generate = vi.fn(async (request: Parameters<ModelAdapter["generate"]>[0]) => await new Promise<never>((_resolve, reject) => {
+      expect(request.signal).toBeInstanceOf(AbortSignal);
+      request.signal!.addEventListener("abort", () => reject(request.signal!.reason), { once: true });
+    }));
+
+    await expect(new AgentWorkerProcessor(jobs, { resolve: () => ({ ...adapter, generate }) }, "worker-1").processOnce()).resolves.toBe(true);
+    expect(generate).toHaveBeenCalledOnce();
+    expect(jobs.complete).not.toHaveBeenCalled();
+    expect(jobs.fail).not.toHaveBeenCalled();
   });
 
   it("fails the run when audit persistence fails instead of completing without evidence", async () => {
