@@ -1,0 +1,137 @@
+name: Diagnose reasoning TTFT
+
+on:
+  push:
+    branches: [ops/diagnose-p8-soak5-evals-20260827]
+    paths:
+      - .github/workflows/diagnose-reasoning-ttft.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpuhub-production
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-gpuhub
+    env:
+      GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
+      GPUHUB_SSH_PORT: ${{ secrets.GPUHUB_SSH_PORT }}
+      GPUHUB_SSH_USER: ${{ secrets.GPUHUB_SSH_USER }}
+      GPUHUB_SSH_PRIVATE_KEY: ${{ secrets.GPUHUB_SSH_PRIVATE_KEY }}
+      GPUHUB_SSH_KNOWN_HOSTS: ${{ secrets.GPUHUB_SSH_KNOWN_HOSTS }}
+    steps:
+      - name: Validate diagnostic secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in GPUHUB_SSH_HOST GPUHUB_SSH_PORT GPUHUB_SSH_USER GPUHUB_SSH_PRIVATE_KEY GPUHUB_SSH_KNOWN_HOSTS; do
+            [[ -n "${!name:-}" ]] || { echo "Missing required production-gpuhub secret: ${name}" >&2; exit 1; }
+          done
+      - name: Configure pinned SSH host identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+      - name: Measure hidden reasoning versus visible TTFT on p1
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          remote="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
+          ssh_opts=(-i "$HOME/.ssh/id_ed25519" -p "$GPUHUB_SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+          ssh "${ssh_opts[@]}" "$remote" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          root='/root/autodl-tmp/localai'
+          app="$root/app"
+          env_file="$root/secrets/gpuhub-worker.env"
+          node="$root/runtime/node-current/bin/node"
+          cd "$app"
+          baseline="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
+          [[ "$baseline" =~ --parallel[=\ ]+1 ]] || { echo "refusing probe unless runtime is p1: $baseline" >&2; exit 1; }
+          [[ "$baseline" =~ --ctx-size[=\ ]+32768 ]] || { echo "refusing probe unless runtime is ctx32768: $baseline" >&2; exit 1; }
+          curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null
+          set -a
+          source "$env_file"
+          set +a
+          export PROBE_API_KEY="${DIV3RSA_INFERENCE_API_KEY:-${QWEN_INFERENCE_API_KEY:-}}"
+          [[ -n "$PROBE_API_KEY" ]] || { echo 'missing inference key' >&2; exit 1; }
+          "$node" --input-type=module <<'NODE'
+          const key = process.env.PROBE_API_KEY;
+          const endpoint = 'http://127.0.0.1:6006/v1/chat/completions';
+          const prompts = [
+            'What is 17 + 25? Answer with only the number.',
+            'Which HTTP status means unauthenticated: 401 or 403? Answer briefly.',
+            'A must run before C, B after A, D before B. Which is valid: B-D-A-C, D-A-B-C, A-C-B-D, C-A-D-B?'
+          ];
+          async function probe(prompt, reasoningEffort) {
+            const body = {
+              model: 'localai-qwen38-v3-q8',
+              messages: [{ role: 'user', content: prompt }],
+              max_tokens: 128,
+              temperature: 0,
+              stream: true,
+              stream_options: { include_usage: true }
+            };
+            if (reasoningEffort !== undefined) body.reasoning_effort = reasoningEffort;
+            const started = performance.now();
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+              body: JSON.stringify(body)
+            });
+            if (!response.ok || !response.body) throw new Error(`probe ${reasoningEffort ?? 'default'} status=${response.status} body=${await response.text()}`);
+            const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+            let buffer = '';
+            let firstReasoningMs = null;
+            let firstContentMs = null;
+            let reasoningChars = 0;
+            let content = '';
+            const consume = (data) => {
+              if (!data || data === '[DONE]') return;
+              const parsed = JSON.parse(data);
+              const delta = parsed?.choices?.[0]?.delta ?? {};
+              if (delta.reasoning_content) {
+                if (firstReasoningMs === null) firstReasoningMs = performance.now() - started;
+                reasoningChars += delta.reasoning_content.length;
+              }
+              if (delta.content) {
+                if (firstContentMs === null) firstContentMs = performance.now() - started;
+                content += delta.content;
+              }
+            };
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += value;
+              const events = buffer.split('\n\n');
+              buffer = events.pop() ?? '';
+              for (const event of events) for (const line of event.split('\n')) if (line.startsWith('data:')) consume(line.slice(5).trim());
+            }
+            return {
+              mode: reasoningEffort ?? 'default',
+              firstReasoningMs: firstReasoningMs === null ? null : Math.round(firstReasoningMs),
+              firstContentMs: firstContentMs === null ? null : Math.round(firstContentMs),
+              totalMs: Math.round(performance.now() - started),
+              reasoningChars,
+              content: content.trim().slice(0, 180)
+            };
+          }
+          const results = [];
+          for (let i = 0; i < prompts.length; i++) {
+            results.push({ prompt: i + 1, ...(await probe(prompts[i], undefined)) });
+            results.push({ prompt: i + 1, ...(await probe(prompts[i], 'none')) });
+          }
+          console.log(JSON.stringify(results, null, 2));
+          NODE
+          curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null
+          pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf'
+          REMOTE
