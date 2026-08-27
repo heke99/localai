@@ -12,6 +12,7 @@ const timeoutMs = positiveInteger("DIV3RSA_SOAK_TIMEOUT_MS", 120_000);
 const healthIntervalMs = positiveInteger("DIV3RSA_SOAK_HEALTH_INTERVAL_MS", 2_000);
 const outputPath = process.env.DIV3RSA_SOAK_OUTPUT?.trim() || "";
 const origin = baseUrl.replace(/\/v1$/, "");
+const reasoningEffort = "none";
 
 if (!apiKey) {
   console.error("Missing DIV3RSA_INFERENCE_API_KEY (legacy QWEN_INFERENCE_API_KEY is also accepted).");
@@ -40,6 +41,8 @@ const longContext = Array.from({ length: 140 }, (_, index) =>
   `function handler${index}(input: Record<string, unknown>) { return input["key${index % 12}"] ?? null; }`
 ).join("\n");
 
+// These are intentionally stable FAST workload prompts. Production STANDARD/DEEP
+// and CURRENT/LIVE requests retain model reasoning; only this fast-path load disables it.
 const prompts = [
   "Implement a TypeScript function that groups records by key, explain complexity briefly, and include one edge-case test.",
   "Review this PostgreSQL pattern for a multi-tenant SaaS: SELECT * FROM orders WHERE tenant_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 100. Suggest safe indexing and explain tradeoffs.",
@@ -68,6 +71,7 @@ async function oneRequest(workerIndex, requestIndex) {
         messages: [{ role: "user", content: prompts[(workerIndex + requestIndex) % prompts.length] }],
         max_tokens: maxTokens,
         temperature: 0,
+        reasoning_effort: reasoningEffort,
         stream: true,
         stream_options: { include_usage: true }
       }),
@@ -160,7 +164,7 @@ const wallMs = completedAt - startedAt;
 const result = {
   schemaVersion: 1,
   generatedAt: new Date().toISOString(),
-  configuration: { baseUrl, model, durationSeconds, concurrency, maxTokens, timeoutMs, promptCount: prompts.length },
+  configuration: { baseUrl, model, durationSeconds, concurrency, maxTokens, timeoutMs, promptCount: prompts.length, reasoningEffort },
   summary: {
     requests: samples.length,
     successes: successes.length,
