@@ -36,18 +36,22 @@ const currentTools: ModelToolDefinition[] = [
   { name: "web_fetch", description: "fetch", inputSchema: { type: "object" } }
 ];
 
+function currentRun(): ClaimedRun {
+  return {
+    jobId: "job",
+    runId: "run",
+    mode: "research",
+    modelAlias: "research-prod",
+    prompt: "What is the current release of Example Runtime? Check current web information.",
+    requestId: "request",
+    traceId: "trace",
+    resourceContext: []
+  };
+}
+
 describe("current-information deterministic evidence fallback", () => {
   it("searches and opens a new ranked source when the repair model stops without a tool call", async () => {
-    const run: ClaimedRun = {
-      jobId: "job",
-      runId: "run",
-      mode: "research",
-      modelAlias: "research-prod",
-      prompt: "What is the current release of Example Runtime? Check current web information.",
-      requestId: "request",
-      traceId: "trace",
-      resourceContext: []
-    };
+    const run = currentRun();
     const jobs = queue(run);
     const requests: GenerateRequest[] = [];
     const generate = vi.fn(async (request: GenerateRequest) => {
@@ -136,6 +140,84 @@ describe("current-information deterministic evidence fallback", () => {
     expect(searchCount).toBeGreaterThanOrEqual(2);
     expect(execute.mock.calls.some(([, call]) => call.name === "web_fetch" && call.input.url === "https://docs.example.org/current")).toBe(true);
     expect(requests[2]?.tools?.map((tool) => tool.name)).toEqual(["web_search", "web_fetch"]);
+    expect(jobs.fail).not.toHaveBeenCalled();
+    expect(verifierGenerate).toHaveBeenCalledTimes(2);
+    expect(jobs.complete).toHaveBeenCalledWith(run, expect.objectContaining({ content: expect.stringContaining("v2.0.0") }));
+  });
+
+  it("does not retry a fallback URL whose fetch already failed", async () => {
+    const run = currentRun();
+    const jobs = queue(run);
+    let ordinaryModelTurns = 0;
+    const generate = vi.fn(async (request: GenerateRequest) => {
+      const hasResearchTools = Boolean(request.tools?.some((tool) => tool.name === "web_search"));
+      if (hasResearchTools && ordinaryModelTurns >= 2) {
+        return {
+          modelVersionId: "model",
+          content: "More evidence is required.",
+          finishReason: "stop" as const,
+          usage: { inputTokens: 18, outputTokens: 6, cachedTokens: 0 }
+        };
+      }
+      ordinaryModelTurns += 1;
+      return {
+        modelVersionId: "model",
+        content: ordinaryModelTurns < 3
+          ? "The current release is v1.0.0 according to the opened overview."
+          : "The current release is v2.0.0 according to the newly opened official Current page.",
+        finishReason: "stop" as const,
+        usage: { inputTokens: 24, outputTokens: 10, cachedTokens: 0 }
+      };
+    });
+
+    let reviewCount = 0;
+    const verifierGenerate = vi.fn(async () => {
+      reviewCount += 1;
+      return {
+        modelVersionId: "verifier",
+        content: reviewCount === 1
+          ? '{"passed":false,"reason":"The overview does not explicitly identify the current release."}'
+          : '{"passed":true,"reason":"The newly opened canonical page explicitly identifies v2.0.0."}',
+        finishReason: "stop" as const,
+        usage: { inputTokens: 10, outputTokens: 8, cachedTokens: 0 }
+      };
+    });
+
+    const brokenUrl = "https://broken.example.org/current";
+    const goodUrl = "https://docs.example.org/current";
+    const attemptedFetches: string[] = [];
+    const execute = vi.fn(async (_claimed: ClaimedRun, call: { id: string; name: string; input: Record<string, unknown> }) => {
+      if (call.name === "web_search") {
+        if (call.id.includes("grounding-fallback-search")) {
+          return {
+            results: [
+              { url: brokenUrl, title: "Current release", snippet: "Current release", score: 100 },
+              { url: goodUrl, title: "Official current release v2.0.0", snippet: "Current release v2.0.0", score: 90 },
+              { url: "https://example.com/runtime-overview", title: "Runtime overview", snippet: "Release information", score: 10 }
+            ]
+          };
+        }
+        return { results: [{ url: "https://example.com/runtime-overview", title: "Runtime overview", snippet: "Release information", score: 10 }] };
+      }
+      if (call.name === "web_fetch") {
+        const url = String(call.input.url ?? "");
+        attemptedFetches.push(url);
+        if (url === brokenUrl) throw new Error("web_fetch_failed:403");
+        if (url === goodUrl) return { url, retrievedAt: "2026-08-27T20:00:00.000Z", text: "Current release v2.0.0" };
+        return { url, retrievedAt: "2026-08-27T20:00:00.000Z", text: "Runtime release overview without a current version value." };
+      }
+      throw new Error(`unexpected_tool:${call.name}`);
+    });
+
+    const tools: WorkerToolRuntime = { list: vi.fn(async () => currentTools), execute: execute as never };
+    const resolver = {
+      resolve: (alias: string) => alias === "verifier-prod" ? adapter(verifierGenerate) : adapter(generate)
+    };
+
+    await new AgentWorkerProcessor(jobs, resolver as never, "worker", undefined, tools).processOnce();
+
+    expect(attemptedFetches.filter((url) => url === brokenUrl)).toHaveLength(1);
+    expect(attemptedFetches).toContain(goodUrl);
     expect(jobs.fail).not.toHaveBeenCalled();
     expect(verifierGenerate).toHaveBeenCalledTimes(2);
     expect(jobs.complete).toHaveBeenCalledWith(run, expect.objectContaining({ content: expect.stringContaining("v2.0.0") }));
