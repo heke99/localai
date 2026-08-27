@@ -12,7 +12,7 @@ STATE_DIR="${DIV3RSA_RUNTIME_STATE_DIR:-${ROOT_DIR}/secrets}"
 SETTINGS_FILE="${DIV3RSA_SEARCH_SETTINGS_FILE:-${STATE_DIR}/searxng-settings.yml}"
 SECRET_FILE="${DIV3RSA_SEARCH_SECRET_FILE:-${STATE_DIR}/searxng.secret}"
 LOG_DIR="${DIV3RSA_LEGACY_LOG_DIR:-${ROOT_DIR}/logs}"
-SEARCH_PORT="${DIV3RSA_SEARCH_PORT:-8888}"
+SEARCH_PORT="${DIV3RSA_SEARCH_PORT:-8890}"
 SCREEN_NAME="${DIV3RSA_NATIVE_SEARCH_SCREEN:-localai-search}"
 SEARXNG_REVISION="${DIV3RSA_SEARXNG_REVISION:-9fea41204fdfa7a5cfa15b0ebd12904c520478ce}"
 INSTALL_MARKER="${VENV_DIR}/.div3rsa-searxng-revision"
@@ -99,7 +99,24 @@ server:
 YAML
 chmod 600 "$SETTINGS_FILE"
 
+# Stop only our previous search process, then prove that the selected loopback
+# port is actually free. This prevents a false-positive health check against a
+# different service such as Jupyter.
 screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
+sleep 1
+if ! "$VENV_DIR/bin/python" - "$SEARCH_PORT" <<'PY'
+import socket, sys
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    sock.bind(("127.0.0.1", port))
+finally:
+    sock.close()
+PY
+then
+  fatal "search port 127.0.0.1:${SEARCH_PORT} is already in use; choose another DIV3RSA_SEARCH_PORT"
+fi
+
 log "starting native SearXNG on 127.0.0.1:${SEARCH_PORT}"
 screen -dmS "$SCREEN_NAME" bash -lc "
   set -Eeuo pipefail
