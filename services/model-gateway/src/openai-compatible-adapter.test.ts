@@ -47,6 +47,22 @@ describe("OpenAiCompatibleAdapter", () => {
     await expect(adapter.generate({ requestId: "req-2", alias: "general-prod", messages: [] })).rejects.toThrow("no choices");
   });
 
+  it("propagates the run abort signal to llama.cpp generation", async () => {
+    const controller = new AbortController();
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.signal).toBe(controller.signal);
+      controller.abort();
+      throw new DOMException("aborted", "AbortError");
+    });
+    const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
+    await expect(adapter.generate({
+      requestId: "req-cancel",
+      alias: "general-prod",
+      messages: [{ role: "user", content: "long answer" }],
+      signal: controller.signal
+    })).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("parses fragmented SSE streaming responses", async () => {
     const chunks = [
       'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
