@@ -143,18 +143,77 @@ export function groundedEvidenceReviewMessages(input: {
   ];
 }
 
-export function parseGroundedEvidenceReview(content: string): GroundedEvidenceReview {
-  try {
-    const parsed = JSON.parse(content) as { passed?: unknown; reason?: unknown };
-    return {
-      passed: parsed.passed === true,
-      reason: typeof parsed.reason === "string" && parsed.reason.trim()
-        ? parsed.reason.trim().slice(0, 1_500)
-        : "grounded_reviewer_reason_missing"
-    };
-  } catch {
-    return { passed: false, reason: "grounded_reviewer_invalid_json" };
+function balancedJsonObjects(content: string): string[] {
+  const objects: string[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index]!;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"' && depth > 0) {
+      inString = true;
+      continue;
+    }
+    if (character === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+      continue;
+    }
+    if (character === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        objects.push(content.slice(start, index + 1));
+        start = -1;
+      }
+    }
   }
+  return objects;
+}
+
+function reviewerJsonCandidates(content: string): string[] {
+  const trimmed = content.trim();
+  const candidates = new Set<string>();
+  if (trimmed) candidates.add(trimmed);
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/gi;
+  for (const match of trimmed.matchAll(fenced)) {
+    const body = match[1]?.trim();
+    if (body) candidates.add(body);
+  }
+  for (const candidate of balancedJsonObjects(trimmed)) candidates.add(candidate);
+  return [...candidates];
+}
+
+export function parseGroundedEvidenceReview(content: string): GroundedEvidenceReview {
+  let sawJson = false;
+  for (const candidate of reviewerJsonCandidates(content)) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      sawJson = true;
+      const value = record(parsed);
+      const reason = typeof value?.reason === "string" ? value.reason.trim() : "";
+      if (typeof value?.passed !== "boolean" || !reason) continue;
+      return { passed: value.passed, reason: reason.slice(0, 1_500) };
+    } catch {
+      // Keep scanning; models may wrap the one valid object in prose or fences.
+    }
+  }
+  return {
+    passed: false,
+    reason: sawJson ? "grounded_reviewer_invalid_shape" : "grounded_reviewer_invalid_json"
+  };
 }
 
 export function mergeUsage(
