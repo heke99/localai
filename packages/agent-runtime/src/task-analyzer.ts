@@ -83,7 +83,12 @@ const rules: Rule[] = [
 
 const CURRENT_LANGUAGE = /\b(latest|newest|current|currently|today|recent|recently|up[- ]to[- ]date|as of now|senaste|nyaste|aktuell(?:t|a)?|idag|nyligen|just nu|nuvarande)\b/i;
 const LIVE_FACT = /\b(what time is it|current time|time in|klockan|vilken tid|weather|väder|forecast|prognos|exchange rate|valutakurs|stock price|aktiekurs|live score|livescore|traffic|trafik|availability|lagerstatus|in stock)\b/i;
-const CHANGEABLE_DOMAIN = /\b(law|legal|regulation|rule|policy|tax|vat|visa|immigration|permit|government|authority|fee|price|cost|news|election|president|minister|ceo|version|release|documentation|api docs|software version|schedule|timetable|flight|hotel|travel advice|sanction|tariff|customs|interest rate|market rate|lag|juridik|regel|regler|skatt|moms|visum|uppehållstillstånd|arbetstillstånd|myndighet|avgift|pris|kostnad|nyhet|val|statsminister|vd|version|dokumentation|tidtabell|flyg|hotell|reseråd|sanktion|tull|ränta)\b/i;
+// Only domains whose answer is intrinsically time-sensitive should force current
+// research without explicit words such as "latest" or "today". Generic words
+// such as "policy", "rule" and "version" are intentionally excluded: an
+// internal capacity policy, chess rules or a version mentioned in supplied
+// context are stable questions unless the prompt explicitly asks for freshness.
+const CHANGEABLE_DOMAIN = /\b(law|legal|regulation|legislation|tax|vat|visa|immigration|permit|government|authority|fee|price|cost|news|election|president|minister|ceo|documentation|api docs|software version|schedule|timetable|flight|hotel|travel advice|sanction|tariff|customs|interest rate|market rate|lag|juridik|regelverk|förordning|skatt|moms|visum|uppehållstillstånd|arbetstillstånd|myndighet|avgift|pris|kostnad|nyhet|val|statsminister|vd|dokumentation|tidtabell|flyg|hotell|reseråd|sanktion|tull|ränta)\b/i;
 const DEEP_REASONING = /\b(deep|deeply|thorough|comprehensive|root cause|whole|entire|all affected|end[- ]to[- ]end|multi[- ]agent|djup|grundlig|hela|samtliga|rotorsak)\b/i;
 const EXPLICIT_REPOSITORY_CONTEXT = /\b(repository|repo|codebase|project files?|source files?|github|branch|pull request|code repo|kodbas|repo:t|repository:t|filerna i projektet)\b/i;
 
