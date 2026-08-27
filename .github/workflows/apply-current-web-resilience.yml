@@ -23,9 +23,7 @@ jobs:
           node-version: "24"
           cache: npm
       - name: Apply exact resilience patch
-        run: |
-          node scripts/apply-current-web-resilience.mjs
-          node scripts/apply-current-web-resilience-invariant.mjs
+        run: node scripts/apply-current-web-resilience.mjs
       - name: Install locked dependencies
         run: npm ci
       - name: Run targeted regression tests
