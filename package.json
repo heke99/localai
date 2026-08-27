@@ -21,7 +21,7 @@
     "typecheck": "tsc --noEmit",
     "model:fetch:q8": "bash scripts/fetch_qwen_v3_q8.sh",
     "benchmark:concurrency": "node scripts/benchmark_model_concurrency.mjs",
-    "validate:benchmarks": "node --check scripts/benchmark_model_concurrency.mjs",
+    "validate:benchmarks": "node --check scripts/benchmark_model_concurrency.mjs && bash -n infra/runtime/benchmark-legacy-gpuhub-parallel.sh",
     "validate:skills": "python3 scripts/validate_skills.py",
     "validate:runtime-startup": "bash -n infra/runtime/start-production.sh && bash -n infra/runtime/provision-search.sh && bash -n infra/runtime/bootstrap-host.sh && bash -n infra/runtime/upgrade-legacy-gpuhub.sh && bash -n infra/runpod/start-production.sh && bash -n infra/runpod/auto-start.sh",
     "validate:runpod-startup": "npm run validate:runtime-startup",
