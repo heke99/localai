@@ -90,6 +90,11 @@ function extractConstraints(prompt: string): string[] {
   return unique(sentences(prompt).filter((sentence) => constraintSignal.test(sentence)));
 }
 
+function positiveRoutingPrompt(prompt: string): string {
+  const positive = sentences(prompt).filter((sentence) => !constraintSignal.test(sentence)).join(" ").trim();
+  return positive || prompt;
+}
+
 function detectAmbiguity(prompt: string): DetectionResult {
   const reasons: string[] = [];
   const words = prompt.match(/[\p{L}\p{N}_-]+/gu) ?? [];
@@ -123,7 +128,9 @@ function executionRequirements(task: TaskAnalysis): ExecutionRequirements {
 export function processPrompt(mode: AgentMode, prompt: string, project: ProjectContext = {}): ExecutionContract {
   const normalizedPrompt = normalizePrompt(prompt);
   if (!normalizedPrompt) throw new Error("prompt_required");
-  const analysis = analyzeTask(mode, normalizedPrompt, project);
+  const requirements = extractRequirements(normalizedPrompt);
+  const constraints = extractConstraints(normalizedPrompt);
+  const analysis = analyzeTask(mode, positiveRoutingPrompt(normalizedPrompt), project);
   const execution = executionPolicyFor(analysis);
   return {
     schemaVersion: 1,
@@ -134,8 +141,8 @@ export function processPrompt(mode: AgentMode, prompt: string, project: ProjectC
     freshness: analysis.informationFreshness,
     depth: analysis.reasoningLevel,
     researchDepth: analysis.researchDepth,
-    requirements: extractRequirements(normalizedPrompt),
-    constraints: extractConstraints(normalizedPrompt),
+    requirements,
+    constraints,
     requires: executionRequirements(analysis),
     skills: [],
     contextBudget: execution.maxContextTokens,
