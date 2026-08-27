@@ -4,6 +4,8 @@ set -Eeuo pipefail
 log() { printf '[search-native] %s\n' "$*"; }
 fatal() { log "$*" >&2; exit 1; }
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SEARCH_CAPABILITY_CHECK="${SCRIPT_DIR}/check-search-capability.sh"
 ROOT_DIR="${DIV3RSA_LEGACY_ROOT_DIR:-/root/autodl-tmp/localai}"
 SEARCH_ROOT="${DIV3RSA_NATIVE_SEARCH_ROOT:-${ROOT_DIR}/search}"
 SRC_DIR="${SEARCH_ROOT}/searxng-src"
@@ -18,6 +20,7 @@ SEARXNG_REVISION="${DIV3RSA_SEARXNG_REVISION:-9fea41204fdfa7a5cfa15b0ebd12904c52
 INSTALL_MARKER="${VENV_DIR}/.div3rsa-searxng-revision"
 
 [[ "${EUID}" -eq 0 ]] || fatal "run as root on the GPUHub host"
+[[ -f "$SEARCH_CAPABILITY_CHECK" ]] || fatal "search capability check missing: $SEARCH_CAPABILITY_CHECK"
 command -v git >/dev/null 2>&1 || fatal "git is required"
 command -v python3 >/dev/null 2>&1 || fatal "python3 is required"
 command -v screen >/dev/null 2>&1 || fatal "screen is required"
@@ -140,45 +143,10 @@ screen -dmS "$SCREEN_NAME" bash -lc "
   exec '$VENV_DIR/bin/python' -m searx.webapp >>'$LOG_DIR/searxng.log' 2>&1
 "
 
-search_has_results() {
-  local url="$1"
-  local response_file
-  response_file="$(mktemp)"
-  if ! curl --fail --silent --show-error --max-time 10 "$url" >"$response_file" 2>/dev/null; then
-    rm -f "$response_file"
-    return 1
-  fi
-  if "$VENV_DIR/bin/python" - "$response_file" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    payload = json.load(handle)
-
-results = payload.get("results") or []
-if results:
-    raise SystemExit(0)
-
-unresponsive = payload.get("unresponsive_engines") or []
-print(
-    "SearXNG returned HTTP success but no usable results; "
-    f"unresponsive_engines={json.dumps(unresponsive, ensure_ascii=False)}",
-    file=sys.stderr,
-)
-raise SystemExit(1)
-PY
-  then
-    rm -f "$response_file"
-    return 0
-  fi
-  rm -f "$response_file"
-  return 1
-}
-
 deadline=$((SECONDS + ${DIV3RSA_SEARCH_BOOT_TIMEOUT_SECONDS:-120}))
-health_url="http://127.0.0.1:${SEARCH_PORT}/search?q=IANA%20example%20domains&format=json"
+search_base_url="http://127.0.0.1:${SEARCH_PORT}"
 while true; do
-  if search_has_results "$health_url"; then
+  if bash "$SEARCH_CAPABILITY_CHECK" "$search_base_url" >/dev/null 2>&1; then
     break
   fi
   if ! screen -list | grep -F ".${SCREEN_NAME}" >/dev/null 2>&1; then
@@ -188,6 +156,7 @@ while true; do
   fi
   if (( SECONDS >= deadline )); then
     log "native SearXNG did not become search-capable"
+    bash "$SEARCH_CAPABILITY_CHECK" "$search_base_url" || true
     tail -n 120 "$LOG_DIR/searxng.log" 2>/dev/null || true
     exit 70
   fi
