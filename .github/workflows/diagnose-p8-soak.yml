@@ -1,8 +1,10 @@
-name: Diagnose P8 soak evidence
+name: Diagnose P8 soak 6 and live time
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - ops/diagnose-soak6-live-time-20260828
     paths:
       - .github/workflows/diagnose-p8-soak.yml
   workflow_dispatch:
@@ -16,7 +18,7 @@ concurrency:
 
 jobs:
   diagnose:
-    name: Inspect failed p8 soak evidence
+    name: Inspect soak 6 eval and live-time delivery
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production-gpuhub
@@ -45,7 +47,7 @@ jobs:
           printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
 
-      - name: Read latest p8 soak evidence and runtime state
+      - name: Read soak 6 evidence and current runtime state
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -65,8 +67,9 @@ jobs:
           root='/root/autodl-tmp/localai'
           app="$root/app"
           evidence_root="$root/logs/p8-soak"
+          worker_log="$root/logs/agent-worker.log"
 
-          echo '=== RUNTIME STATE AFTER FAILED SOAK ==='
+          echo '=== CURRENT PRODUCTION RUNTIME ==='
           printf 'commit=' && git -C "$app" rev-parse HEAD
           pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf' || true
           curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health && echo
@@ -76,12 +79,29 @@ jobs:
           latest="$(find "$evidence_root" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)"
           [[ -n "$latest" && -d "$latest" ]] || { echo 'No p8 soak evidence directory found' >&2; exit 1; }
           echo "=== LATEST P8 SOAK EVIDENCE: $latest ==="
-          find "$latest" -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+          find "$latest" -maxdepth 4 -type f -printf '%P %s bytes\n' | sort
 
-          for file in p8-runtime.txt eval-pre.stderr.log eval-pre.stdout.json eval-pre.json load.stderr.log load.json gate-input.json gate-result.json; do
-            if [[ -f "$latest/$file" ]]; then
-              echo "=== $file ==="
-              cat "$latest/$file"
-            fi
+          for dir in "$latest/evals/pre" "$latest/evals/loaded" "$latest/evals/post"; do
+            [[ -d "$dir" ]] || continue
+            echo "=== EVAL DIRECTORY: ${dir#$latest/} ==="
+            for file in "$dir"/*; do
+              [[ -f "$file" ]] || continue
+              echo "=== ${file#$latest/} ==="
+              case "$file" in
+                *.json|*.log|*.txt) sed -n '1,500p' "$file" ;;
+              esac
+            done
           done
+
+          echo '=== RECENT WORKER LOG (last 400 lines) ==='
+          if [[ -f "$worker_log" ]]; then
+            tail -n 400 "$worker_log"
+          else
+            echo 'worker log missing'
+          fi
+
+          echo '=== RECENT LIVE/TIME/ERROR WORKER EVENTS ==='
+          if [[ -f "$worker_log" ]]; then
+            tail -n 2000 "$worker_log" | grep -Ei 'current_time|Europe/Stockholm|Stockholm|worker_loop_error|run_failed|failed|error|timeout' | tail -n 250 || true
+          fi
           REMOTE
