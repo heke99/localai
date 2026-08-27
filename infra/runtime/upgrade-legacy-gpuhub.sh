@@ -55,21 +55,87 @@ log "building and validating runtime skill manifest"
 (cd "$REPO_DIR" && node scripts/build_skill_manifest.mjs)
 (cd "$REPO_DIR" && node --experimental-transform-types --import ./infra/runpod/native-typescript-register.mjs scripts/smoke_native_ts_runtime.mjs)
 
+docker_compose_available() {
+  docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1
+}
+
+docker_daemon_ready() {
+  docker info >/dev/null 2>&1
+}
+
+start_docker_without_systemd() {
+  local data_root="${ROOT_DIR}/docker-data"
+  local exec_root="${ROOT_DIR}/docker-exec"
+  local pid_file="${ROOT_DIR}/docker.pid"
+  local daemon_log="${LOG_DIR}/dockerd.log"
+  mkdir -p "$data_root" "$exec_root"
+
+  if pgrep -x dockerd >/dev/null 2>&1; then
+    log "dockerd process already exists; waiting for daemon readiness"
+  else
+    log "starting dockerd directly because systemd is not PID 1"
+    rm -f "$pid_file"
+    nohup dockerd \
+      --host=unix:///var/run/docker.sock \
+      --data-root="$data_root" \
+      --exec-root="$exec_root" \
+      --pidfile="$pid_file" \
+      >"$daemon_log" 2>&1 &
+  fi
+
+  local attempt
+  for attempt in {1..45}; do
+    if docker_daemon_ready; then
+      log "Docker daemon is ready"
+      return 0
+    fi
+    sleep 1
+  done
+
+  log "Docker daemon failed to become ready; last dockerd log lines follow"
+  tail -n 120 "$daemon_log" 2>/dev/null || true
+  return 1
+}
+
 ensure_container_runtime() {
-  if command -v docker >/dev/null 2>&1 && (docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1); then
+  local needs_install=0
+  command -v docker >/dev/null 2>&1 || needs_install=1
+  if (( needs_install == 0 )) && ! docker_compose_available; then
+    needs_install=1
+  fi
+
+  if (( needs_install == 1 )); then
+    command -v apt-get >/dev/null 2>&1 || fatal "Docker/Compose missing and apt-get is unavailable"
+    log "installing Ubuntu Docker + Compose packages for private SearXNG"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y --no-install-recommends docker.io docker-compose
+  fi
+
+  command -v docker >/dev/null 2>&1 || fatal "Docker CLI is still missing after installation"
+  docker_compose_available || fatal "Docker Compose is still missing after installation"
+
+  if docker_daemon_ready; then
+    log "Docker daemon is already ready"
     return
   fi
-  command -v apt-get >/dev/null 2>&1 || fatal "Docker/Compose missing and apt-get is unavailable"
-  log "installing Ubuntu Docker + Compose packages for private SearXNG"
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y --no-install-recommends docker.io docker-compose
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl enable --now docker
-  else
-    service docker start
+
+  local pid1
+  pid1="$(ps -p 1 -o comm= 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ "$pid1" == "systemd" ]] && command -v systemctl >/dev/null 2>&1; then
+    log "starting Docker through systemd"
+    systemctl enable --now docker || true
+  elif command -v service >/dev/null 2>&1; then
+    log "trying legacy service startup for Docker"
+    service docker start >/dev/null 2>&1 || true
   fi
-  docker version >/dev/null 2>&1 || fatal "Docker daemon did not become available"
+
+  if docker_daemon_ready; then
+    log "Docker daemon is ready"
+    return
+  fi
+
+  start_docker_without_systemd || fatal "Docker daemon did not become available; see ${LOG_DIR}/dockerd.log"
 }
 
 ensure_env_value() {
