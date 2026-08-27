@@ -13,7 +13,7 @@ REPO_DIR="${DIV3RSA_LEGACY_APP_DIR:-${ROOT_DIR}/app}"
 ENV_FILE="${DIV3RSA_LEGACY_ENV_FILE:-${ROOT_DIR}/secrets/gpuhub-worker.env}"
 LOG_DIR="${DIV3RSA_LEGACY_LOG_DIR:-${ROOT_DIR}/logs}"
 MODEL_PORT="${DIV3RSA_MODEL_PORT:-6006}"
-SEARCH_PORT="${DIV3RSA_SEARCH_PORT:-8888}"
+SEARCH_PORT="${DIV3RSA_SEARCH_PORT:-8890}"
 NODE_BIN="${DIV3RSA_LEGACY_NODE_BIN:-${ROOT_DIR}/runtime/node-current/bin/node}"
 SCREEN_NAME="${DIV3RSA_LEGACY_WORKER_SCREEN:-localai-agent}"
 TARGET_REF="${DIV3RSA_RUNTIME_GIT_REF:-main}"
@@ -102,7 +102,8 @@ PY
 
 # GPUHub's containerized host does not grant CAP_NET_ADMIN, so Docker bridge/NAT
 # creation is not available even to uid 0. Run SearXNG directly in a pinned
-# Python virtualenv bound only to loopback instead.
+# Python virtualenv bound only to loopback instead. Port 8888 is reserved by the
+# GPUHub/Jupyter environment, so the private search sidecar defaults to 8890.
 log "provisioning native private SearXNG (no Docker/bridge networking)"
 DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" \
 DIV3RSA_RUNTIME_STATE_DIR="${ROOT_DIR}/secrets" \
