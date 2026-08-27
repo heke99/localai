@@ -1,1 +1,1 @@
-{"name":"@div3rsa/repository-intelligence","version":"0.1.0","private":true,"type":"module","exports":{".":"./src/index.ts","./consequence":"./src/consequence.ts"}}
+{"name":"@div3rsa/repository-intelligence","version":"0.1.0","private":true,"type":"module","exports":{".":"./src/index.ts","./consequence":"./src/consequence.ts","./context":"./src/context.ts"}}
