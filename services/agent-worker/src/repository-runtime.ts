@@ -60,6 +60,14 @@ function repositoryResource(run: ClaimedRun) {
   return run.resourceContext.find((resource) => resource.provider === "github" && resource.resourceType === "repository" && resource.capabilities.includes("github.contents.read"));
 }
 
+export function requiresRepositorySnapshot(run: ClaimedRun, requestedRef?: string): boolean {
+  if (requestedRef?.trim()) return true;
+  if (run.mode === "code" || run.mode === "lab") return true;
+  const explicitRepository = /\b(?:repo(?:sitory)?|github|branch|commit|pull\s+request|\bpr\b|source\s+code|kod(?:bas|en)?|codebase|projektfiler|project\s+files?)\b/i.test(run.prompt);
+  const explicitChangeWork = /\b(?:implementera|implementation|bygg(?:a)?|build|fixa|fix\b|bugg?|ändra|change|refaktor|refactor|deploy(?:ment)?|migration|migrera)\b/i.test(run.prompt);
+  return explicitRepository || explicitChangeWork;
+}
+
 export class RemoteRepositoryWorkspaceRuntime implements WorkerRepositoryRuntime {
   constructor(
     private readonly client: RpcClient,
@@ -92,7 +100,7 @@ export class RemoteRepositoryWorkspaceRuntime implements WorkerRepositoryRuntime
 
   async prepare(run: ClaimedRun, requestedRef?: string): Promise<PreparedRepositoryWorkspace | null> {
     const resource = repositoryResource(run);
-    if (!resource) return null;
+    if (!resource || !requiresRepositorySnapshot(run, requestedRef)) return null;
     const metadata = resource.metadata ?? {};
     const defaultBranch = typeof metadata.defaultBranch === "string" && metadata.defaultBranch ? metadata.defaultBranch : "main";
     const ref = requestedRef?.trim() || defaultBranch;
