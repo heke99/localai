@@ -244,6 +244,51 @@ function isReadableContentType(contentType: string): boolean {
     || contentType === "application/xhtml+xml";
 }
 
+async function readBoundedResponseBody(response: Response, maxBytes: number): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  if (!response.body) return { bytes: new Uint8Array(), truncated: false };
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+      const remaining = maxBytes - total;
+      if (value.byteLength > remaining) {
+        if (remaining > 0) {
+          chunks.push(value.subarray(0, remaining));
+          total += remaining;
+        }
+        truncated = true;
+        await reader.cancel("bounded_web_fetch_limit_reached").catch(() => undefined);
+        break;
+      }
+      chunks.push(value);
+      total += value.byteLength;
+      if (total === maxBytes) {
+        const probe = await reader.read();
+        if (!probe.done) {
+          truncated = true;
+          await reader.cancel("bounded_web_fetch_limit_reached").catch(() => undefined);
+        }
+        break;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { bytes, truncated };
+}
+
 export class CoreToolRuntime implements WorkerToolRuntime {
   private readonly now: () => Date;
   private readonly searchBaseUrl: string | null;
@@ -346,10 +391,12 @@ export class CoreToolRuntime implements WorkerToolRuntime {
       if (!response.ok) throw new Error(`web_fetch_failed:${response.status}`);
       const contentType = normalizedContentType(response.headers.get("content-type"));
       if (!isReadableContentType(contentType)) throw new Error(`web_fetch_unsupported_content_type:${contentType || "unknown"}`);
-      const declaredLength = Number(response.headers.get("content-length"));
-      if (Number.isFinite(declaredLength) && declaredLength > this.maxFetchBytes) throw new Error("web_fetch_response_too_large");
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.byteLength > this.maxFetchBytes) throw new Error("web_fetch_response_too_large");
+      const declaredLengthHeader = response.headers.get("content-length");
+      const declaredLength = declaredLengthHeader == null ? null : Number(declaredLengthHeader);
+      const declaredBytes = declaredLength !== null && Number.isFinite(declaredLength) && declaredLength >= 0 ? declaredLength : null;
+      const bounded = await readBoundedResponseBody(response, this.maxFetchBytes);
+      const bytes = bounded.bytes;
+      const truncated = bounded.truncated || (declaredBytes !== null && declaredBytes > bytes.byteLength);
       const raw = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
       const html = contentType === "text/html" || contentType === "application/xhtml+xml";
       const text = html ? htmlToText(raw) : raw.trim();
@@ -359,6 +406,8 @@ export class CoreToolRuntime implements WorkerToolRuntime {
         contentType,
         text: text.slice(0, 120_000),
         bytes: bytes.byteLength,
+        declaredBytes,
+        truncated,
         retrievedAt: this.now().toISOString()
       };
     }
