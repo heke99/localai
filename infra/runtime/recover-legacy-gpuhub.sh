@@ -24,6 +24,7 @@ MODEL_BOOT_TIMEOUT_SECONDS="${DIV3RSA_MODEL_BOOT_TIMEOUT_SECONDS:-900}"
 MODEL_RECOVERY_ATTEMPTS="${DIV3RSA_MODEL_RECOVERY_ATTEMPTS:-3}"
 RECOVERY_LOG="${LOG_DIR}/llama-recovery.log"
 PID_FILE="${ROOT_DIR}/runtime/qwen.pid"
+REQUESTED_MODEL_PARALLEL="${DIV3RSA_MODEL_PARALLEL:-}"
 
 [[ -d "$REPO_DIR" ]] || fatal "repository missing: $REPO_DIR"
 [[ -f "$ENV_FILE" ]] || fatal "worker env missing: $ENV_FILE"
@@ -39,7 +40,7 @@ set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 set +a
-MODEL_PARALLEL="${DIV3RSA_MODEL_PARALLEL:-1}"
+MODEL_PARALLEL="${REQUESTED_MODEL_PARALLEL:-${DIV3RSA_MODEL_PARALLEL:-1}}"
 [[ "$MODEL_PARALLEL" =~ ^[0-9]+$ && "$MODEL_PARALLEL" -ge 1 ]] || fatal "invalid DIV3RSA_MODEL_PARALLEL: $MODEL_PARALLEL"
 
 health() {
