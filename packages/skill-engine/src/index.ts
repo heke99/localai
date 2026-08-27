@@ -15,6 +15,9 @@ const dependencies: Record<string, string[]> = {
   "brainstorming-design": ["using-skills"],
   "system-design": ["using-skills"],
   "writing-plans": ["using-skills"],
+  "reasoning-router": ["using-skills"],
+  "current-information-research": ["reasoning-router"],
+  "capacity-benchmarking": ["performance-profiling", "evals-benchmarking"],
   "test-driven-development": ["writing-plans"],
   "systematic-debugging": ["using-skills"],
   "code-review": ["verification-before-completion"],
@@ -31,10 +34,10 @@ const dependencies: Record<string, string[]> = {
 };
 
 const modeDefaults: Record<string, string[]> = {
-  chat: ["using-skills", "verification-before-completion"],
-  code: ["using-skills", "writing-plans", "test-driven-development", "verification-before-completion"],
-  lab: ["using-skills", "authorized-pentest", "verification-before-completion"],
-  research: ["using-skills", "web-research", "verification-before-completion"]
+  chat: ["using-skills", "reasoning-router", "verification-before-completion"],
+  code: ["using-skills", "reasoning-router", "writing-plans", "test-driven-development", "verification-before-completion"],
+  lab: ["using-skills", "reasoning-router", "authorized-pentest", "verification-before-completion"],
+  research: ["using-skills", "reasoning-router", "web-research", "current-information-research", "verification-before-completion"]
 };
 
 const signals: Array<[RegExp, string[]]> = [
@@ -47,6 +50,8 @@ const signals: Array<[RegExp, string[]]> = [
   [/vercel|deploy|deployment|rollback|runtime log/i, ["vercel-operations"]],
   [/browser|e2e|playwright|responsive|viewport|accessibility|a11y|visual review|frontend|\bui\b/i, ["browser-e2e"]],
   [/performance|latency|slow|load test|k6|lighthouse|bundle|lcp|cls|inp|n\+1/i, ["performance-profiling"]],
+  [/parallel|concurren|ttft|tokens\/s|tokens per second|p95|p99|kv cache|batch size|ubatch|throughput/i, ["capacity-benchmarking"]],
+  [/latest|newest|current|currently|today|recent|up[- ]to[- ]date|right now|senaste|nyaste|aktuell|aktuella|idag|just nu|nuvarande|visa|visum|tax|skatt|regulation|regel|regler|price|pris|weather|väder|exchange rate|valutakurs/i, ["current-information-research"]],
   [/learn|knowledge|document|ingest|source material/i, ["knowledge-ingestion"]],
   [/memory|verified history|self[- ]improv|training data|experience/i, ["memory-learning"]],
   [/model|gpu|cuda|quantization|q8|inference|vram/i, ["gpu-model-operations"]],
@@ -72,7 +77,7 @@ export class SkillEngine {
   }
 
   select(mode: string, prompt: string): SkillSelection[] {
-    const requested = new Set(modeDefaults[mode] ?? ["using-skills", "verification-before-completion"]);
+    const requested = new Set(modeDefaults[mode] ?? ["using-skills", "reasoning-router", "verification-before-completion"]);
     for (const [pattern, names] of signals) if (pattern.test(prompt)) names.forEach((name) => requested.add(name));
     const ordered: string[] = [];
     const visiting = new Set<string>();
