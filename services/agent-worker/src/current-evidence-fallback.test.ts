@@ -136,8 +136,8 @@ describe("current-information deterministic evidence fallback", () => {
     expect(searchCount).toBeGreaterThanOrEqual(2);
     expect(execute.mock.calls.some(([, call]) => call.name === "web_fetch" && call.input.url === "https://docs.example.org/current")).toBe(true);
     expect(requests[2]?.tools?.map((tool) => tool.name)).toEqual(["web_search", "web_fetch"]);
+    expect(jobs.fail).not.toHaveBeenCalled();
     expect(verifierGenerate).toHaveBeenCalledTimes(2);
     expect(jobs.complete).toHaveBeenCalledWith(run, expect.objectContaining({ content: expect.stringContaining("v2.0.0") }));
-    expect(jobs.fail).not.toHaveBeenCalled();
   });
 });
