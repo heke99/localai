@@ -30,6 +30,13 @@
       "dynamicPattern": "stockholm-date"
     },
     {
+      "id": "live-stockholm-time",
+      "mode": "chat",
+      "prompt": "Vilken tid är det i Stockholm?",
+      "requiredPatterns": ["The current time in Europe/Stockholm is \\d{2}:\\d{2}"],
+      "requiredTools": ["current_time"]
+    },
+    {
       "id": "current-swedish-vat",
       "mode": "research",
       "prompt": "What is the current standard VAT rate (normal momssats) in Sweden? Verify it using current web research, open an authoritative source such as Skatteverket, and state the source in the answer. Do not answer from memory alone.",
