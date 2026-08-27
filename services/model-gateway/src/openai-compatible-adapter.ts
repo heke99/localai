@@ -70,7 +70,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
   async estimateTokens(text: string): Promise<number> { return Math.max(1, Math.ceil(text.length / 3.5)); }
 
   async generate(request: GenerateRequest): Promise<GenerateResult> {
-    await this.admission?.waitForAdmission(this.estimateRequestContextTokens(request));
+    await this.admission?.waitForAdmission(this.estimateRequestContextTokens(request), request.signal);
     const response = await this.fetcher(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "x-request-id": request.requestId },
@@ -82,7 +82,8 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
         stream: false,
         tools: request.tools?.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
         tool_choice: request.tools?.length ? "auto" : undefined
-      })
+      }),
+      signal: request.signal
     });
     if (!response.ok) throw new Error(`Inference failed with status ${response.status}`);
     const body = await response.json() as {
@@ -105,13 +106,14 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
   }
 
   async *stream(request: GenerateRequest): AsyncIterable<string> {
-    await this.admission?.waitForAdmission(this.estimateRequestContextTokens(request));
+    await this.admission?.waitForAdmission(this.estimateRequestContextTokens(request), request.signal);
     const requestStartedAt = performance.now();
     let observedFirstToken = false;
     const response = await this.fetcher(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "x-request-id": request.requestId },
-      body: JSON.stringify({ model: QWEN_RUNTIME_MODEL, messages: request.messages.map(encodeMessage), max_tokens: request.maxOutputTokens, temperature: request.temperature, stream: true })
+      body: JSON.stringify({ model: QWEN_RUNTIME_MODEL, messages: request.messages.map(encodeMessage), max_tokens: request.maxOutputTokens, temperature: request.temperature, stream: true }),
+      signal: request.signal
     });
     if (!response.ok || !response.body) throw new Error(`Inference stream failed with status ${response.status}`);
     const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -127,14 +129,25 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
       }
       return content || null;
     };
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += value;
-      const events = buffer.split("\n\n");
-      buffer = events.pop() ?? "";
-      for (const event of events) {
-        for (const line of event.split("\n")) {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += value;
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+        for (const event of events) {
+          for (const line of event.split("\n")) {
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (!data || data === "[DONE]") continue;
+            const content = parseData(data);
+            if (content) yield content;
+          }
+        }
+      }
+      if (buffer.trim()) {
+        for (const line of buffer.split("\n")) {
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
           if (!data || data === "[DONE]") continue;
@@ -142,15 +155,8 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
           if (content) yield content;
         }
       }
-    }
-    if (buffer.trim()) {
-      for (const line of buffer.split("\n")) {
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (!data || data === "[DONE]") continue;
-        const content = parseData(data);
-        if (content) yield content;
-      }
+    } finally {
+      reader.releaseLock();
     }
   }
 
