@@ -9,6 +9,8 @@ const projectModules = [
   "../packages/skill-engine/src/index.ts",
   "../services/agent-worker/src/processor.ts",
   "../services/agent-worker/src/integration-tool-runtime.ts",
+  "../services/agent-worker/src/core-tool-runtime.ts",
+  "../services/agent-worker/src/composite-tool-runtime.ts",
   "../services/agent-worker/src/remote-provider-executor.ts",
   "../services/agent-worker/src/repository-runtime.ts",
   "../services/agent-worker/src/repository-tools.ts",

@@ -11,6 +11,7 @@ import {
 import { consequenceGraphInput } from "@div3rsa/repository-intelligence/consequence";
 import type { PreparedRepositoryWorkspace } from "./repository-runtime";
 import type { SandboxVerificationRuntime } from "./sandbox-verification";
+import { evaluateResearchEvidence } from "./research-evidence";
 
 export type WorkerToolTrace = { sequence: number; name: string; input: Record<string, unknown>; output: unknown };
 
@@ -125,6 +126,12 @@ export function createWorkerVerificationExecutor(input: {
       const pass = (summary: string, evidence?: string[]): VerificationResult => ({ kind: check.kind, status: "passed", summary, evidence });
       const blocked = (summary: string): VerificationResult => ({ kind: check.kind, status: check.required ? "blocked" : "skipped", summary });
       if (check.kind === "response-integrity") return context.output?.trim() ? pass("Model output is non-empty.") : { kind: check.kind, status: "failed", summary: "Model output is empty." };
+      if (check.kind === "current-information-evidence") {
+        const report = evaluateResearchEvidence(context.task, trace);
+        return report.passed
+          ? pass(report.sources.length ? `Current information is grounded in ${report.sources.length} opened source(s).` : "Current information is grounded in a deterministic live tool.", report.evidence)
+          : blocked(`Current information evidence is incomplete: ${report.blockers.join(", ")}`);
+      }
       if (check.kind === "repository-intelligence") {
         const evidence = context.repository;
         return evidence?.complete && evidence.indexedFiles > 0 && evidence.revision ? pass(`Complete repository revision ${evidence.revision} indexed.`, [`revision:${evidence.revision}`, `files:${evidence.indexedFiles}`]) : blocked("Exact post-change repository revision was not completely indexed.");

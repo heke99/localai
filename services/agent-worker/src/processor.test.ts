@@ -10,6 +10,7 @@ const adapter: ModelAdapter = {
 
 function queue(claimed: ClaimedRun | null = run): AgentQueue & {
   step: ReturnType<typeof vi.fn>;
+  stream: ReturnType<typeof vi.fn>;
   recordRunIntelligence: ReturnType<typeof vi.fn>;
   recordRepositoryIndex: ReturnType<typeof vi.fn>;
   recordImpactAnalysis: ReturnType<typeof vi.fn>;
@@ -21,6 +22,7 @@ function queue(claimed: ClaimedRun | null = run): AgentQueue & {
   return {
     claim: vi.fn(async () => claimed),
     step: vi.fn(async () => undefined),
+    stream: vi.fn(async () => undefined),
     recordRunIntelligence: vi.fn(async () => undefined),
     recordRepositoryIndex: vi.fn(async () => "00000000-0000-0000-0000-000000000001"),
     recordImpactAnalysis: vi.fn(async () => "00000000-0000-0000-0000-000000000002"),
@@ -40,6 +42,20 @@ describe("AgentWorkerProcessor", () => {
     expect(jobs.complete).toHaveBeenCalledOnce();
     expect(jobs.recordVerificationRun.mock.invocationCallOrder[0]).toBeLessThan(jobs.complete.mock.invocationCallOrder[0]!);
     expect(jobs.step.mock.calls.map((call) => call[1])).toContain("verify");
+  });
+
+  it("streams final model deltas into durable run state", async () => {
+    const jobs = queue();
+    const generateStreamed = vi.fn(async (_request: Parameters<NonNullable<ModelAdapter["generateStreamed"]>>[0], onDelta: Parameters<NonNullable<ModelAdapter["generateStreamed"]>>[1]) => {
+      await onDelta("Hel");
+      await onDelta("lo");
+      return { modelVersionId: "model", content: "Hello", finishReason: "stop" as const, usage: { inputTokens: 2, outputTokens: 2, cachedTokens: 0 } };
+    });
+    await new AgentWorkerProcessor(jobs, { resolve: () => ({ ...adapter, generateStreamed }) }, "worker-1").processOnce();
+    expect(generateStreamed).toHaveBeenCalledOnce();
+    expect(jobs.stream).toHaveBeenCalledWith(run.runId, "", true);
+    expect(jobs.stream).toHaveBeenCalledWith(run.runId, "Hello");
+    expect(jobs.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ content: "Hello" }));
   });
 
   it("executes structured tool calls before completing", async () => {

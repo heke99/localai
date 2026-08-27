@@ -80,4 +80,45 @@ describe("OpenAiCompatibleAdapter", () => {
     for await (const chunk of adapter.stream({ requestId: "req-stream", alias: "general-prod", messages: [{ role: "user", content: "Hi" }] })) output.push(chunk);
     expect(output.join("")).toBe("Hello");
   });
+
+  it("streams text deltas while preserving final usage", async () => {
+    const chunks = [
+      'data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}\n\n',
+      'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":1}}}\n\n',
+      'data: [DONE]\n\n'
+    ];
+    const stream = new ReadableStream({ start(controller) { chunks.forEach((chunk) => controller.enqueue(new TextEncoder().encode(chunk))); controller.close(); } });
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body)) as { model?: string; stream?: boolean; stream_options?: { include_usage?: boolean } };
+      expect(payload).toMatchObject({ model: QWEN_RUNTIME_MODEL, stream: true, stream_options: { include_usage: true } });
+      return new Response(stream, { status: 200 });
+    });
+    const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);
+    const deltas: string[] = [];
+    const result = await adapter.generateStreamed!({ requestId: "req-streamed", alias: "general-prod", messages: [{ role: "user", content: "Hi" }] }, (delta) => { deltas.push(delta); });
+    expect(deltas).toEqual(["Hel", "lo"]);
+    expect(result).toMatchObject({ content: "Hello", finishReason: "stop", usage: { inputTokens: 5, outputTokens: 2, cachedTokens: 1 } });
+  });
+
+  it("reassembles fragmented streamed tool calls", async () => {
+    const chunks = [
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"web_","arguments":"{\\"query\\":\\""}}]},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"search","arguments":"latest\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      'data: [DONE]\n\n'
+    ];
+    const stream = new ReadableStream({ start(controller) { chunks.forEach((chunk) => controller.enqueue(new TextEncoder().encode(chunk))); controller.close(); } });
+    const fetcher = vi.fn(async () => new Response(stream, { status: 200 }));
+    const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);
+    const deltas: string[] = [];
+    const result = await adapter.generateStreamed!({
+      requestId: "req-stream-tool",
+      alias: "research-prod",
+      messages: [{ role: "user", content: "latest" }],
+      tools: [{ name: "web_search", description: "Search", inputSchema: { type: "object" } }]
+    }, (delta) => { deltas.push(delta); });
+    expect(deltas).toEqual([]);
+    expect(result.finishReason).toBe("tool_call");
+    expect(result.toolCalls).toEqual([{ id: "call-1", name: "web_search", input: { query: "latest" } }]);
+  });
 });

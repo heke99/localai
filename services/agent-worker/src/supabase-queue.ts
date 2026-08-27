@@ -5,6 +5,8 @@ import type { PreparedRepositoryWorkspace } from "./repository-runtime";
 import type { AgentQueue, AgentResourceContext, ClaimedRun } from "./processor";
 import { chunk, impactNodePayload, repositoryGraph, verificationResultPayload } from "./observability";
 
+type UntypedRpcClient = { rpc: (name: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { message: string } | null }> };
+
 function parseResourceContext(value: Json | undefined): AgentResourceContext[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry) => {
@@ -41,6 +43,15 @@ export class SupabaseAgentQueue implements AgentQueue {
   async step(runId: string, kind: string, status: string, summary: string, state: Record<string, unknown> = {}): Promise<void> {
     const { error } = await this.client.rpc("worker_record_agent_step", { target_run_id: runId, step_kind: kind, step_status: status, summary, state: asJson(state) });
     if (error) throw error;
+  }
+
+  async stream(runId: string, delta: string, reset = false): Promise<void> {
+    const { error } = await (this.client as unknown as UntypedRpcClient).rpc("worker_append_agent_run_stream", {
+      target_run_id: runId,
+      delta,
+      reset_stream: reset
+    });
+    if (error) throw new Error(error.message);
   }
 
   async recordRunIntelligence(runId: string, task: TaskAnalysis, skills: string[]): Promise<void> {
