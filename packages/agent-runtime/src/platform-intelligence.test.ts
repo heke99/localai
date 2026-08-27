@@ -11,7 +11,37 @@ describe("portable agent platform intelligence", () => {
     expect(task.categories).toEqual(expect.arrayContaining(["bugfix", "database", "frontend", "design", "testing", "deployment"]));
     expect(task.risk).toBe("critical");
     expect(task.requiresBrowser).toBe(true);
+    expect(task.reasoningLevel).toBe("deep");
     expect(task.verificationRequirements).toEqual(expect.arrayContaining(["consequence-analysis", "database-invariants", "browser-e2e", "deployment-health"]));
+  });
+
+  it("routes changeable real-world rules through current-information research", () => {
+    const task = analyzeTask("chat", "Hur får jag visum till Japan och vilka regler gäller nu?");
+    expect(task.requiresCurrentInformation).toBe(true);
+    expect(task.requiresLiveData).toBe(false);
+    expect(task.informationFreshness).toBe("current");
+    expect(task.researchDepth).toBe("standard");
+    expect(task.reasoningLevel).toBe("standard");
+  });
+
+  it("routes realtime facts through the live fast path", () => {
+    const task = analyzeTask("chat", "Vilken tid är det i Stockholm just nu?");
+    expect(task.requiresCurrentInformation).toBe(true);
+    expect(task.requiresLiveData).toBe(true);
+    expect(task.informationFreshness).toBe("live");
+    expect(task.researchDepth).toBe("fast");
+    expect(task.reasoningLevel).toBe("fast");
+  });
+
+  it("keeps stable low-risk knowledge off web and repository paths", () => {
+    const task = analyzeTask("chat", "Förklara Pythagoras sats enkelt.");
+    expect(task.requiresCurrentInformation).toBe(false);
+    expect(task.requiresLiveData).toBe(false);
+    expect(task.requiresRepository).toBe(false);
+    expect(task.informationFreshness).toBe("stable");
+    expect(task.researchDepth).toBe("none");
+    expect(task.reasoningLevel).toBe("fast");
+    expect(task.verificationRequirements).not.toEqual(expect.arrayContaining(["consequence-analysis", "targeted-tests"]));
   });
 
   it("walks callers and dependencies transitively and selects impacted tests", () => {

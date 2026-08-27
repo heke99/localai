@@ -28,6 +28,7 @@ export interface GenerateRequest {
   maxOutputTokens?: number;
   temperature?: number;
   tools?: ModelToolDefinition[];
+  signal?: AbortSignal;
 }
 
 export interface GenerateResult {
