@@ -30,47 +30,13 @@ jobs:
           from pathlib import Path
           path = Path('services/agent-worker/src/processor.ts')
           text = path.read_text()
-          old = '''                const candidate = rankSearchCandidates(searchOutput, contract.normalizedPrompt)
-                  .find((item) => !openedUrls.has(item.url) && !attemptedFallbackUrls.has(item.url));
-                if (!candidate) {
-                  await this.queue.step(run.runId, "tool", "blocked", "Deterministic evidence fallback found no new source", {
-                    verificationRound,
-                    researchAttempt,
-                    query: fallbackQuery
-                  });
-                  continue;
-                }
-
-                attemptedFallbackUrls.add(candidate.url);
-
-                const fetchCall: ModelToolCall = {
-                  id: `${run.requestId}:grounding-fallback-fetch:${verificationRound}:${researchAttempt}`,
-                  name: "web_fetch",
-                  input: { url: candidate.url }
-                };
-                loopGuard.record({ action: fetchCall.name, inputHash: hashInput(fetchCall.input) });
-                await this.queue.step(run.runId, "tool", "waiting_for_tool", "web_fetch", {
-                  toolCallId: fetchCall.id,
-                  verificationRound,
-                  researchAttempt,
-                  url: candidate.url,
-                  deterministicEvidenceFallback: true
-                });
-                try {
-                  const output = await this.tools.execute(run, fetchCall);
-                  toolTrace.push({ sequence: toolTrace.length + 1, name: fetchCall.name, input: fetchCall.input, output });
-                  messages.push({ role: "assistant", content: "", toolCalls: [fetchCall] });
-                  messages.push({ role: "tool", name: fetchCall.name, toolCallId: fetchCall.id, content: compactToolOutput(output) });
-                  openedNewSource = true;
-                } catch (error) {
-                  await this.queue.step(run.runId, "tool", "blocked", "Deterministic evidence fallback source fetch failed", {
-                    verificationRound,
-                    researchAttempt,
-                    url: candidate.url,
-                    error: error instanceof Error ? error.message : "web_fetch_failed"
-                  });
-                }
-                continue;'''
+          start_marker = '                const candidate = rankSearchCandidates(searchOutput, contract.normalizedPrompt)'
+          end_marker = '                continue;\n              }\n\n              const disallowedCall'
+          if text.count(start_marker) != 1 or text.count(end_marker) != 1:
+              raise SystemExit('expected unique processor markers not found; refusing patch')
+          start = text.index(start_marker)
+          end = text.index(end_marker, start)
+          old = text[start:end + len('                continue;')]
           new = '''                const candidates = rankSearchCandidates(searchOutput, contract.normalizedPrompt)
                   .filter((item) => !openedUrls.has(item.url) && !attemptedFallbackUrls.has(item.url))
                   .slice(0, 3);
@@ -120,9 +86,7 @@ jobs:
                   }
                 }
                 continue;'''
-          if old not in text:
-              raise SystemExit('expected processor block not found; refusing patch')
-          patched = text.replace(old, new, 1)
+          patched = text[:start] + new + text[end + len('                continue;'):]
           if patched == text:
               raise SystemExit('processor patch made no change')
           path.write_text(patched)
