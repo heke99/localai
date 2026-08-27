@@ -21,6 +21,13 @@ describe("prompt processor", () => {
     expect(contract.researchDepth).toBe("standard");
   });
 
+  it("routes direct current date questions to deterministic live time", () => {
+    const contract = processPrompt("chat", "What is today's date in Europe/Stockholm right now?");
+    expect(contract.freshness).toBe("live");
+    expect(contract.analysis.requiresLiveData).toBe(true);
+    expect(contract.analysis.liveDataKind).toBe("time");
+  });
+
   it("does not treat a supplied internal policy as current web information", () => {
     const contract = processPrompt("chat", "A service has 8 workers. Each worker can safely process 3 simultaneous requests, but production policy reserves 25% of total capacity for recovery traffic. What is the maximum normal concurrent request count?");
     expect(contract.freshness).toBe("stable");
