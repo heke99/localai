@@ -5,6 +5,7 @@ export * from "./in-memory";
 export * from "./loop-guard";
 export * from "./orchestrator";
 export * from "./prompt-processor";
+export * from "./scheduler";
 export * from "./skill-router";
 export * from "./state-machine";
 export * from "./task-analyzer";
