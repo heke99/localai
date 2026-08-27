@@ -1,0 +1,96 @@
+name: Diagnose P8 soak 5 performance
+
+on:
+  push:
+    branches: [ops/diagnose-p8-soak5-evals-20260827]
+    paths:
+      - .github/workflows/diagnose-p8-soak5-performance.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpuhub-production
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-gpuhub
+    env:
+      GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
+      GPUHUB_SSH_PORT: ${{ secrets.GPUHUB_SSH_PORT }}
+      GPUHUB_SSH_USER: ${{ secrets.GPUHUB_SSH_USER }}
+      GPUHUB_SSH_PRIVATE_KEY: ${{ secrets.GPUHUB_SSH_PRIVATE_KEY }}
+      GPUHUB_SSH_KNOWN_HOSTS: ${{ secrets.GPUHUB_SSH_KNOWN_HOSTS }}
+    steps:
+      - name: Validate diagnostic secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in GPUHUB_SSH_HOST GPUHUB_SSH_PORT GPUHUB_SSH_USER GPUHUB_SSH_PRIVATE_KEY GPUHUB_SSH_KNOWN_HOSTS; do
+            [[ -n "${!name:-}" ]] || { echo "Missing required production-gpuhub secret: ${name}" >&2; exit 1; }
+          done
+      - name: Configure pinned SSH host identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+      - name: Read soak telemetry and llama scheduling evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          remote="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
+          ssh_opts=(-i "$HOME/.ssh/id_ed25519" -p "$GPUHUB_SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+          ssh "${ssh_opts[@]}" "$remote" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          root='/root/autodl-tmp/localai'
+          latest="$(find "$root/logs/p8-soak" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          echo "latest=$latest"
+          echo '=== PRODUCTION BASELINE ==='
+          pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf' || true
+          curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health && echo
+          echo '=== GPU TELEMETRY SUMMARY ==='
+          python3 - "$latest/gpu.csv" <<'PY'
+          import csv, statistics, sys
+          rows=[]
+          with open(sys.argv[1], newline='', encoding='utf-8', errors='ignore') as f:
+              for row in csv.reader(f):
+                  if len(row) < 6 or row[0].strip().lower() == 'timestamp':
+                      continue
+                  try:
+                      total=float(row[2].strip()); used=float(row[3].strip()); gpu=float(row[4].strip()); mem=float(row[5].strip())
+                  except ValueError:
+                      continue
+                  if total > 0: rows.append((total, used, gpu, mem))
+          if not rows:
+              raise SystemExit('no_gpu_rows')
+          ratios=[used/total for total,used,_,_ in rows]
+          gpu=[r[2] for r in rows]
+          mem=[r[3] for r in rows]
+          print(f'samples={len(rows)}')
+          print(f'memory_total_mib={rows[0][0]:.0f}')
+          print(f'memory_used_peak_mib={max(r[1] for r in rows):.0f}')
+          print(f'vram_ratio_peak={max(ratios):.6f}')
+          print(f'gpu_util_avg={statistics.fmean(gpu):.2f}')
+          print(f'gpu_util_peak={max(gpu):.2f}')
+          print(f'memory_util_avg={statistics.fmean(mem):.2f}')
+          print(f'memory_util_peak={max(mem):.2f}')
+          PY
+          echo '=== LOAD SUMMARY ==='
+          python3 - "$latest/load.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding='utf-8') as f: d=json.load(f)
+          print(json.dumps({'configuration':d.get('configuration'), 'summary':d.get('summary'), 'healthFailures':d.get('healthFailures')}, indent=2))
+          PY
+          echo '=== LLAMA STARTUP / SCHEDULER EVIDENCE ==='
+          grep -Eai 'context|n_ctx|parallel|slot|batch|ubatch|flash|kv|memory|buffer|cuda|offload|graph|scheduler' "$latest/llama-p8.log" | head -n 220 || true
+          echo '=== LLAMA ERROR/OOM EVIDENCE ==='
+          grep -Eai 'out of memory|oom|cuda error|ggml_assert|segmentation|failed|error' "$latest/llama-p8.log" | tail -n 120 || true
+          REMOTE
