@@ -88,6 +88,10 @@ function searchResults(output: unknown): unknown[] {
   return Array.isArray(body?.results) ? body.results : [];
 }
 
+function desiredFreshnessSources(task: TaskAnalysis): number {
+  return task.researchDepth === "deep" || task.risk === "high" || task.risk === "critical" ? 3 : 2;
+}
+
 export interface RankedSearchCandidate {
   url: string;
   rank: number;
@@ -127,6 +131,31 @@ export function rankSearchCandidates(output: unknown, prompt: string): RankedSea
     if (asksLatest && a.publishedAtMs !== b.publishedAtMs) return b.publishedAtMs - a.publishedAtMs;
     return a.rank - b.rank || b.score - a.score;
   });
+}
+
+function selectEvidenceCandidates(candidates: RankedSearchCandidate[], limit: number): RankedSearchCandidate[] {
+  if (limit <= 0) return [];
+  const selected: RankedSearchCandidate[] = [];
+  const deferredSameHost: RankedSearchCandidate[] = [];
+  const selectedHosts = new Set<string>();
+
+  for (const candidate of candidates) {
+    let hostname = "";
+    try { hostname = new URL(candidate.url).hostname.toLowerCase(); } catch { continue; }
+    if (selectedHosts.has(hostname)) {
+      deferredSameHost.push(candidate);
+      continue;
+    }
+    selected.push(candidate);
+    selectedHosts.add(hostname);
+    if (selected.length >= limit) return selected;
+  }
+
+  for (const candidate of deferredSameHost) {
+    selected.push(candidate);
+    if (selected.length >= limit) break;
+  }
+  return selected;
 }
 
 async function executeRequiredTool(input: {
@@ -185,8 +214,10 @@ export async function collectRequiredFreshnessEvidence(input: {
 
   const searchQueries = freshnessSearchQueries(normalizedPrompt);
   const requiresLatestArtifactEvidence = latestArtifactIntentPattern.test(normalizedPrompt);
+  const desiredSources = desiredFreshnessSources(task);
   const mergedResults: unknown[] = [];
   let candidates: RankedSearchCandidate[] = [];
+
   for (let index = 0; index < searchQueries.length; index += 1) {
     const query = searchQueries[index]!;
     try {
@@ -202,13 +233,9 @@ export async function collectRequiredFreshnessEvidence(input: {
           input: { query, limit: 12 }
         }
       });
-      if (requiresLatestArtifactEvidence) {
-        mergedResults.push(...searchResults(searchOutput));
-        candidates = rankSearchCandidates({ results: mergedResults }, normalizedPrompt);
-        continue;
-      }
-      candidates = rankSearchCandidates(searchOutput, normalizedPrompt);
-      if (candidates.length) break;
+      mergedResults.push(...searchResults(searchOutput));
+      candidates = rankSearchCandidates({ results: mergedResults }, normalizedPrompt);
+      if (!requiresLatestArtifactEvidence && candidates.length >= desiredSources) break;
     } catch (error) {
       await queue.step(run.runId, "tool", "blocked", "web_search", {
         runtimeRequired: true,
@@ -221,20 +248,14 @@ export async function collectRequiredFreshnessEvidence(input: {
   }
 
   if (!candidates.length) throw new Error("current_information_search_returned_no_sources");
-  const baselineTargetSources = task.researchDepth === "deep" || task.risk === "high" || task.risk === "critical" ? 2 : 1;
-  const targetSources = requiresLatestArtifactEvidence
-    ? Math.max(baselineTargetSources, Math.min(2, candidates.length))
-    : baselineTargetSources;
-  const fetchedHosts = new Set<string>();
+
+  const selectedCandidates = selectEvidenceCandidates(candidates, Math.min(desiredSources, candidates.length));
+  const targetSources = selectedCandidates.length;
   let fetched = 0;
   let fetchAttempt = 0;
   let lastError: unknown = null;
 
-  for (const candidate of candidates) {
-    if (fetched >= targetSources) break;
-    let hostname = "";
-    try { hostname = new URL(candidate.url).hostname.toLowerCase(); } catch { continue; }
-    if (!requiresLatestArtifactEvidence && fetchedHosts.has(hostname)) continue;
+  for (const candidate of selectedCandidates) {
     fetchAttempt += 1;
     try {
       await executeRequiredTool({
@@ -249,7 +270,6 @@ export async function collectRequiredFreshnessEvidence(input: {
           input: { url: candidate.url }
         }
       });
-      fetchedHosts.add(hostname);
       fetched += 1;
     } catch (error) {
       lastError = error;
