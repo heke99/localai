@@ -19,7 +19,13 @@ import { executeRepositoryTool, repositoryToolDefinitions } from "./repository-t
 import { SandboxVerificationRuntime } from "./sandbox-verification";
 import { compactToolOutput } from "./tool-output";
 import { collectRequiredFreshnessEvidence } from "./freshness-preflight";
-import { deterministicTimeResult, groundedSynthesisMessages, mergeUsage } from "./final-grounding";
+import {
+  deterministicTimeResult,
+  groundedEvidenceReviewMessages,
+  groundedSynthesisMessages,
+  mergeUsage,
+  parseGroundedEvidenceReview
+} from "./final-grounding";
 import { evaluateResponseIntegrity, needsGroundedSynthesis } from "./response-integrity";
 import {
   createWorkerVerificationExecutor,
@@ -208,6 +214,29 @@ async function independentReview(models: ModelResolver, run: ClaimedRun, task: T
     return { passed: parsed.passed === true, reason: typeof parsed.reason === "string" ? parsed.reason.slice(0, 1000) : "reviewer_reason_missing" };
   } catch (error) {
     return { passed: false, reason: error instanceof Error ? error.message : "independent_reviewer_failed" };
+  }
+}
+
+async function groundedCurrentEvidenceReview(
+  models: ModelResolver,
+  run: ClaimedRun,
+  originalPrompt: string,
+  output: string,
+  trace: WorkerToolTrace[],
+  verificationRound: number,
+  reviewAttempt: number
+) {
+  try {
+    const review = await models.resolve("verifier-prod").generate({
+      requestId: `${run.requestId}:grounding-review:${verificationRound}:${reviewAttempt}`,
+      alias: "verifier-prod",
+      temperature: 0,
+      maxOutputTokens: 450,
+      messages: groundedEvidenceReviewMessages({ originalPrompt, answer: output, trace })
+    });
+    return parseGroundedEvidenceReview(review.content);
+  } catch (error) {
+    return { passed: false, reason: error instanceof Error ? error.message.slice(0, 1500) : "grounded_evidence_reviewer_failed" };
   }
 }
 
@@ -417,6 +446,74 @@ export class AgentWorkerProcessor {
           }
           if (!synthesized) throw new Error("grounded_synthesis_failed");
           finalResult = synthesized;
+        }
+
+        if (!deterministicFreshness && task.requiresCurrentInformation && task.liveDataKind !== "time") {
+          let groundingReview = await groundedCurrentEvidenceReview(
+            this.models,
+            run,
+            contract.normalizedPrompt,
+            finalResult.content,
+            toolTrace,
+            verificationRound,
+            0
+          );
+          await this.queue.step(run.runId, "verify", groundingReview.passed ? "completed" : "blocked", "Review current answer against opened evidence", {
+            verificationRound,
+            evidenceReviewAttempt: 0,
+            passed: groundingReview.passed,
+            reason: groundingReview.reason
+          });
+
+          if (!groundingReview.passed) {
+            if (modelTurns >= executionPolicy.maxModelTurns) throw new Error("model_turn_limit_exceeded");
+            if (await this.queue.isCancelled(run.runId)) return true;
+            await this.queue.stream(run.runId, "", true);
+            await this.queue.step(run.runId, "model", "running", "Repair answer from evidence reviewer findings", {
+              verificationRound,
+              modelTurn: modelTurns,
+              toolFree: true,
+              evidenceReviewerReason: groundingReview.reason
+            });
+            const repair = await generateWithCancellation(this.queue, this.models.resolve(run.modelAlias), run, {
+              requestId: `${run.requestId}:${verificationRound}:grounding-repair`,
+              alias: run.modelAlias,
+              messages: groundedSynthesisMessages({
+                messages,
+                draft: finalResult.content,
+                originalPrompt: contract.normalizedPrompt,
+                attempt: 1,
+                reviewerFeedback: groundingReview.reason
+              }),
+              tools: [],
+              temperature: 0,
+              maxOutputTokens: 1200
+            });
+            if (!repair) return true;
+            modelTurns += 1;
+            const repaired = { ...repair, usage: mergeUsage(finalResult.usage, repair.usage) };
+            const integrity = evaluateResponseIntegrity(repaired.content, task);
+            if (repaired.finishReason !== "stop" || !integrity.passed) {
+              throw new Error(`grounded_evidence_repair_invalid:${integrity.reason}`);
+            }
+            finalResult = repaired;
+            groundingReview = await groundedCurrentEvidenceReview(
+              this.models,
+              run,
+              contract.normalizedPrompt,
+              finalResult.content,
+              toolTrace,
+              verificationRound,
+              1
+            );
+            await this.queue.step(run.runId, "verify", groundingReview.passed ? "completed" : "blocked", "Re-review repaired current answer against opened evidence", {
+              verificationRound,
+              evidenceReviewAttempt: 1,
+              passed: groundingReview.passed,
+              reason: groundingReview.reason
+            });
+            if (!groundingReview.passed) throw new Error(`grounded_evidence_review_failed:${groundingReview.reason}`);
+          }
         }
 
         const mutationMissing = expectsMutation(task, run) && !hasMutation(toolTrace);

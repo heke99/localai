@@ -92,6 +92,14 @@ function desiredFreshnessSources(task: TaskAnalysis): number {
   return task.researchDepth === "deep" || task.risk === "high" || task.risk === "critical" ? 3 : 2;
 }
 
+function authorityRank(hostname: string): number {
+  if (/(?:^|\.)(?:gov|gob|gouv)\.[a-z.]+$/i.test(hostname)) return 0;
+  if (/(?:^|\.)(?:europa\.eu|who\.int|un\.org|riksdagen\.se|regeringen\.se|skatteverket\.se|svk\.se|digg\.se)$/i.test(hostname)) return 0;
+  if (/^(?:docs|developer|developers|support|help)\./i.test(hostname)) return 0;
+  if (/\.(?:edu|ac\.[a-z]{2})$/i.test(hostname)) return 1;
+  return 2;
+}
+
 export interface RankedSearchCandidate {
   url: string;
   rank: number;
@@ -114,12 +122,9 @@ export function rankSearchCandidates(output: unknown, prompt: string): RankedSea
     const hostname = url.hostname.toLowerCase();
     const title = typeof value.title === "string" ? value.title : "";
     const snippet = typeof value.snippet === "string" ? value.snippet : "";
-    const primary = /(?:^|\.)(?:gov(?:\.[a-z]{2})?|europa\.eu|who\.int|un\.org|riksdagen\.se|regeringen\.se|skatteverket\.se|svk\.se|digg\.se)$/i.test(hostname)
-      || /^(?:docs|developer|developers|support|help)\./i.test(hostname);
-    const reputable = /\.(?:edu|ac\.[a-z]{2})$/i.test(hostname);
     return [{
       url: url.href,
-      rank: primary ? 0 : reputable ? 1 : 2,
+      rank: authorityRank(hostname),
       score: typeof value.score === "number" ? value.score : Math.max(0, 100 - index),
       intentScore: asksLatest ? currentIntentScore(url, title, snippet) : 0,
       publishedAtMs: publishedTimestamp(value.publishedAt)
@@ -133,29 +138,21 @@ export function rankSearchCandidates(output: unknown, prompt: string): RankedSea
   });
 }
 
-function selectEvidenceCandidates(candidates: RankedSearchCandidate[], limit: number): RankedSearchCandidate[] {
-  if (limit <= 0) return [];
-  const selected: RankedSearchCandidate[] = [];
-  const deferredSameHost: RankedSearchCandidate[] = [];
+function orderEvidenceCandidates(candidates: RankedSearchCandidate[]): RankedSearchCandidate[] {
+  const distinctHosts: RankedSearchCandidate[] = [];
+  const repeatedHosts: RankedSearchCandidate[] = [];
   const selectedHosts = new Set<string>();
 
   for (const candidate of candidates) {
     let hostname = "";
     try { hostname = new URL(candidate.url).hostname.toLowerCase(); } catch { continue; }
-    if (selectedHosts.has(hostname)) {
-      deferredSameHost.push(candidate);
-      continue;
+    if (selectedHosts.has(hostname)) repeatedHosts.push(candidate);
+    else {
+      distinctHosts.push(candidate);
+      selectedHosts.add(hostname);
     }
-    selected.push(candidate);
-    selectedHosts.add(hostname);
-    if (selected.length >= limit) return selected;
   }
-
-  for (const candidate of deferredSameHost) {
-    selected.push(candidate);
-    if (selected.length >= limit) break;
-  }
-  return selected;
+  return [...distinctHosts, ...repeatedHosts];
 }
 
 async function executeRequiredTool(input: {
@@ -249,13 +246,14 @@ export async function collectRequiredFreshnessEvidence(input: {
 
   if (!candidates.length) throw new Error("current_information_search_returned_no_sources");
 
-  const selectedCandidates = selectEvidenceCandidates(candidates, Math.min(desiredSources, candidates.length));
-  const targetSources = selectedCandidates.length;
+  const targetSources = Math.min(desiredSources, candidates.length);
+  const orderedCandidates = orderEvidenceCandidates(candidates);
   let fetched = 0;
   let fetchAttempt = 0;
   let lastError: unknown = null;
 
-  for (const candidate of selectedCandidates) {
+  for (const candidate of orderedCandidates) {
+    if (fetched >= targetSources) break;
     fetchAttempt += 1;
     try {
       await executeRequiredTool({
@@ -276,14 +274,26 @@ export async function collectRequiredFreshnessEvidence(input: {
       await queue.step(run.runId, "tool", "blocked", "web_fetch", {
         runtimeRequired: true,
         freshnessPreflight: true,
+        fetchAttempt,
         url: candidate.url,
         error: error instanceof Error ? error.message : "web_fetch_failed"
       });
     }
   }
 
+  if (fetched === 0) {
+    const detail = lastError instanceof Error ? lastError.message : "no_opened_source";
+    throw new Error(`current_information_source_fetch_failed:0/${targetSources}:${detail}`);
+  }
+
   if (fetched < targetSources) {
-    const detail = lastError instanceof Error ? lastError.message : "insufficient_opened_sources";
-    throw new Error(`current_information_source_fetch_failed:${fetched}/${targetSources}:${detail}`);
+    await queue.step(run.runId, "tool", "completed", "Freshness evidence partially satisfied", {
+      runtimeRequired: true,
+      freshnessPreflight: true,
+      openedSources: fetched,
+      desiredSources: targetSources,
+      candidatesTried: fetchAttempt,
+      evidenceQualityTargetMet: false
+    });
   }
 }

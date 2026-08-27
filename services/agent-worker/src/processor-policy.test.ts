@@ -147,7 +147,7 @@ describe("AgentWorkerProcessor execution policy", () => {
     expect(jobs.fail).not.toHaveBeenCalled();
   });
 
-  it("collects current web evidence then performs a separate tool-free grounded synthesis", async () => {
+  it("collects current web evidence, synthesizes tool-free, then independently reviews the answer", async () => {
     const run = baseRun({ prompt: "Vad är senaste stabila versionen av Node.js just nu?", modelAlias: "research-prod" });
     const jobs = queue(run);
     const requests: GenerateRequest[] = [];
@@ -168,14 +168,24 @@ describe("AgentWorkerProcessor execution policy", () => {
         usage: { inputTokens: 20, outputTokens: 14, cachedTokens: 0 }
       };
     });
+    const verifierGenerate = vi.fn(async () => ({
+      modelVersionId: "verifier",
+      content: '{"passed":true,"reason":"The answer matches the opened current release evidence."}',
+      finishReason: "stop" as const,
+      usage: { inputTokens: 10, outputTokens: 8, cachedTokens: 0 }
+    }));
     const execute = vi.fn(async (_claimed, call) => {
       if (call.name === "web_search") return { results: [{ url: "https://nodejs.org/en/download", title: "Download Node.js", score: 10 }] };
       if (call.name === "web_fetch") return { url: "https://nodejs.org/en/download", retrievedAt: "2026-08-27T13:30:00.000Z", text: "Latest release v24.7.0" };
       throw new Error("unexpected_tool");
     });
     const tools: WorkerToolRuntime = { list: vi.fn(async () => currentTools), execute };
-    await new AgentWorkerProcessor(jobs, { resolve: () => adapter(generate) }, "worker", undefined, tools).processOnce();
+    const resolver = {
+      resolve: (alias: string) => alias === "verifier-prod" ? adapter(verifierGenerate) : adapter(generate)
+    };
+    await new AgentWorkerProcessor(jobs, resolver as never, "worker", undefined, tools).processOnce();
     expect(generate).toHaveBeenCalledTimes(2);
+    expect(verifierGenerate).toHaveBeenCalledOnce();
     expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["current_time", "web_search", "web_fetch"]);
     expect(requests[1]?.tools).toEqual([]);
     expect(execute).toHaveBeenCalledTimes(2);
