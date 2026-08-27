@@ -23,8 +23,8 @@ TARGET_REF="${DIV3RSA_RUNTIME_GIT_REF:-main}"
 [[ -f "$ENV_FILE" ]] || fatal "worker environment missing: $ENV_FILE"
 mkdir -p "$LOG_DIR"
 
-if [[ -n "$(git -C "$REPO_DIR" status --porcelain --untracked-files=no)" ]]; then
-  fatal "tracked files are modified in $REPO_DIR; refusing destructive reset"
+if [[ -n "$(git -C "$REPO_DIR" status --porcelain)" ]]; then
+  fatal "repository has uncommitted or untracked files in $REPO_DIR; refusing destructive reset"
 fi
 
 log "capturing current runtime state"
