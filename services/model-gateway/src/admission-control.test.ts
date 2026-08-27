@@ -71,6 +71,21 @@ describe("LlamaCppAdmissionController", () => {
     await expect(controller.waitForAdmission(1024)).rejects.toBeInstanceOf(ModelAdmissionTimeoutError);
   });
 
+  it("aborts while waiting for overloaded capacity", async () => {
+    const fetcher = vi.fn(async () => new Response("llamacpp:requests_processing 4\n", { status: 200 }));
+    const controller = new LlamaCppAdmissionController("http://model:8080/v1", "secret", {
+      maxActiveSequences: 4,
+      pollIntervalMs: 5_000,
+      maxWaitMs: 30_000
+    }, fetcher as typeof fetch);
+    const abort = new AbortController();
+    const pending = controller.waitForAdmission(1024, abort.signal);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    abort.abort(new DOMException("cancelled", "AbortError"));
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("rejects requests that cannot fit in the configured context window", async () => {
     const fetcher = vi.fn(async () => new Response("llamacpp:requests_processing 0\n", { status: 200 }));
     const controller = new LlamaCppAdmissionController("http://model:8080/v1", "secret", { contextLimit: 4096 }, fetcher as typeof fetch);
@@ -104,7 +119,7 @@ describe("OpenAiCompatibleAdapter admission integration", () => {
     await adapter.generate({ requestId: "req-admission", alias: "general-prod", messages: [{ role: "user", content: "hello" }], maxOutputTokens: 128 });
 
     expect(admission.waitForAdmission).toHaveBeenCalledOnce();
-    expect(admission.waitForAdmission).toHaveBeenCalledWith(expect.any(Number));
+    expect(admission.waitForAdmission).toHaveBeenCalledWith(expect.any(Number), undefined);
     expect(admission.observeTimings).toHaveBeenCalledWith({ ttftMs: 320, tokensPerSecond: 25, interTokenLatencyMs: 40 });
   });
 });
