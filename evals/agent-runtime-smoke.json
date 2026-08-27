@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "reasoning-capacity-constraint",
+      "mode": "chat",
+      "prompt": "A service has 8 workers. Each worker can safely process 3 simultaneous requests, but production policy reserves 25% of total capacity for recovery traffic. What is the maximum normal concurrent request count? Give the final number and a short explanation.",
+      "requiredPatterns": ["\\b18\\b"],
+      "forbiddenTools": ["web_search", "web_fetch", "current_time"]
+    },
+    {
+      "id": "reasoning-logic-order",
+      "mode": "chat",
+      "prompt": "Four jobs A, B, C and D must run once each. A must run before C. B must run after A. D must run before B. Which of these orders is valid: (1) B-D-A-C, (2) D-A-B-C, (3) A-C-B-D, (4) C-A-D-B? Return the valid option number and explain the constraints briefly.",
+      "requiredPatterns": ["(?:option|alternativ|answer|svar)?\\s*2\\b|\\(2\\)"],
+      "forbiddenTools": ["web_search", "web_fetch", "current_time"]
+    },
+    {
+      "id": "coding-off-by-one",
+      "mode": "code",
+      "prompt": "Debug this JavaScript loop without changing its intent: `for (let i = 0; i <= items.length; i++) { console.log(items[i]); }`. Identify the defect and provide the corrected loop. Keep the answer concise.",
+      "requiredPatterns": ["i\\s*<\\s*items\\.length", "off[- ]?by[- ]?one|out[- ]of[- ]bounds|undefined|one extra"],
+      "forbiddenTools": ["web_search", "web_fetch", "current_time"]
+    },
+    {
+      "id": "live-stockholm-date",
+      "mode": "chat",
+      "prompt": "What is today's date in Europe/Stockholm right now? Use the live time capability rather than model memory. Return the date in YYYY-MM-DD format.",
+      "requiredTools": ["current_time"],
+      "dynamicPattern": "stockholm-date"
+    },
+    {
+      "id": "current-swedish-vat",
+      "mode": "research",
+      "prompt": "What is the current standard VAT rate (normal momssats) in Sweden? Verify it using current web research, open an authoritative source such as Skatteverket, and state the source in the answer. Do not answer from memory alone.",
+      "requiredPatterns": ["25\\s*%|25\\s*procent"],
+      "requiredTools": ["web_search", "web_fetch"],
+      "requiredSkills": ["current-information-research"]
+    },
+    {
+      "id": "current-node-release",
+      "mode": "research",
+      "prompt": "Find the current latest Node.js release from official Node.js information. Search the web, open the relevant source, and report the version you verified and that the information was checked now. Do not rely on model memory.",
+      "requiredPatterns": ["v?\\d+\\.\\d+\\.\\d+"],
+      "requiredTools": ["web_search", "web_fetch"],
+      "requiredSkills": ["current-information-research"]
+    },
+    {
+      "id": "stable-http-auth",
+      "mode": "chat",
+      "prompt": "Explain the practical difference between HTTP 401 and HTTP 403 in exactly two bullets. This is a stable protocol-concept question; no web lookup is needed.",
+      "requiredPatterns": ["401", "403"],
+      "forbiddenTools": ["web_search", "web_fetch", "current_time"]
+    }
+  ]
+}
