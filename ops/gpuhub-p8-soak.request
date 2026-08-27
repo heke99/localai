@@ -1,4 +1,4 @@
-requested_at=2026-08-27T21:56:30+02:00
+requested_at=2026-08-27T22:10:31+02:00
 target_parallel=8
 total_context=262144
 context_per_slot=32768
@@ -12,4 +12,4 @@ max_ttft_p95_ms=10000
 max_total_p95_ms=20000
 max_vram_ratio=0.94
 promotion=disabled
-reason=production-like-p8-soak-before-promotion
+reason=production-like-p8-soak-after-grounded-review-parser-fix-attempt-2
