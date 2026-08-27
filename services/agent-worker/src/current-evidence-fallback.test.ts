@@ -183,8 +183,8 @@ describe("current-information deterministic evidence fallback", () => {
       };
     });
 
-    const brokenUrl = "https://broken.example.org/current";
-    const goodUrl = "https://docs.example.org/current";
+    const brokenUrl = "https://docs.broken.example.org/current";
+    const goodUrl = "https://developer.example.org/current";
     const attemptedFetches: string[] = [];
     const execute = vi.fn(async (_claimed: ClaimedRun, call: { id: string; name: string; input: Record<string, unknown> }) => {
       if (call.name === "web_search") {
