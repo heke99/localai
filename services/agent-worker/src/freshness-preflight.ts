@@ -31,14 +31,19 @@ function available(definitions: ModelToolDefinition[], name: string): boolean {
 }
 
 const latestIntentPattern = /\b(?:latest|current|newest|most\s+recent|latest\s+release|senaste|nyaste|aktuell(?:a|t)?)\b/i;
-const currentIndexPattern = /(?:^|[\s/_-])(?:latest|current)(?:$|[\s/_-])|\blatest\s+(?:release|version|lts)\b|\bcurrent\s+(?:release|version)\b|(?:^|\/)downloads?(?:\/|$)/i;
+const explicitCurrentPathPattern = /(?:^|\/)(?:latest|current)(?:\/|$)/i;
+const explicitCurrentLabelPattern = /\b(?:latest\s+(?:release|version)|current\s+(?:release|version))\b/i;
+const downloadIndexPattern = /(?:^|\/)downloads?(?:\/|$)/i;
+const releaseIndexPattern = /\b(?:release\s+schedule|release\s+index|versions?|releases?)\b/i;
 const versionSpecificPathPattern = /(?:^|\/)v?\d+\.\d+\.\d+(?:\/|$)/i;
 
 function currentIntentScore(url: URL, title: string, snippet: string): number {
-  const evidence = `${url.pathname} ${title} ${snippet}`;
-  if (currentIndexPattern.test(evidence)) return 4;
-  if (/\b(?:release\s+schedule|release\s+index|versions?|releases?)\b/i.test(evidence)) return 3;
+  if (explicitCurrentPathPattern.test(url.pathname)) return 6;
   if (versionSpecificPathPattern.test(url.pathname)) return 0;
+  const textualEvidence = `${title} ${snippet}`;
+  if (explicitCurrentLabelPattern.test(textualEvidence)) return 5;
+  if (downloadIndexPattern.test(url.pathname)) return 4;
+  if (releaseIndexPattern.test(`${url.pathname} ${textualEvidence}`)) return 3;
   return 1;
 }
 

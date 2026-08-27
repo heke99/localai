@@ -65,6 +65,13 @@ export function validateLiveOracleOutput(output: string, oracle: LiveEvalOracleR
   return [];
 }
 
+export function failedLiveOracleCaseIds(results: ReadonlyArray<Record<string, unknown>>): string[] {
+  return results.flatMap((result) => {
+    if (result.liveOracle == null || result.passed === true || typeof result.id !== "string") return [];
+    return [result.id];
+  });
+}
+
 export async function resolveLiveEvalOracle(
   kind: LiveEvalOracleKind,
   fetchImpl: OracleFetch = fetch

@@ -28,4 +28,29 @@ describe("rankSearchCandidates", () => {
     ]);
     expect(ranked[0]?.intentScore).toBeGreaterThan(ranked[1]?.intentScore ?? 0);
   });
+
+  it("prefers the explicit current path over a generic download page that defaults to LTS", () => {
+    const ranked = rankSearchCandidates({
+      results: [
+        {
+          url: "https://nodejs.org/en/download",
+          title: "Download Node.js",
+          snippet: "Get the latest LTS version",
+          score: 100,
+          publishedAt: "2026-08-27T13:00:00Z"
+        },
+        {
+          url: "https://nodejs.org/en/download/current",
+          title: "Download Node.js - Current",
+          snippet: "Latest Release",
+          score: 1,
+          publishedAt: "2026-08-26T13:00:00Z"
+        }
+      ]
+    }, "What is the current latest Node.js release?");
+
+    expect(ranked[0]?.url).toBe("https://nodejs.org/en/download/current");
+    expect(ranked[0]?.intentScore).toBe(6);
+    expect(ranked[1]?.intentScore).toBe(4);
+  });
 });

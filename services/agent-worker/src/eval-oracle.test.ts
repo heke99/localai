@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   extractNodeCurrentRelease,
+  failedLiveOracleCaseIds,
   resolveLiveEvalOracle,
   validateLiveOracleOutput,
   type OracleFetch
@@ -32,6 +33,15 @@ describe("live eval oracle", () => {
     expect(validateLiveOracleOutput("Latest Release: v26.8.1.", oracle)).toEqual([]);
     expect(validateLiveOracleOutput("Latest Release: v24.18.0.", oracle)[0]).toContain("live_oracle_version_mismatch");
     expect(validateLiveOracleOutput("Current is v26.8.1; LTS is v24.20.0.", oracle)[0]).toContain("live_oracle_version_mismatch");
+  });
+
+  it("treats any failed live-oracle case as a blocking gate independent of pass rate", () => {
+    const results = Array.from({ length: 7 }, (_, index) => ({
+      id: `case-${index + 1}`,
+      passed: index !== 5,
+      liveOracle: index === 5 ? { kind: "node-current-release" } : null
+    }));
+    expect(failedLiveOracleCaseIds(results)).toEqual(["case-6"]);
   });
 
   it("resolves the oracle only from the official live page", async () => {

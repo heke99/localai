@@ -7,6 +7,7 @@ import type { ModelAlias } from "@div3rsa/model-sdk";
 import { AgentWorkerProcessor, type AgentQueue, type ClaimedRun } from "../services/agent-worker/src/processor";
 import { CoreToolRuntime } from "../services/agent-worker/src/core-tool-runtime";
 import {
+  failedLiveOracleCaseIds,
   resolveLiveEvalOracle,
   validateLiveOracleOutput,
   type LiveEvalOracleKind,
@@ -229,6 +230,7 @@ for (const test of suite.cases) {
 const passed = results.filter((result) => result.passed === true).length;
 const passRate = passed / results.length;
 const minimumPassRate = Math.min(1, Math.max(0, numericEnvironment("DIV3RSA_EVAL_MIN_PASS_RATE", 0.85)));
+const liveOracleFailures = failedLiveOracleCaseIds(results);
 const summary = {
   schemaVersion: 1,
   generatedAt: new Date().toISOString(),
@@ -240,7 +242,8 @@ const summary = {
   failed: results.length - passed,
   passRate,
   minimumPassRate,
-  allowed: passRate >= minimumPassRate,
+  liveOracleFailures,
+  allowed: passRate >= minimumPassRate && liveOracleFailures.length === 0,
   results
 };
 
