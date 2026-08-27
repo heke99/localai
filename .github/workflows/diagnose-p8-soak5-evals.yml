@@ -1,0 +1,64 @@
+name: Diagnose P8 soak 5 evals
+
+on:
+  push:
+    branches: [ops/diagnose-p8-soak5-evals-20260827]
+    paths:
+      - .github/workflows/diagnose-p8-soak5-evals.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpuhub-production
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-gpuhub
+    env:
+      GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
+      GPUHUB_SSH_PORT: ${{ secrets.GPUHUB_SSH_PORT }}
+      GPUHUB_SSH_USER: ${{ secrets.GPUHUB_SSH_USER }}
+      GPUHUB_SSH_PRIVATE_KEY: ${{ secrets.GPUHUB_SSH_PRIVATE_KEY }}
+      GPUHUB_SSH_KNOWN_HOSTS: ${{ secrets.GPUHUB_SSH_KNOWN_HOSTS }}
+    steps:
+      - name: Validate diagnostic secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in GPUHUB_SSH_HOST GPUHUB_SSH_PORT GPUHUB_SSH_USER GPUHUB_SSH_PRIVATE_KEY GPUHUB_SSH_KNOWN_HOSTS; do
+            [[ -n "${!name:-}" ]] || { echo "Missing required production-gpuhub secret: ${name}" >&2; exit 1; }
+          done
+      - name: Configure pinned SSH host identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+      - name: Read loaded and post evals
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          remote="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
+          ssh_opts=(-i "$HOME/.ssh/id_ed25519" -p "$GPUHUB_SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+          ssh "${ssh_opts[@]}" "$remote" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          root='/root/autodl-tmp/localai'
+          latest="$(find "$root/logs/p8-soak" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          echo "latest=$latest"
+          printf 'commit=' && git -C "$root/app" rev-parse HEAD
+          pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf' || true
+          curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health && echo
+          for file in eval-loaded.stderr.log eval-loaded.json eval-post.stderr.log eval-post.json gate-input.json gate-result.json; do
+            if [[ -f "$latest/$file" ]]; then
+              echo "=== $file ==="
+              cat "$latest/$file"
+            fi
+          done
+          REMOTE
