@@ -12,6 +12,7 @@ import { consequenceGraphInput } from "@div3rsa/repository-intelligence/conseque
 import type { PreparedRepositoryWorkspace } from "./repository-runtime";
 import type { SandboxVerificationRuntime } from "./sandbox-verification";
 import { evaluateResearchEvidence } from "./research-evidence";
+import { evaluateResponseIntegrity } from "./response-integrity";
 
 export type WorkerToolTrace = { sequence: number; name: string; input: Record<string, unknown>; output: unknown };
 
@@ -125,7 +126,10 @@ export function createWorkerVerificationExecutor(input: {
     async run(check: VerificationCheck, context: VerificationContext): Promise<VerificationResult> {
       const pass = (summary: string, evidence?: string[]): VerificationResult => ({ kind: check.kind, status: "passed", summary, evidence });
       const blocked = (summary: string): VerificationResult => ({ kind: check.kind, status: check.required ? "blocked" : "skipped", summary });
-      if (check.kind === "response-integrity") return context.output?.trim() ? pass("Model output is non-empty.") : { kind: check.kind, status: "failed", summary: "Model output is empty." };
+      if (check.kind === "response-integrity") {
+        const integrity = evaluateResponseIntegrity(context.output, context.task);
+        return integrity.passed ? pass(integrity.reason) : { kind: check.kind, status: "failed", summary: integrity.reason };
+      }
       if (check.kind === "current-information-evidence") {
         const report = evaluateResearchEvidence(context.task, trace);
         return report.passed
@@ -155,7 +159,7 @@ export function createWorkerVerificationExecutor(input: {
       if (["targeted-tests", "unit-tests", "integration-tests"].includes(check.kind)) return successfulActions(trace, /test|vitest|jest|verify|ci/, revision) ? pass("Successful test evidence matches the post-change revision.") : sandboxResult ?? blocked("No successful test evidence for the post-change revision is present.");
       if (check.kind === "build") return successfulActions(trace, /build|verify|ci/, revision) || successfulDeploymentRead(trace) ? pass("Successful build/deployment evidence matches the post-change state.") : sandboxResult ?? blocked("No successful build evidence for the post-change revision is present.");
       if (check.kind === "dependency-validation") return successfulActions(trace, /typecheck|build|test|verify|ci/, revision) ? pass("Successful dependency validation evidence matches the post-change revision.") : sandboxResult ?? blocked("No dependency validation evidence for the post-change revision is present.");
-      if (check.kind === "format" || check.kind === "lint") return successfulActions(trace, /lint|format|verify|ci/, revision) ? pass("Successful lint/format evidence matches the post-change revision.") : sandboxResult ?? blocked("No lint/format evidence for the post-change revision is present.");
+      if (check.kind === "format" || check.kind === "lint") return successfulActions(trace, /lint|format|verify|ci/, revision) ? pass("Successful lint/format evidence matches the post-change revision.") : sandboxResult ?? blocked("No successful lint/format evidence for the post-change revision is present.");
       return sandboxResult ?? blocked(`No evidence rule is configured for ${check.kind}.`);
     }
   };
