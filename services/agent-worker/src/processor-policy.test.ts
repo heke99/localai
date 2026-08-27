@@ -147,7 +147,7 @@ describe("AgentWorkerProcessor execution policy", () => {
     expect(jobs.fail).not.toHaveBeenCalled();
   });
 
-  it("collects current web evidence, synthesizes tool-free, then independently reviews the answer", async () => {
+  it("collects current web evidence, synthesizes tool-free, then accepts a wrapped independent review", async () => {
     const run = baseRun({ prompt: "Vad är senaste stabila versionen av Node.js just nu?", modelAlias: "research-prod" });
     const jobs = queue(run);
     const requests: GenerateRequest[] = [];
@@ -170,7 +170,7 @@ describe("AgentWorkerProcessor execution policy", () => {
     });
     const verifierGenerate = vi.fn(async () => ({
       modelVersionId: "verifier",
-      content: '{"passed":true,"reason":"The answer matches the opened current release evidence."}',
+      content: '<think>Compare the candidate only with opened evidence.</think>\n```json\n{"passed":true,"reason":"The answer matches the opened current release evidence."}\n```',
       finishReason: "stop" as const,
       usage: { inputTokens: 10, outputTokens: 8, cachedTokens: 0 }
     }));

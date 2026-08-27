@@ -77,9 +77,32 @@ describe("groundedEvidenceReviewMessages", () => {
 });
 
 describe("parseGroundedEvidenceReview", () => {
-  it("accepts only explicit passed=true JSON", () => {
+  it("accepts explicit reviewer JSON", () => {
     expect(parseGroundedEvidenceReview('{"passed":true,"reason":"supported"}')).toEqual({ passed: true, reason: "supported" });
     expect(parseGroundedEvidenceReview('{"passed":false,"reason":"stale source"}')).toEqual({ passed: false, reason: "stale source" });
+  });
+
+  it("accepts a single valid reviewer object wrapped by common model formatting", () => {
+    expect(parseGroundedEvidenceReview('```json\n{"passed":true,"reason":"official current page supports v26.8.1"}\n```')).toEqual({
+      passed: true,
+      reason: "official current page supports v26.8.1"
+    });
+    expect(parseGroundedEvidenceReview('<think>Check the opened Current page.</think>\n{"passed":true,"reason":"supported"}\nDone.')).toEqual({
+      passed: true,
+      reason: "supported"
+    });
+  });
+
+  it("extracts balanced JSON without being confused by braces inside the reason string", () => {
+    expect(parseGroundedEvidenceReview('review: {"passed":false,"reason":"claim {current} is unsupported"} trailing')).toEqual({
+      passed: false,
+      reason: "claim {current} is unsupported"
+    });
+  });
+
+  it("remains fail-closed for malformed or incomplete reviewer output", () => {
     expect(parseGroundedEvidenceReview("not-json")).toEqual({ passed: false, reason: "grounded_reviewer_invalid_json" });
+    expect(parseGroundedEvidenceReview('{"passed":true}')).toEqual({ passed: false, reason: "grounded_reviewer_invalid_shape" });
+    expect(parseGroundedEvidenceReview('{"reason":"supported"}')).toEqual({ passed: false, reason: "grounded_reviewer_invalid_shape" });
   });
 });
