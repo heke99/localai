@@ -1,0 +1,15 @@
+requested_at=2026-08-27T21:56:30+02:00
+target_parallel=8
+total_context=262144
+context_per_slot=32768
+soak_duration_seconds=300
+background_concurrency=6
+eval_rounds=pre,loaded,post
+eval_min_pass_rate=1
+min_requests=24
+max_errors=0
+max_ttft_p95_ms=10000
+max_total_p95_ms=20000
+max_vram_ratio=0.94
+promotion=disabled
+reason=production-like-p8-soak-before-promotion
