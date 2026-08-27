@@ -33,7 +33,15 @@ describe("prompt processor", () => {
     expect(contract.freshness).toBe("stable");
     expect(contract.requires.web).toBe(false);
     expect(contract.analysis.requiresCurrentInformation).toBe(false);
+    expect(contract.analysis.requiresDeployment).toBe(false);
     expect(contract.researchDepth).toBe("none");
+  });
+
+  it("does not classify an informational software release question as deployment", () => {
+    const contract = processPrompt("research", "Find the current latest Node.js release from official Node.js information.");
+    expect(contract.freshness).toBe("current");
+    expect(contract.analysis.requiresDeployment).toBe(false);
+    expect(contract.risk).toBe("low");
   });
 
   it("keeps intrinsically changeable domains current even without the word latest", () => {
