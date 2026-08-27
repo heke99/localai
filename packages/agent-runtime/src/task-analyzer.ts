@@ -79,7 +79,7 @@ const rules: Rule[] = [
   { category: "knowledge_ingestion", pattern: /learn (this|it)|ingest|knowledge source|read this.*learn/i, domains: ["knowledge"] },
   { category: "repo_understanding", pattern: /repository|repo\b|codebase|project structure|repo map/i, domains: ["repository"] },
   { category: "migration", pattern: /migrat(e|ion)|schema change|move data/i, domains: ["database", "deployment"] },
-  { category: "deployment", pattern: /deploy|deployment|release|rollback|vercel|production/i, domains: ["deployment"] },
+  { category: "deployment", pattern: /\bdeploy(?:ment|ed|ing)?\b|\brollback\b|\bvercel\b|\brelease\s+(?:this|that|the|to|into|on)\b|\bproduction\s+(?:deploy(?:ment)?|release|environment)\b/i, domains: ["deployment"] },
   { category: "build", pattern: /build|implement|create|add|make|develop/i }
 ];
 
