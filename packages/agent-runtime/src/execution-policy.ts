@@ -23,6 +23,7 @@ function unique<T>(values: T[]): T[] {
 
 function tierFor(task: TaskAnalysis): ExecutionTier {
   if (task.risk === "critical") return "CRITICAL";
+  if (task.requiresLiveData && task.risk === "low" && task.complexity === "small") return "FAST";
   if (task.risk === "high" || task.complexity === "large" || task.reasoningLevel === "deep") return "DEEP";
   if (task.risk === "medium" || task.reasoningLevel === "standard" || task.requiresCurrentInformation || task.requiresRepository || task.requiresDatabase || task.requiresDeployment) return "STANDARD";
   return "FAST";
@@ -49,7 +50,7 @@ function timeoutFor(tier: ExecutionTier): number {
 function repositoryDepth(task: TaskAnalysis, tier: ExecutionTier): RepositoryDepth {
   if (!task.requiresRepository) return "none";
   if (tier === "CRITICAL" || task.categories.includes("architecture") || task.categories.includes("audit")) return "full";
-  if (tier === "DEEP" || task.categories.includes("refactor") || task.categories.includes("debug")) return "dependency";
+  if (tier === "DEEP" || task.categories.some((category) => ["bugfix", "debug", "refactor"].includes(category))) return "dependency";
   return task.complexity === "small" ? "targeted" : "dependency";
 }
 
