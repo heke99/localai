@@ -39,10 +39,13 @@ export interface GenerateResult {
   usage: { inputTokens: number; outputTokens: number; cachedTokens: number };
 }
 
+export type ModelStreamDeltaHandler = (delta: string) => void | Promise<void>;
+
 export interface ModelHealth { ok: boolean; latencyMs: number; detail?: string }
 
 export interface ModelAdapter {
   generate(request: GenerateRequest): Promise<GenerateResult>;
+  generateStreamed?(request: GenerateRequest, onDelta: ModelStreamDeltaHandler): Promise<GenerateResult>;
   stream(request: GenerateRequest): AsyncIterable<string>;
   estimateTokens(text: string): Promise<number>;
   getCapabilities(): ReadonlySet<ModelCapability>;

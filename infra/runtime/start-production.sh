@@ -92,6 +92,32 @@ if ! (
 fi
 log "agent runtime module preflight healthy"
 
+# Existing externally managed search endpoints win. Otherwise the runtime starts
+# a private loopback SearXNG sidecar when a container runtime exists. The sidecar
+# generates and persists its own secret locally; no operator-managed search secret
+# is required on raw GPU hosts.
+if [[ -z "${DIV3RSA_SEARCH_BASE_URL:-}" ]]; then
+  SEARCH_AUTOSTART="${DIV3RSA_SEARCH_AUTOSTART:-auto}"
+  SEARCH_CONTAINER_AVAILABLE=0
+  if command -v docker >/dev/null 2>&1 && (docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1); then
+    SEARCH_CONTAINER_AVAILABLE=1
+  fi
+  if [[ "$SEARCH_AUTOSTART" == "1" || "$SEARCH_AUTOSTART" == "true" || ( "$SEARCH_AUTOSTART" == "auto" && "$SEARCH_CONTAINER_AVAILABLE" == "1" ) ]]; then
+    if [[ "$SEARCH_CONTAINER_AVAILABLE" != "1" ]]; then
+      log "private search autostart requested but Docker Compose is unavailable"
+      exit 69
+    fi
+    if ! bash "$REPO_DIR/infra/runtime/provision-search.sh" >>"$LOG_DIR/agent-worker.log" 2>&1; then
+      log "private search runtime failed to start; inspect ${LOG_DIR}/agent-worker.log"
+      exit 70
+    fi
+    export DIV3RSA_SEARCH_BASE_URL="http://127.0.0.1:${DIV3RSA_SEARCH_PORT:-8888}"
+    log "private search runtime healthy on 127.0.0.1:${DIV3RSA_SEARCH_PORT:-8888}"
+  else
+    log "search runtime disabled because no external search URL or container runtime is available"
+  fi
+fi
+
 check_model_port_available() {
   DIV3RSA_CHECK_PORT="$MODEL_PORT" node --input-type=module -e '
     import net from "node:net";

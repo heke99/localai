@@ -1,0 +1,26 @@
+services:
+  searxng:
+    image: ghcr.io/searxng/searxng:2026.8.20-8d3dd0cd4@sha256:e7bb47bebf338c52c55c7bed92293873cfe757b554b261829c0d710fd8307fa3
+    container_name: div3rsa-searxng
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${DIV3RSA_SEARCH_PORT:-8888}:8080"
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?SEARXNG_SECRET is required}
+      SEARXNG_BASE_URL: http://127.0.0.1:${DIV3RSA_SEARCH_PORT:-8888}/
+    volumes:
+      - ../search/searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - div3rsa-searxng-cache:/var/cache/searxng
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://127.0.0.1:8080/search?q=health&format=json' || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  div3rsa-searxng-cache:

@@ -4,6 +4,8 @@ import { LlamaCppAdmissionController, OpenAiCompatibleAdapter } from "@div3rsa/m
 import { AgentWorkerProcessor } from "./processor";
 import { SupabaseAgentQueue } from "./supabase-queue";
 import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
+import { CompositeWorkerToolRuntime } from "./composite-tool-runtime";
+import { CoreToolRuntime } from "./core-tool-runtime";
 import { RemoteProviderToolExecutor } from "./remote-provider-executor";
 import { RemoteRepositoryWorkspaceRuntime } from "./repository-runtime";
 import { SandboxVerificationRuntime } from "./sandbox-verification";
@@ -73,8 +75,15 @@ const repositoryRoot = process.env.DIV3RSA_REPOSITORY_ROOT ?? process.cwd();
 const manifest = JSON.parse(await readFile(resolve(repositoryRoot, "skills/runtime-manifest.json"), "utf8")) as SkillManifest;
 const skillEngine = new SkillEngine(manifest, { read: (path) => readFile(resolve(repositoryRoot, path), "utf8") });
 
-// The worker never receives provider OAuth tokens. It gets a short-lived one-time execution grant
-// and sends only that grant plus tool arguments to the server-side integration gateway.
+// Local deterministic/public-web tools are deliberately separate from account-linked provider tools.
+// Provider OAuth credentials never enter this worker; integration writes still require one-time grants.
+const coreToolRuntime = new CoreToolRuntime({
+  searchBaseUrl: process.env.DIV3RSA_SEARCH_BASE_URL?.trim() || null,
+  webFetchEnabled: process.env.DIV3RSA_WEB_FETCH_ENABLED?.trim() !== "0",
+  maxFetchBytes: numericEnvironment("DIV3RSA_WEB_FETCH_MAX_BYTES", 1_000_000),
+  fetchTimeoutMs: numericEnvironment("DIV3RSA_WEB_FETCH_TIMEOUT_MS", 12_000),
+  searchTimeoutMs: numericEnvironment("DIV3RSA_WEB_SEARCH_TIMEOUT_MS", 10_000)
+});
 const gatewayUrl = process.env.DIV3RSA_INTEGRATION_GATEWAY_URL?.trim() || "https://system.div3rsa.com/api/internal/integrations/execute";
 const remoteExecutor = new RemoteProviderToolExecutor(gatewayUrl);
 const executors = new Map([
@@ -82,7 +91,8 @@ const executors = new Map([
   ["supabase", remoteExecutor],
   ["vercel", remoteExecutor]
 ]);
-const toolRuntime = new PermissionedIntegrationToolRuntime(supabase as unknown as ConstructorParameters<typeof PermissionedIntegrationToolRuntime>[0], executors);
+const integrationToolRuntime = new PermissionedIntegrationToolRuntime(supabase as unknown as ConstructorParameters<typeof PermissionedIntegrationToolRuntime>[0], executors);
+const toolRuntime = new CompositeWorkerToolRuntime([coreToolRuntime, integrationToolRuntime]);
 const repositoryRuntime = new RemoteRepositoryWorkspaceRuntime(supabase as unknown as ConstructorParameters<typeof RemoteRepositoryWorkspaceRuntime>[0], gatewayUrl);
 const sandboxRuntime = new SandboxVerificationRuntime(process.env.DIV3RSA_SANDBOX_IMAGE_DIGEST?.trim() || null);
 const processor = new AgentWorkerProcessor(queue, { resolve: () => adapter }, workerId, {

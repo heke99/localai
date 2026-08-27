@@ -106,12 +106,13 @@ describe("portable agent platform intelligence", () => {
     expect(() => assertCompletionAllowed(report)).toThrow(/verification_gate_failed/);
   });
 
-  it("allows read-only completion with response integrity and completion proof", async () => {
-    const task = analyzeTask("research", "Research portable model gateways");
+  it("allows stable read-only completion with response integrity and completion proof", async () => {
+    const task = analyzeTask("chat", "Explain the concept of a model gateway.");
     const plan = createVerificationPlan(task);
     const report = await executeVerificationPlan(plan, {
       async run(check) { return { kind: check.kind, status: "passed", summary: "ok" }; }
     }, { task, output: "result" });
+    expect(task.requiresCurrentInformation).toBe(false);
     expect(plan.checks.map((check) => check.kind)).toEqual(["response-integrity", "completion-proof"]);
     expect(report.passed).toBe(true);
   });

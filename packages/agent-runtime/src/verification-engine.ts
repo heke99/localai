@@ -3,6 +3,7 @@ import type { TaskAnalysis } from "./task-analyzer";
 
 export type VerificationCheckKind =
   | "response-integrity"
+  | "current-information-evidence"
   | "diff-review"
   | "repository-intelligence"
   | "consequence-analysis"
@@ -67,7 +68,7 @@ export interface VerificationExecutor {
 }
 
 const order: VerificationCheckKind[] = [
-  "response-integrity", "diff-review", "repository-intelligence", "consequence-analysis", "format", "lint", "typecheck", "unit-tests", "targeted-tests",
+  "response-integrity", "current-information-evidence", "diff-review", "repository-intelligence", "consequence-analysis", "format", "lint", "typecheck", "unit-tests", "targeted-tests",
   "integration-tests", "database-invariants", "browser-e2e", "multi-viewport-review", "accessibility", "dependency-validation",
   "dead-code-regression", "security-review", "performance-regression", "build", "deployment-health", "independent-reviewer", "completion-proof"
 ];
@@ -82,6 +83,7 @@ export function createVerificationPlan(task: TaskAnalysis, impact?: ImpactAnalys
   const changed = Boolean(impact?.changed.length);
   const repositoryChanged = Boolean(impact?.changed.some((node) => ["file", "symbol", "route", "api", "test"].includes(node.kind)));
   add(checks, "response-integrity", true, "Every run must return a valid non-empty result.");
+  if (task.requiresCurrentInformation) add(checks, "current-information-evidence", true, "Current or live claims must be grounded in deterministic live data or opened current sources.");
 
   if (changed) {
     add(checks, "diff-review", true, "Changed code must be reviewed as a final change set.");
