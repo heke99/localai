@@ -35,6 +35,37 @@ describe("SkillEngine", () => {
     expect(loaded[2].instructions).toBe("body:verification-before-completion.md");
   });
 
+  it("exposes compact descriptors without loading skill bodies", () => {
+    const engine = new SkillEngine({
+      schemaVersion: 1,
+      skills: [{ name: "impact-analysis", path: "impact.md", category: "code", description: "Analyze dependency impact", version: "1.0.0", sha256: "b".repeat(64), modes: ["code"], cost: { context: "medium", latency: "low" } }]
+    });
+    expect(engine.descriptors("code")).toEqual([{ name: "impact-analysis", description: "Analyze dependency impact", category: "code", modes: ["code"], cost: { context: "medium", latency: "low" } }]);
+    expect(engine.descriptors("research")).toEqual([]);
+  });
+
+  it("uses manifest dependencies before legacy routing rules", () => {
+    const custom: SkillManifest = {
+      schemaVersion: 1,
+      skills: [
+        ...manifest.skills,
+        { name: "impact-analysis", path: "impact.md", category: "code", description: "impact", version: "1.0.0", sha256: "c".repeat(64), modes: ["code"], triggers: ["impact"], dependencies: ["reasoning-router"] }
+      ]
+    };
+    const selected = new SkillEngine(custom).select("code", "impact this change");
+    const names = selected.map((item) => item.metadata.name);
+    expect(names).toContain("impact-analysis");
+    expect(names.indexOf("reasoning-router")).toBeLessThan(names.indexOf("impact-analysis"));
+  });
+
+  it("rejects conflicting skill combinations deterministically", () => {
+    const conflictManifest: SkillManifest = {
+      schemaVersion: 1,
+      skills: manifest.skills.map((skill) => skill.name === "reasoning-router" ? { ...skill, conflicts: ["writing-plans"] } : skill)
+    };
+    expect(() => new SkillEngine(conflictManifest).select("code", "hello")).toThrow("skill_conflict:reasoning-router:writing-plans");
+  });
+
   it("activates current-information research outside research mode when freshness matters", () => {
     const selected = new SkillEngine(manifest).select("chat", "Vilka visumregler gäller i Japan just nu?");
     expect(selected.map((item) => item.metadata.name)).toEqual(["using-skills", "reasoning-router", "current-information-research", "verification-before-completion"]);
