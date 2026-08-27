@@ -1,0 +1,134 @@
+name: Diagnose production search
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/diagnose-search.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpuhub-production
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    name: Inspect SearXNG search capability
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-gpuhub
+    env:
+      GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
+      GPUHUB_SSH_PORT: ${{ secrets.GPUHUB_SSH_PORT }}
+      GPUHUB_SSH_USER: ${{ secrets.GPUHUB_SSH_USER }}
+      GPUHUB_SSH_PRIVATE_KEY: ${{ secrets.GPUHUB_SSH_PRIVATE_KEY }}
+      GPUHUB_SSH_KNOWN_HOSTS: ${{ secrets.GPUHUB_SSH_KNOWN_HOSTS }}
+    steps:
+      - name: Validate diagnostic secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in \
+            GPUHUB_SSH_HOST \
+            GPUHUB_SSH_PORT \
+            GPUHUB_SSH_USER \
+            GPUHUB_SSH_PRIVATE_KEY \
+            GPUHUB_SSH_KNOWN_HOSTS; do
+            [[ -n "${!name:-}" ]] || { echo "Missing required production-gpuhub secret: ${name}" >&2; exit 1; }
+          done
+
+      - name: Configure pinned SSH host identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Run read-only SearXNG diagnostics
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          remote="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
+          ssh_opts=(
+            -i "$HOME/.ssh/id_ed25519"
+            -p "$GPUHUB_SSH_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=4
+          )
+
+          ssh "${ssh_opts[@]}" "$remote" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          search_url='http://127.0.0.1:8890'
+          log_file='/root/autodl-tmp/localai/logs/searxng.log'
+          app_dir='/root/autodl-tmp/localai/app'
+
+          echo '=== RUNTIME STATE ==='
+          printf 'commit=' && git -C "$app_dir" rev-parse HEAD
+          pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf' || true
+          screen -list | grep -E '\.(localai-search|localai-agent)' || true
+
+          echo '=== SEARXNG CONFIG SUMMARY ==='
+          curl --fail --silent --show-error --max-time 8 "$search_url/config" | python3 -c '
+import json, sys
+body = json.load(sys.stdin)
+engines = body.get("engines") or []
+general = []
+for engine in engines:
+    categories = engine.get("categories") or []
+    if "general" in categories or "web" in categories:
+        general.append({
+            "name": engine.get("name"),
+            "categories": categories,
+            "supports_time_range": engine.get("supports_time_range") or engine.get("time_range_support"),
+        })
+print(json.dumps({"general_engine_count": len(general), "general_engines": general}, ensure_ascii=False))
+'
+
+          probe() {
+            local label="$1"
+            local query="$2"
+            echo "=== SEARCH PROBE: ${label} ==="
+            curl --get --fail --silent --show-error --max-time 15 \
+              --data-urlencode "q=${query}" \
+              --data-urlencode 'format=json' \
+              "$search_url/search" | python3 -c '
+import json, sys
+body = json.load(sys.stdin)
+results = body.get("results") or []
+unresponsive = body.get("unresponsive_engines") or []
+print(json.dumps({
+    "result_count": len(results),
+    "result_engines": sorted({str(item.get("engine")) for item in results if item.get("engine")}),
+    "unresponsive_engines": unresponsive,
+    "answer_count": len(body.get("answers") or []),
+    "suggestion_count": len(body.get("suggestions") or []),
+}, ensure_ascii=False))
+'
+          }
+
+          probe 'stable-authority' 'IANA example domains'
+          probe 'software-current' 'Node.js current release'
+          probe 'swedish-authority' 'Skatteverket moms 25 procent'
+
+          echo '=== DIRECT OUTBOUND HTTPS ==='
+          for url in https://www.iana.org/domains/reserved https://nodejs.org/en/download/current https://www.skatteverket.se/; do
+            code="$(curl --location --silent --output /dev/null --write-out '%{http_code}' --max-time 12 "$url" || true)"
+            printf '%s %s\n' "$code" "$url"
+          done
+
+          echo '=== RECENT SEARXNG WARNINGS/ERRORS ==='
+          if [[ -f "$log_file" ]]; then
+            tail -n 400 "$log_file" | grep -Ei 'error|warning|captcha|429|403|access denied|timeout|suspend|engine' | tail -n 160 || true
+          else
+            echo 'searxng.log missing'
+          fi
+          REMOTE
