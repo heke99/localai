@@ -33,13 +33,15 @@ describe("portable agent platform intelligence", () => {
     expect(task.reasoningLevel).toBe("fast");
   });
 
-  it("keeps stable low-risk knowledge off the web fast path", () => {
+  it("keeps stable low-risk knowledge off web and repository paths", () => {
     const task = analyzeTask("chat", "Förklara Pythagoras sats enkelt.");
     expect(task.requiresCurrentInformation).toBe(false);
     expect(task.requiresLiveData).toBe(false);
+    expect(task.requiresRepository).toBe(false);
     expect(task.informationFreshness).toBe("stable");
     expect(task.researchDepth).toBe("none");
     expect(task.reasoningLevel).toBe("fast");
+    expect(task.verificationRequirements).not.toEqual(expect.arrayContaining(["consequence-analysis", "targeted-tests"]));
   });
 
   it("walks callers and dependencies transitively and selects impacted tests", () => {
