@@ -31,7 +31,7 @@ export interface AdmissionDecision {
 }
 
 export interface AdmissionController {
-  waitForAdmission(contextTokens: number): Promise<AdmissionSnapshot>;
+  waitForAdmission(contextTokens: number, signal?: AbortSignal): Promise<AdmissionSnapshot>;
   observeTimings(observation: ModelTimingObservation): void;
 }
 
@@ -131,8 +131,30 @@ function metricsUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "")}/metrics`;
 }
 
-async function sleep(milliseconds: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  throw new DOMException("The operation was aborted", "AbortError");
+}
+
+async function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const timer = setTimeout(() => finish(resolve), milliseconds);
+    const onAbort = () => finish(() => {
+      if (signal?.reason instanceof Error) reject(signal.reason);
+      else reject(new DOMException("The operation was aborted", "AbortError"));
+    });
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export class ModelAdmissionRejectedError extends Error {
@@ -188,10 +210,11 @@ export class LlamaCppAdmissionController implements AdmissionController {
     this.observedInterTokenLatencyMs = ewma(this.observedInterTokenLatencyMs, observation.interTokenLatencyMs);
   }
 
-  async snapshot(requestContextTokens: number): Promise<AdmissionSnapshot> {
+  async snapshot(requestContextTokens: number, signal?: AbortSignal): Promise<AdmissionSnapshot> {
+    throwIfAborted(signal);
     const [llamaText, gpuText] = await Promise.all([
-      this.fetchMetrics(this.llamaMetricsUrl, true),
-      this.options.gpuMetricsUrl ? this.fetchMetrics(this.options.gpuMetricsUrl, false) : Promise.resolve(null)
+      this.fetchMetrics(this.llamaMetricsUrl, true, signal),
+      this.options.gpuMetricsUrl ? this.fetchMetrics(this.options.gpuMetricsUrl, false, signal) : Promise.resolve(null)
     ]);
     const llama = llamaText ? parsePrometheus(llamaText) : new Map<string, number[]>();
     const gpu = gpuText ? parsePrometheus(gpuText) : new Map<string, number[]>();
@@ -249,31 +272,34 @@ export class LlamaCppAdmissionController implements AdmissionController {
     return { action: "admit", reason: snapshot.telemetryAvailable ? "capacity_available" : "telemetry_unavailable", snapshot };
   }
 
-  async waitForAdmission(contextTokens: number): Promise<AdmissionSnapshot> {
+  async waitForAdmission(contextTokens: number, signal?: AbortSignal): Promise<AdmissionSnapshot> {
     const started = Date.now();
     let lastDecision: AdmissionDecision | null = null;
     while (true) {
-      const current = await this.snapshot(contextTokens);
+      throwIfAborted(signal);
+      const current = await this.snapshot(contextTokens, signal);
       const decision = this.assess(current);
       lastDecision = decision;
       if (decision.action === "admit") return current;
       if (decision.action === "reject") throw new ModelAdmissionRejectedError(decision);
       if (Date.now() - started >= this.options.maxWaitMs) throw new ModelAdmissionTimeoutError(decision);
-      await sleep(this.options.pollIntervalMs);
+      await sleep(this.options.pollIntervalMs, signal);
     }
     // Kept for exhaustiveness if the loop structure changes.
     throw new ModelAdmissionTimeoutError(lastDecision as AdmissionDecision);
   }
 
-  private async fetchMetrics(url: string, authenticated: boolean): Promise<string | null> {
+  private async fetchMetrics(url: string, authenticated: boolean, signal?: AbortSignal): Promise<string | null> {
     try {
+      const timeoutSignal = AbortSignal.timeout(this.options.telemetryTimeoutMs);
       const response = await this.fetcher(url, {
         headers: authenticated && this.apiKey ? { authorization: `Bearer ${this.apiKey}`, accept: "text/plain" } : { accept: "text/plain" },
-        signal: AbortSignal.timeout(this.options.telemetryTimeoutMs)
+        signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
       });
       if (!response.ok) return null;
       return await response.text();
-    } catch {
+    } catch (error) {
+      throwIfAborted(signal);
       return null;
     }
   }
