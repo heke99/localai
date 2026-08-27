@@ -26,6 +26,7 @@ export type TaskComplexity = "small" | "medium" | "large";
 export type ReasoningLevel = "fast" | "standard" | "deep";
 export type InformationFreshness = "stable" | "current" | "live";
 export type ResearchDepth = "none" | "fast" | "standard" | "deep";
+export type LiveDataKind = "time" | "external" | null;
 
 export interface ProjectContext {
   projectId?: string;
@@ -47,6 +48,7 @@ export interface TaskAnalysis {
   researchDepth: ResearchDepth;
   requiresCurrentInformation: boolean;
   requiresLiveData: boolean;
+  liveDataKind: LiveDataKind;
   affectedDomains: string[];
   requiresRepository: boolean;
   requiresBrowser: boolean;
@@ -82,7 +84,8 @@ const rules: Rule[] = [
 ];
 
 const CURRENT_LANGUAGE = /\b(latest|newest|current|currently|today|recent|recently|up[- ]to[- ]date|as of now|senaste|nyaste|aktuell(?:t|a)?|idag|nyligen|just nu|nuvarande)\b/i;
-const LIVE_FACT = /\b(what time is it|current time|time in|klockan|vilken tid|weather|väder|forecast|prognos|exchange rate|valutakurs|stock price|aktiekurs|live score|livescore|traffic|trafik|availability|lagerstatus|in stock)\b/i;
+const DIRECT_TIME_OR_DATE = /\b(what time is it|current time|time in|what is today'?s date|today'?s date|current date|date in|klockan|vilken tid|dagens datum|vilket datum|datum i)\b/i;
+const LIVE_FACT = /\b(weather|väder|forecast|prognos|exchange rate|valutakurs|stock price|aktiekurs|live score|livescore|traffic|trafik|availability|lagerstatus|in stock)\b/i;
 // Only domains whose answer is intrinsically time-sensitive should force current
 // research without explicit words such as "latest" or "today". Generic words
 // such as "policy", "rule" and "version" are intentionally excluded: an
@@ -114,11 +117,13 @@ function informationRouting(mode: AgentMode, prompt: string, complexity: TaskCom
   researchDepth: ResearchDepth;
   requiresCurrentInformation: boolean;
   requiresLiveData: boolean;
+  liveDataKind: LiveDataKind;
 } {
   const currentLanguage = CURRENT_LANGUAGE.test(prompt);
-  const liveFact = LIVE_FACT.test(prompt);
-  const directTimeQuestion = /\b(what time is it|current time|klockan|vilken tid)\b/i.test(prompt);
-  const requiresLiveData = directTimeQuestion || (liveFact && currentLanguage);
+  const directTimeQuestion = DIRECT_TIME_OR_DATE.test(prompt);
+  const externalLiveFact = LIVE_FACT.test(prompt) && currentLanguage;
+  const requiresLiveData = directTimeQuestion || externalLiveFact;
+  const liveDataKind: LiveDataKind = directTimeQuestion ? "time" : externalLiveFact ? "external" : null;
   const changeableDomain = CHANGEABLE_DOMAIN.test(prompt);
   const requiresCurrentInformation = mode === "research" || requiresLiveData || currentLanguage || changeableDomain;
   const informationFreshness: InformationFreshness = requiresLiveData ? "live" : requiresCurrentInformation ? "current" : "stable";
@@ -129,7 +134,7 @@ function informationRouting(mode: AgentMode, prompt: string, complexity: TaskCom
       : complexity === "large"
         ? "deep"
         : "standard";
-  return { informationFreshness, researchDepth, requiresCurrentInformation, requiresLiveData };
+  return { informationFreshness, researchDepth, requiresCurrentInformation, requiresLiveData, liveDataKind };
 }
 
 function reasoningFor(risk: TaskRisk, complexity: TaskComplexity, prompt: string, requiresCurrentInformation: boolean, requiresLiveData: boolean, repositoryReasoningRequired: boolean): ReasoningLevel {
@@ -182,6 +187,7 @@ export function analyzeTask(mode: AgentMode, prompt: string, project: ProjectCon
     researchDepth: information.researchDepth,
     requiresCurrentInformation: information.requiresCurrentInformation,
     requiresLiveData: information.requiresLiveData,
+    liveDataKind: information.liveDataKind,
     affectedDomains,
     requiresRepository,
     requiresBrowser,
