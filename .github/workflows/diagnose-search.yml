@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   diagnose:
-    name: Inspect SearXNG search capability
+    name: Inspect SearXNG source quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production-gpuhub
@@ -50,7 +50,7 @@ jobs:
           printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
 
-      - name: Run read-only SearXNG diagnostics
+      - name: Run read-only source-quality diagnostics
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -68,7 +68,6 @@ jobs:
           ssh "${ssh_opts[@]}" "$remote" 'bash -s' <<'REMOTE'
           set -Eeuo pipefail
           search_url='http://127.0.0.1:8890'
-          log_file='/root/autodl-tmp/localai/logs/searxng.log'
           app_dir='/root/autodl-tmp/localai/app'
 
           echo '=== RUNTIME STATE ==='
@@ -76,62 +75,22 @@ jobs:
           pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf' || true
           screen -list | grep -E '\.(localai-search|localai-agent)' || true
 
-          echo '=== SEARXNG CONFIG SUMMARY ==='
-          curl --fail --silent --show-error --max-time 8 "$search_url/config" \
-            | python3 -c 'import json,sys; body=json.load(sys.stdin); engines=body.get("engines") or []; general=[{"name":e.get("name"),"categories":e.get("categories") or []} for e in engines if "general" in (e.get("categories") or []) or "web" in (e.get("categories") or [])]; print(json.dumps({"general_engine_count":len(general),"general_engines":general},ensure_ascii=False))'
-
-          probe() {
+          probe_quality() {
             local label="$1"
             local query="$2"
-            echo "=== SEARCH PROBE: ${label} ==="
-            curl --get --fail --silent --show-error --max-time 15 \
+            local engines="$3"
+            local expected_domain="$4"
+            echo "=== QUALITY PROBE: ${label} engines=${engines} ==="
+            curl --get --fail --silent --show-error --max-time 18 \
               --data-urlencode "q=${query}" \
               --data-urlencode 'format=json' \
+              --data-urlencode "engines=${engines}" \
               "$search_url/search" \
-              | python3 -c 'import json,sys; body=json.load(sys.stdin); results=body.get("results") or []; print(json.dumps({"result_count":len(results),"result_engines":sorted({str(x.get("engine")) for x in results if x.get("engine")}),"unresponsive_engines":body.get("unresponsive_engines") or [],"answer_count":len(body.get("answers") or []),"suggestion_count":len(body.get("suggestions") or [])},ensure_ascii=False))'
+              | EXPECTED_DOMAIN="$expected_domain" python3 -c 'import json,os,sys; from urllib.parse import urlparse; body=json.load(sys.stdin); results=body.get("results") or []; urls=[str(x.get("url") or "") for x in results[:12]]; domains=[urlparse(u).hostname or "" for u in urls]; expected=os.environ["EXPECTED_DOMAIN"].lower(); print(json.dumps({"result_count":len(results),"result_engines":sorted({str(x.get("engine")) for x in results if x.get("engine")}),"expected_domain":expected,"official_domain_present":any(d==expected or d.endswith("."+expected) for d in domains),"top_domains":domains,"top_urls":urls,"unresponsive_engines":body.get("unresponsive_engines") or []},ensure_ascii=False))'
           }
 
-          probe_engine() {
-            local engine="$1"
-            echo "=== ENGINE PROBE: ${engine} ==="
-            curl --get --fail --silent --show-error --max-time 15 \
-              --data-urlencode 'q=Node.js current release' \
-              --data-urlencode 'format=json' \
-              --data-urlencode "engines=${engine}" \
-              "$search_url/search" \
-              | python3 -c 'import json,sys; body=json.load(sys.stdin); results=body.get("results") or []; print(json.dumps({"result_count":len(results),"result_engines":sorted({str(x.get("engine")) for x in results if x.get("engine")}),"unresponsive_engines":body.get("unresponsive_engines") or []},ensure_ascii=False))'
-          }
-
-          probe 'stable-authority' 'IANA example domains'
-          probe 'software-current' 'Node.js current release'
-          probe 'swedish-authority' 'Skatteverket moms 25 procent'
-
-          echo '=== EXPLICIT ENGINE CAPABILITY ==='
-          for engine in \
-            bing \
-            qwant \
-            yahoo \
-            mojeek \
-            yep \
-            seznam \
-            naver \
-            mwmbl \
-            wiby \
-            searchch \
-            wikipedia; do
-            probe_engine "$engine"
+          for engines in bing yahoo bing,yahoo; do
+            probe_quality 'node-current' 'Node.js current release' "$engines" 'nodejs.org'
+            probe_quality 'swedish-vat' 'Skatteverket moms 25 procent' "$engines" 'skatteverket.se'
           done
-
-          echo '=== DIRECT OUTBOUND HTTPS ==='
-          for url in https://www.iana.org/domains/reserved https://nodejs.org/en/download/current https://www.skatteverket.se/; do
-            code="$(curl --location --silent --output /dev/null --write-out '%{http_code}' --max-time 12 "$url" || true)"
-            printf '%s %s\n' "$code" "$url"
-          done
-
-          echo '=== RECENT SEARXNG WARNINGS/ERRORS ==='
-          if [[ -f "$log_file" ]]; then
-            tail -n 500 "$log_file" | grep -Ei 'error|warning|captcha|429|403|access denied|timeout|suspend|engine' | tail -n 180 || true
-          else
-            echo 'searxng.log missing'
-          fi
           REMOTE
