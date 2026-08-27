@@ -146,11 +146,12 @@ verify_p8_context() {
 
 restore_original() {
   [[ "$RESTORED" -eq 0 ]] || return 0
-  RESTORED=1
   log "restoring p1/32768 production baseline"
   stop_background
   screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
   stop_model
+
+  local recovery_status=0
   DIV3RSA_MODEL_PARALLEL=1 \
   DIV3RSA_MODEL_CONTEXT_SIZE=32768 \
   DIV3RSA_MODEL_PORT="$MODEL_PORT" \
@@ -158,7 +159,9 @@ restore_original() {
   DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" \
   DIV3RSA_LEGACY_ENV_FILE="$ENV_FILE" \
   DIV3RSA_LEGACY_LOG_DIR="$LOG_DIR" \
-    bash "$RECOVERY_SCRIPT"
+    bash "$RECOVERY_SCRIPT" || recovery_status=$?
+  [[ "$recovery_status" -eq 0 ]] || return "$recovery_status"
+
   mapfile -t restored_pids < <(pgrep -f 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf' || true)
   [[ "${#restored_pids[@]}" -eq 1 ]] || return 1
   CURRENT_PID="${restored_pids[0]}"
@@ -166,10 +169,23 @@ restore_original() {
   cmdline="$(tr '\0' ' ' <"/proc/${CURRENT_PID}/cmdline")"
   [[ "$cmdline" =~ --parallel[=\ ]+1 ]] || return 1
   [[ "$cmdline" =~ --ctx-size[=\ ]+32768 ]] || return 1
-  health && worker_health && search_health
+  health || return 1
+  worker_health || return 1
+  search_health || return 1
+  RESTORED=1
+  return 0
 }
 
-trap 'status=$?; restore_original || true; exit "$status"' EXIT TERM INT
+on_exit() {
+  local status=$?
+  trap - EXIT TERM INT
+  if ! restore_original; then
+    log "CRITICAL: automatic restore to p1/32768 failed"
+    exit 1
+  fi
+  exit "$status"
+}
+trap on_exit EXIT TERM INT
 
 health || fatal "p1 model unhealthy before p8 soak"
 worker_health || fatal "worker unhealthy before p8 soak"
@@ -254,7 +270,7 @@ RESTORE_WORKER_HEALTH=false; worker_health && RESTORE_WORKER_HEALTH=true
 RESTORE_SEARCH_HEALTH=false; search_health && RESTORE_SEARCH_HEALTH=true
 
 python3 - "$OUT_DIR" "$BUNDLE_JSON" "$GPU_RATIO" "$OOM_INDICATORS" "$RESTORE_MODEL_HEALTH" "$RESTORE_WORKER_HEALTH" "$RESTORE_SEARCH_HEALTH" "$RESTORED_CMD" <<'PY'
-import json, re, sys
+import json, os, re, sys
 from pathlib import Path
 out=Path(sys.argv[1])
 cmd=sys.argv[8]
@@ -277,11 +293,11 @@ bundle={
     'contextSize': int(ctx.group(1)) if ctx else None
   },
   'thresholds': {
-    'minRequests': int(__import__('os').environ.get('DIV3RSA_P8_GATE_MIN_REQUESTS','24')),
-    'maxErrors': int(__import__('os').environ.get('DIV3RSA_P8_GATE_MAX_ERRORS','0')),
-    'maxTtftP95Ms': int(__import__('os').environ.get('DIV3RSA_P8_GATE_MAX_TTFT_P95_MS','10000')),
-    'maxTotalP95Ms': int(__import__('os').environ.get('DIV3RSA_P8_GATE_MAX_TOTAL_P95_MS','20000')),
-    'maxVramUsageRatio': float(__import__('os').environ.get('DIV3RSA_P8_GATE_MAX_VRAM_RATIO','0.94'))
+    'minRequests': int(os.environ.get('DIV3RSA_P8_GATE_MIN_REQUESTS','24')),
+    'maxErrors': int(os.environ.get('DIV3RSA_P8_GATE_MAX_ERRORS','0')),
+    'maxTtftP95Ms': int(os.environ.get('DIV3RSA_P8_GATE_MAX_TTFT_P95_MS','10000')),
+    'maxTotalP95Ms': int(os.environ.get('DIV3RSA_P8_GATE_MAX_TOTAL_P95_MS','20000')),
+    'maxVramUsageRatio': float(os.environ.get('DIV3RSA_P8_GATE_MAX_VRAM_RATIO','0.94'))
   }
 }
 Path(sys.argv[2]).write_text(json.dumps(bundle, indent=2)+'\n')
