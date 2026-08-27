@@ -47,7 +47,7 @@ jobs:
           printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
 
-      - name: Read soak 6 evidence and current runtime state
+      - name: Read soak 6 evidence and reproduce live time
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -79,29 +79,44 @@ jobs:
           latest="$(find "$evidence_root" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)"
           [[ -n "$latest" && -d "$latest" ]] || { echo 'No p8 soak evidence directory found' >&2; exit 1; }
           echo "=== LATEST P8 SOAK EVIDENCE: $latest ==="
-          find "$latest" -maxdepth 4 -type f -printf '%P %s bytes\n' | sort
-
-          for dir in "$latest/evals/pre" "$latest/evals/loaded" "$latest/evals/post"; do
-            [[ -d "$dir" ]] || continue
-            echo "=== EVAL DIRECTORY: ${dir#$latest/} ==="
-            for file in "$dir"/*; do
-              [[ -f "$file" ]] || continue
-              echo "=== ${file#$latest/} ==="
-              case "$file" in
-                *.json|*.log|*.txt) sed -n '1,500p' "$file" ;;
-              esac
-            done
+          find "$latest" -maxdepth 2 -type f -printf '%P %s bytes\n' | sort
+          for file in eval-pre.json eval-pre.stdout.json eval-pre.stderr.log p8-runtime.txt; do
+            if [[ -f "$latest/$file" ]]; then
+              echo "=== $file ==="
+              sed -n '1,700p' "$latest/$file"
+            fi
           done
 
-          echo '=== RECENT WORKER LOG (last 400 lines) ==='
-          if [[ -f "$worker_log" ]]; then
-            tail -n 400 "$worker_log"
-          else
-            echo 'worker log missing'
-          fi
+          echo '=== DIRECT LIVE-TIME AGENT EVAL ==='
+          cat >/tmp/div3rsa-live-time-eval.json <<'JSON'
+          {
+            "schemaVersion": 1,
+            "cases": [
+              {
+                "id": "live-stockholm-time-user-regression",
+                "mode": "chat",
+                "prompt": "Vilken tid är det i Stockholm?",
+                "requiredPatterns": ["Current time in Europe/Stockholm:"],
+                "requiredTools": ["current_time"]
+              }
+            ]
+          }
+          JSON
+          set -a
+          source "$root/secrets/gpuhub-worker.env"
+          set +a
+          cd "$app"
+          DIV3RSA_EVAL_SUITE=/tmp/div3rsa-live-time-eval.json \
+          DIV3RSA_EVAL_MIN_PASS_RATE=1 \
+          DIV3RSA_MODEL_PARALLEL=1 \
+          DIV3RSA_MODEL_CONTEXT_SIZE=32768 \
+          DIV3RSA_EVAL_OUTPUT=/tmp/div3rsa-live-time-eval-output.json \
+            npx tsx scripts/eval_agent_runtime.ts
+          cat /tmp/div3rsa-live-time-eval-output.json
+          rm -f /tmp/div3rsa-live-time-eval.json /tmp/div3rsa-live-time-eval-output.json
 
-          echo '=== RECENT LIVE/TIME/ERROR WORKER EVENTS ==='
+          echo '=== RECENT WORKER ERRORS ==='
           if [[ -f "$worker_log" ]]; then
-            tail -n 2000 "$worker_log" | grep -Ei 'current_time|Europe/Stockholm|Stockholm|worker_loop_error|run_failed|failed|error|timeout' | tail -n 250 || true
+            tail -n 2500 "$worker_log" | grep -Ei 'processing loop error|current_time|Europe/Stockholm|Stockholm|failed|error|timeout' | tail -n 300 || true
           fi
           REMOTE
