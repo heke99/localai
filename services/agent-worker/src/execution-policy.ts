@@ -7,13 +7,12 @@ export interface AgentExecutionPolicy {
 }
 
 export function executionPolicyFor(task: TaskAnalysis): AgentExecutionPolicy {
-  const mutationLike = task.requiresRepository
+  const heavyExecution = task.requiresRepository
     || task.requiresDatabase
     || task.requiresDeployment
-    || task.requiresSecurityReview
-    || task.categories.some((category) => ["build", "bugfix", "refactor", "migration", "deployment"].includes(category));
+    || task.requiresSecurityReview;
 
-  if (task.risk === "critical" || task.risk === "high" || mutationLike) {
+  if (task.risk === "critical" || task.risk === "high" || heavyExecution) {
     return { verificationRounds: 3, maxToolIterations: 8, maxModelTurns: 12 };
   }
 
