@@ -41,3 +41,5 @@ jobs:
           git diff --cached --check
           git commit -m "Skip failed evidence fallback URLs"
           git push origin HEAD:fix/evidence-fallback-attempt-state-20260827
+
+# Rerun marker: authoritative-candidate-ordering-fixture
