@@ -20,7 +20,6 @@ export function evaluateResponseIntegrity(output: string | null | undefined, tas
   return { passed: true, reason: "Final output is non-empty and contains no unfinished reasoning or tool protocol." };
 }
 
-export function needsGroundedSynthesis(output: string, task: TaskAnalysis): boolean {
-  if (!task.requiresCurrentInformation || task.liveDataKind === "time") return false;
-  return !evaluateResponseIntegrity(output, task).passed;
+export function needsGroundedSynthesis(_output: string, task: TaskAnalysis): boolean {
+  return task.requiresCurrentInformation && task.liveDataKind !== "time";
 }
