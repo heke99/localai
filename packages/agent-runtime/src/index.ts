@@ -3,6 +3,7 @@ export * from "./consequence-engine";
 export * from "./execution-policy";
 export * from "./in-memory";
 export * from "./loop-guard";
+export * from "./memory";
 export * from "./orchestrator";
 export * from "./prompt-processor";
 export * from "./scheduler";
