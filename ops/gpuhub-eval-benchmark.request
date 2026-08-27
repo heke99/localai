@@ -1,7 +1,7 @@
-requested_at=2026-08-27T19:56:00+02:00
+requested_at=2026-08-27T20:50:44+02:00
 suite=evals/agent-runtime-smoke.json
 server_parallel=1,2,4,8
 client_concurrency=1,2,4,8
 context_per_slot=32768
 promotion=disabled
-reason=freshness-search-empty-result-retry
+reason=post-searxng-capability-fix-truth-gate
