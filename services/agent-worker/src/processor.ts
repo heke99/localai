@@ -466,21 +466,84 @@ export class AgentWorkerProcessor {
           });
 
           if (!groundingReview.passed) {
+            const researchTools = toolDefinitions.filter((tool) => tool.name === "web_search" || tool.name === "web_fetch");
+            const canSearch = researchTools.some((tool) => tool.name === "web_search");
+            const canFetch = researchTools.some((tool) => tool.name === "web_fetch");
+            if (!canSearch || !canFetch) throw new Error("grounded_evidence_research_tools_unavailable");
+            if (await this.queue.isCancelled(run.runId)) return true;
+
+            const evidenceStart = toolTrace.length;
+            let repairUsage = finalResult.usage;
+            let openedNewSource = false;
+            messages.push({ role: "assistant", content: finalResult.content });
+            messages.push({
+              role: "user",
+              content: `The independent current-information evidence reviewer rejected the candidate answer because the opened evidence is not sufficient. Reviewer reason: ${groundingReview.reason}\n\nDo not merely rewrite the answer and do not use model memory as a substitute for evidence. Gather additional or stronger current evidence now. Use web_search to locate the most applicable authoritative/primary source and web_fetch to open it. You must open at least one new source that materially addresses the rejected claim before producing another final answer. Prefer the competent authority/canonical source for the user's jurisdiction and exact question. Stop researching once you have opened materially stronger evidence; the runtime will synthesize and review the answer again.`
+            });
+
+            await this.queue.step(run.runId, "verify", "verifying", "Evidence review rejected opened sources; gather stronger current evidence", {
+              verificationRound,
+              evidenceReviewAttempt: 0,
+              evidenceReviewerReason: groundingReview.reason,
+              researchTools: researchTools.map((tool) => tool.name)
+            });
+
+            for (let researchAttempt = 0; researchAttempt < 3 && !openedNewSource; researchAttempt += 1) {
+              if (modelTurns >= executionPolicy.maxModelTurns) throw new Error("model_turn_limit_exceeded");
+              if (await this.queue.isCancelled(run.runId)) return true;
+              const research = await generateWithCancellation(this.queue, this.models.resolve(run.modelAlias), run, {
+                requestId: `${run.requestId}:${verificationRound}:grounding-research:${researchAttempt}`,
+                alias: run.modelAlias,
+                messages,
+                tools: researchTools,
+                temperature: 0,
+                maxOutputTokens: 800
+              }, false);
+              if (!research) return true;
+              modelTurns += 1;
+              repairUsage = mergeUsage(repairUsage, research.usage);
+              if (research.finishReason !== "tool_call" || !research.toolCalls?.length) {
+                throw new Error("grounded_evidence_research_retry_no_new_evidence");
+              }
+
+              const disallowedCall = research.toolCalls.find((call) => call.name !== "web_search" && call.name !== "web_fetch");
+              if (disallowedCall) throw new Error(`grounded_evidence_research_disallowed_tool:${disallowedCall.name}`);
+              messages.push({ role: "assistant", content: research.content, toolCalls: research.toolCalls });
+              for (const call of research.toolCalls) {
+                if (await this.queue.isCancelled(run.runId)) return true;
+                loopGuard.record({ action: call.name, inputHash: hashInput(call.input) });
+                await this.queue.step(run.runId, "tool", "waiting_for_tool", call.name, {
+                  toolCallId: call.id,
+                  verificationRound,
+                  evidenceRepair: true,
+                  researchAttempt
+                });
+                const output = await this.tools.execute(run, call);
+                toolTrace.push({ sequence: toolTrace.length + 1, name: call.name, input: call.input, output });
+                messages.push({ role: "tool", name: call.name, toolCallId: call.id, content: compactToolOutput(output) });
+                if (call.name === "web_fetch") openedNewSource = true;
+              }
+            }
+
+            if (!openedNewSource || !toolTrace.slice(evidenceStart).some((item) => item.name === "web_fetch")) {
+              throw new Error("grounded_evidence_research_retry_no_opened_source");
+            }
             if (modelTurns >= executionPolicy.maxModelTurns) throw new Error("model_turn_limit_exceeded");
             if (await this.queue.isCancelled(run.runId)) return true;
             await this.queue.stream(run.runId, "", true);
-            await this.queue.step(run.runId, "model", "running", "Repair answer from evidence reviewer findings", {
+            await this.queue.step(run.runId, "model", "running", "Synthesize answer from strengthened current evidence", {
               verificationRound,
               modelTurn: modelTurns,
               toolFree: true,
-              evidenceReviewerReason: groundingReview.reason
+              evidenceReviewerReason: groundingReview.reason,
+              newEvidenceCalls: toolTrace.length - evidenceStart
             });
             const repair = await generateWithCancellation(this.queue, this.models.resolve(run.modelAlias), run, {
               requestId: `${run.requestId}:${verificationRound}:grounding-repair`,
               alias: run.modelAlias,
               messages: groundedSynthesisMessages({
                 messages,
-                draft: finalResult.content,
+                draft: "",
                 originalPrompt: contract.normalizedPrompt,
                 attempt: 1,
                 reviewerFeedback: groundingReview.reason
@@ -491,7 +554,7 @@ export class AgentWorkerProcessor {
             });
             if (!repair) return true;
             modelTurns += 1;
-            const repaired = { ...repair, usage: mergeUsage(finalResult.usage, repair.usage) };
+            const repaired = { ...repair, usage: mergeUsage(repairUsage, repair.usage) };
             const integrity = evaluateResponseIntegrity(repaired.content, task);
             if (repaired.finishReason !== "stop" || !integrity.passed) {
               throw new Error(`grounded_evidence_repair_invalid:${integrity.reason}`);
@@ -506,11 +569,12 @@ export class AgentWorkerProcessor {
               verificationRound,
               1
             );
-            await this.queue.step(run.runId, "verify", groundingReview.passed ? "completed" : "blocked", "Re-review repaired current answer against opened evidence", {
+            await this.queue.step(run.runId, "verify", groundingReview.passed ? "completed" : "blocked", "Re-review repaired current answer against strengthened opened evidence", {
               verificationRound,
               evidenceReviewAttempt: 1,
               passed: groundingReview.passed,
-              reason: groundingReview.reason
+              reason: groundingReview.reason,
+              newEvidenceCalls: toolTrace.length - evidenceStart
             });
             if (!groundingReview.passed) throw new Error(`grounded_evidence_review_failed:${groundingReview.reason}`);
           }
