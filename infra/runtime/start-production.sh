@@ -71,6 +71,15 @@ RUN_STARTED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 printf '\n=== %s runtime start ===\n' "$RUN_STARTED_AT" >>"$LOG_DIR/llama-server.log"
 printf '\n=== %s runtime start ===\n' "$RUN_STARTED_AT" >>"$LOG_DIR/agent-worker.log"
 
+log "building runtime skill manifest"
+if ! (
+  cd "$REPO_DIR"
+  node scripts/build_skill_manifest.mjs
+) >>"$LOG_DIR/agent-worker.log" 2>&1; then
+  log "skill manifest build failed; inspect ${LOG_DIR}/agent-worker.log"
+  exit 69
+fi
+
 log "validating native TypeScript agent runtime"
 if ! (
   cd "$REPO_DIR"
@@ -129,7 +138,7 @@ if ! check_model_port_available; then
   exit 70
 fi
 
-log "starting Qwen V3 Q8 inference on 0.0.0.0:${MODEL_PORT}"
+log "starting Qwen V3 Q8 inference on 0.0.0.0:${MODEL_PORT} (ctx=${MODEL_CONTEXT_SIZE}, batch=${MODEL_BATCH_SIZE}, parallel=${MODEL_PARALLEL})"
 "$LLAMA_SERVER_BIN" \
   --model "$MODEL_PATH" \
   --alias "$MODEL_ALIAS" \
@@ -170,6 +179,7 @@ export DIV3RSA_INFERENCE_API_KEY="$INFERENCE_API_KEY"
 export QWEN_INFERENCE_BASE_URL="$DIV3RSA_INFERENCE_BASE_URL"
 export QWEN_INFERENCE_API_KEY="$INFERENCE_API_KEY"
 export DIV3RSA_REPOSITORY_ROOT="$REPO_DIR"
+export DIV3RSA_MODEL_PARALLEL="$MODEL_PARALLEL"
 export DIV3RSA_WORKER_ID="${DIV3RSA_WORKER_ID:-agent-worker-${RUNTIME_EXTERNAL_ID}}"
 export DIV3RSA_MODEL_STARTUP_TIMEOUT_MS="${DIV3RSA_MODEL_STARTUP_TIMEOUT_MS:-900000}"
 export DIV3RSA_MODEL_STARTUP_POLL_MS="${DIV3RSA_MODEL_STARTUP_POLL_MS:-5000}"
