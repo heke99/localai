@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:native-runtime": "node --experimental-transform-types --import ./infra/runpod/native-typescript-register.mjs scripts/smoke_native_ts_runtime.mjs",
+    "test:search-runtime": "node scripts/smoke_search_runtime_contract.mjs",
     "test:runpod-wake": "node scripts/smoke_runpod_wake_contract.mjs",
     "test:runtime-bootstrap": "node scripts/smoke_runtime_bootstrap_contract.mjs",
     "typecheck": "tsc --noEmit",
@@ -24,10 +25,10 @@
     "benchmark:concurrency": "node scripts/benchmark_model_concurrency.mjs",
     "validate:benchmarks": "node --check scripts/benchmark_model_concurrency.mjs && node --experimental-transform-types --check scripts/eval_agent_runtime.ts && bash -n infra/runtime/benchmark-legacy-gpuhub-parallel.sh",
     "validate:skills": "python3 scripts/validate_skills.py",
-    "validate:runtime-startup": "bash -n infra/runtime/start-production.sh && bash -n infra/runtime/provision-search.sh && bash -n infra/runtime/provision-search-native.sh && bash -n infra/runtime/bootstrap-host.sh && bash -n infra/runtime/upgrade-legacy-gpuhub.sh && bash -n infra/runtime/recover-legacy-gpuhub.sh && bash -n infra/runpod/start-production.sh && bash -n infra/runpod/auto-start.sh",
+    "validate:runtime-startup": "bash -n infra/runtime/start-production.sh && bash -n infra/runtime/provision-search.sh && bash -n infra/runtime/provision-search-native.sh && bash -n infra/runtime/check-search-capability.sh && bash -n infra/runtime/bootstrap-host.sh && bash -n infra/runtime/upgrade-legacy-gpuhub.sh && bash -n infra/runtime/recover-legacy-gpuhub.sh && bash -n infra/runpod/start-production.sh && bash -n infra/runpod/auto-start.sh",
     "validate:runpod-startup": "npm run validate:runtime-startup",
     "build:skill-manifest": "node scripts/build_skill_manifest.mjs",
-    "verify": "npm run validate:skills && npm run validate:benchmarks && npm run validate:runtime-startup && npm run test:native-runtime && npm run test:runpod-wake && npm run test:runtime-bootstrap && npm run build:skill-manifest && npm run test && npm run typecheck && npm run build"
+    "verify": "npm run validate:skills && npm run validate:benchmarks && npm run validate:runtime-startup && npm run test:native-runtime && npm run test:search-runtime && npm run test:runpod-wake && npm run test:runtime-bootstrap && npm run build:skill-manifest && npm run test && npm run typecheck && npm run build"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
