@@ -12,6 +12,9 @@ const warmupRequests = nonNegativeInteger("DIV3RSA_BENCH_WARMUP_REQUESTS", 1);
 const matrix = parseMatrix(process.env.DIV3RSA_BENCH_CONCURRENCY || "1,2,4,8");
 const prompt = process.env.DIV3RSA_BENCH_PROMPT || "Implement a TypeScript function that groups records by key, explain its complexity briefly, and include one edge-case test.";
 const outputPath = process.env.DIV3RSA_BENCH_OUTPUT?.trim() || "";
+const serverParallel = optionalPositiveInteger("DIV3RSA_BENCH_ACTIVE_SERVER_PARALLEL");
+const totalContextSize = optionalPositiveInteger("DIV3RSA_BENCH_ACTIVE_TOTAL_CONTEXT");
+const contextPerSlot = optionalPositiveInteger("DIV3RSA_BENCH_CONTEXT_PER_SLOT");
 
 if (!apiKey) {
   console.error("Missing DIV3RSA_INFERENCE_API_KEY (legacy QWEN_INFERENCE_API_KEY is also accepted).");
@@ -21,6 +24,14 @@ if (!apiKey) {
 function positiveInteger(name, fallback) {
   const raw = process.env[name];
   if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) throw new Error(`invalid_environment:${name}`);
+  return value;
+}
+
+function optionalPositiveInteger(name) {
+  const raw = process.env[name];
+  if (!raw) return null;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 1) throw new Error(`invalid_environment:${name}`);
   return value;
@@ -179,7 +190,7 @@ async function runLevel(concurrency) {
   return { summary: summarize(samples, wallMs, concurrency), samples };
 }
 
-console.error(`[capacity-benchmark] endpoint=${baseUrl} model=${model} matrix=${matrix.join(",")} maxTokens=${maxTokens}`);
+console.error(`[capacity-benchmark] endpoint=${baseUrl} model=${model} matrix=${matrix.join(",")} maxTokens=${maxTokens} serverParallel=${serverParallel ?? "unknown"} contextPerSlot=${contextPerSlot ?? "unknown"}`);
 for (let index = 0; index < warmupRequests; index += 1) await oneRequest(`warmup-${index}`);
 
 const beforeMetrics = await readMetrics();
@@ -193,9 +204,21 @@ for (const concurrency of matrix) {
 const afterMetrics = await readMetrics();
 
 const result = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   generatedAt: new Date().toISOString(),
-  configuration: { baseUrl, model, matrix, maxTokens, requestsPerWorker, warmupRequests, timeoutMs, promptCharacters: prompt.length },
+  configuration: {
+    baseUrl,
+    model,
+    matrix,
+    maxTokens,
+    requestsPerWorker,
+    warmupRequests,
+    timeoutMs,
+    promptCharacters: prompt.length,
+    serverParallel,
+    totalContextSize,
+    contextPerSlot
+  },
   metrics: { before: beforeMetrics, after: afterMetrics },
   levels
 };

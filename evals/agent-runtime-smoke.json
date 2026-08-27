@@ -43,7 +43,8 @@
       "prompt": "Find the current latest Node.js release from official Node.js information. Search the web, open the relevant source, and report the version you verified and that the information was checked now. Do not rely on model memory.",
       "requiredPatterns": ["v?\\d+\\.\\d+\\.\\d+"],
       "requiredTools": ["web_search", "web_fetch"],
-      "requiredSkills": ["current-information-research"]
+      "requiredSkills": ["current-information-research"],
+      "liveOracle": "node-current-release"
     },
     {
       "id": "stable-http-auth",

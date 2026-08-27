@@ -24,6 +24,10 @@ function asksForClock(prompt: string): boolean {
   return /\b(?:what\s+time|current\s+time|local\s+time|klockan|vad\s+är\s+klockan|hur\s+mycket\s+är\s+klockan|hh:mm)\b/i.test(prompt);
 }
 
+function asksForLatestValue(prompt: string): boolean {
+  return /\b(?:latest|current|newest|most\s+recent|senaste|nyaste|aktuell(?:a|t)?)\b/i.test(prompt);
+}
+
 export function deterministicTimeResult(task: TaskAnalysis, prompt: string, trace: GroundingToolTrace[]): GenerateResult | null {
   if (!task.requiresCurrentInformation || task.liveDataKind !== "time") return null;
   const call = [...trace].reverse().find((item) => item.name === "current_time");
@@ -71,12 +75,15 @@ export function groundedSynthesisMessages(input: {
   const retry = attempt > 0
     ? "The previous synthesis was not a valid final answer. Correct it now and return only the completed answer."
     : "The research/tool phase is complete. Produce the final answer now.";
+  const currentValueInstruction = asksForLatestValue(originalPrompt)
+    ? " This is a latest/current request. Prefer opened evidence that explicitly identifies a value as latest, current, newest, or most recent over a version-specific release page that may only document an older historical release. If the evidence distinguishes release tracks such as Current/Latest Release and LTS, answer the exact track the user asked for. Do not substitute LTS for Current or Current for LTS. If the strongest opened evidence does not identify the requested current value unambiguously, say so instead of inferring it from a stale page or model memory."
+    : "";
   return [
     ...messages,
     ...(draft.trim() ? [{ role: "assistant" as const, content: draft }] : []),
     {
       role: "user",
-      content: `${retry}\n\nOriginal request: ${originalPrompt}\n\nUse only facts supported by the tool evidence already present in this conversation. Do not call, request, imitate, or describe any tool. Do not output <tool_call>, <function>, content_selector, hidden reasoning, or a plan for future research. Resolve the user's requested current value concretely from the opened evidence. If the user asked for a source, name the source and include its URL when available in the evidence. If sources conflict or do not support a concrete answer, say that plainly instead of guessing. Answer the original request directly and concisely.`
+      content: `${retry}\n\nOriginal request: ${originalPrompt}\n\nUse only facts supported by the tool evidence already present in this conversation. Do not call, request, imitate, or describe any tool. Do not output <tool_call>, <function>, content_selector, hidden reasoning, or a plan for future research. Resolve the user's requested current value concretely from the opened evidence.${currentValueInstruction} If the user asked for a source, name the source and include its URL when available in the evidence. If sources conflict or do not support a concrete answer, say that plainly instead of guessing. Answer the original request directly and concisely.`
     }
   ];
 }

@@ -50,6 +50,18 @@ extract_option() {
 MODEL_PORT="$(extract_option --port 6006)"
 ORIGINAL_PARALLEL="$(extract_option --parallel '')"
 [[ -n "$ORIGINAL_PARALLEL" ]] || ORIGINAL_PARALLEL="$(extract_option -np 1)"
+ORIGINAL_CONTEXT_SIZE="$(extract_option --ctx-size 32768)"
+CONTEXT_PER_SLOT="${DIV3RSA_BENCH_CONTEXT_PER_SLOT:-$ORIGINAL_CONTEXT_SIZE}"
+[[ "$ORIGINAL_PARALLEL" =~ ^[0-9]+$ && "$ORIGINAL_PARALLEL" -ge 1 ]] || fatal "invalid original parallel: $ORIGINAL_PARALLEL"
+[[ "$ORIGINAL_CONTEXT_SIZE" =~ ^[0-9]+$ && "$ORIGINAL_CONTEXT_SIZE" -ge 1 ]] || fatal "invalid original context size: $ORIGINAL_CONTEXT_SIZE"
+[[ "$CONTEXT_PER_SLOT" =~ ^[0-9]+$ && "$CONTEXT_PER_SLOT" -ge 1 ]] || fatal "invalid context per slot: $CONTEXT_PER_SLOT"
+[[ "$ORIGINAL_PARALLEL" -eq 1 ]] || fatal "refusing capacity benchmark unless production starts at parallel=1; found parallel=$ORIGINAL_PARALLEL"
+
+for arg in "${ORIGINAL_CMD[@]}"; do
+  if [[ "$arg" == "--kv-unified" || "$arg" == "--kv-unified="* ]]; then
+    fatal "context-preserving benchmark assumes non-unified KV; production command has --kv-unified"
+  fi
+done
 
 set -a
 # shellcheck disable=SC1090
@@ -66,8 +78,8 @@ fi
 health() { curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${MODEL_PORT}/health" >/dev/null; }
 health || fatal "current Qwen server is not healthy before benchmark"
 
-printf 'run_id=%s\noriginal_pid=%s\noriginal_parallel=%s\nmodel_port=%s\nrepo_commit=%s\n' \
-  "$RUN_ID" "$ORIGINAL_PID" "$ORIGINAL_PARALLEL" "$MODEL_PORT" "$(git -C "$REPO_DIR" rev-parse HEAD)" >"$OUT_DIR/manifest.txt"
+printf 'run_id=%s\noriginal_pid=%s\noriginal_parallel=%s\noriginal_context_size=%s\ncontext_per_slot=%s\nmodel_port=%s\nrepo_commit=%s\n' \
+  "$RUN_ID" "$ORIGINAL_PID" "$ORIGINAL_PARALLEL" "$ORIGINAL_CONTEXT_SIZE" "$CONTEXT_PER_SLOT" "$MODEL_PORT" "$(git -C "$REPO_DIR" rev-parse HEAD)" >"$OUT_DIR/manifest.txt"
 printf 'original_command=' >>"$OUT_DIR/manifest.txt"
 printf '%q ' "${ORIGINAL_CMD[@]}" >>"$OUT_DIR/manifest.txt"
 printf '\n' >>"$OUT_DIR/manifest.txt"
@@ -91,25 +103,37 @@ stop_model() {
   CURRENT_PID=""
 }
 
-command_with_parallel() {
-  local profile="$1" i arg found=0
+command_with_profile() {
+  local profile="$1" total_ctx="$2" i arg found_parallel=0 found_ctx=0
   PROFILE_CMD=()
   for ((i=0; i<${#ORIGINAL_CMD[@]}; i++)); do
     arg="${ORIGINAL_CMD[$i]}"
     if [[ "$arg" == "--parallel" || "$arg" == "-np" ]]; then
       PROFILE_CMD+=("--parallel" "$profile")
-      found=1
+      found_parallel=1
       ((i+=1))
       continue
     fi
     if [[ "$arg" == --parallel=* || "$arg" == -np=* ]]; then
       PROFILE_CMD+=("--parallel" "$profile")
-      found=1
+      found_parallel=1
+      continue
+    fi
+    if [[ "$arg" == "--ctx-size" || "$arg" == "-c" ]]; then
+      PROFILE_CMD+=("--ctx-size" "$total_ctx")
+      found_ctx=1
+      ((i+=1))
+      continue
+    fi
+    if [[ "$arg" == --ctx-size=* || "$arg" == -c=* ]]; then
+      PROFILE_CMD+=("--ctx-size" "$total_ctx")
+      found_ctx=1
       continue
     fi
     PROFILE_CMD+=("$arg")
   done
-  if [[ "$found" -eq 0 ]]; then PROFILE_CMD+=("--parallel" "$profile"); fi
+  if [[ "$found_parallel" -eq 0 ]]; then PROFILE_CMD+=("--parallel" "$profile"); fi
+  if [[ "$found_ctx" -eq 0 ]]; then PROFILE_CMD+=("--ctx-size" "$total_ctx"); fi
 }
 
 start_command() {
@@ -126,12 +150,30 @@ start_command() {
   done
 }
 
+verify_runtime_context() {
+  local profile="$1" expected_total="$2" expected_per_slot="$3" props reported_ctx
+  props="$(curl --fail --silent --show-error --max-time 5 \
+    -H "Authorization: Bearer ${API_KEY}" \
+    "http://127.0.0.1:${MODEL_PORT}/props")" || fatal "could not read llama.cpp /props for parallel=${profile}"
+  reported_ctx="$(printf '%s' "$props" | node --input-type=module -e '
+    import { readFileSync } from "node:fs";
+    const body = JSON.parse(readFileSync(0, "utf8"));
+    const value = body?.default_generation_settings?.n_ctx;
+    if (Number.isInteger(value) && value > 0) process.stdout.write(String(value));
+  ')"
+  [[ "$reported_ctx" =~ ^[0-9]+$ ]] || fatal "llama.cpp /props did not report default_generation_settings.n_ctx for parallel=${profile}"
+  [[ "$reported_ctx" -ge "$expected_per_slot" ]] || fatal "runtime context too small for parallel=${profile}: reported=${reported_ctx} required_per_slot=${expected_per_slot} total_configured=${expected_total}"
+  printf 'parallel=%s total_context=%s required_context_per_slot=%s reported_default_n_ctx=%s\n' \
+    "$profile" "$expected_total" "$expected_per_slot" "$reported_ctx" >>"$OUT_DIR/context-verification.txt"
+}
+
 restore_original() {
   [[ "$RESTORED" -eq 0 ]] || return
   RESTORED=1
-  log "restoring original production profile parallel=${ORIGINAL_PARALLEL} through recovery runtime"
+  log "restoring original production profile parallel=${ORIGINAL_PARALLEL} ctx=${ORIGINAL_CONTEXT_SIZE} through recovery runtime"
   stop_model
   DIV3RSA_MODEL_PARALLEL="$ORIGINAL_PARALLEL" \
+  DIV3RSA_MODEL_CONTEXT_SIZE="$ORIGINAL_CONTEXT_SIZE" \
   DIV3RSA_MODEL_PORT="$MODEL_PORT" \
   DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" \
   DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" \
@@ -154,10 +196,13 @@ IFS=',' read -r -a PROFILE_LIST <<<"$PROFILES"
 for profile in "${PROFILE_LIST[@]}"; do
   profile="${profile//[[:space:]]/}"
   [[ "$profile" =~ ^[0-9]+$ && "$profile" -ge 1 ]] || fatal "invalid server parallel profile: $profile"
-  log "testing llama.cpp --parallel ${profile}"
+  total_ctx=$((CONTEXT_PER_SLOT * profile))
+  [[ "$total_ctx" -ge "$CONTEXT_PER_SLOT" ]] || fatal "context size overflow for parallel=${profile}"
+  log "testing llama.cpp --parallel ${profile} --ctx-size ${total_ctx} (${CONTEXT_PER_SLOT} context per slot)"
   stop_model
-  command_with_parallel "$profile"
-  start_command "parallel-${profile}" "${PROFILE_CMD[@]}"
+  command_with_profile "$profile" "$total_ctx"
+  start_command "parallel-${profile}-ctx-${total_ctx}" "${PROFILE_CMD[@]}"
+  verify_runtime_context "$profile" "$total_ctx" "$CONTEXT_PER_SLOT"
 
   nvidia-smi --query-gpu=timestamp,name,memory.total,memory.used,utilization.gpu,utilization.memory --format=csv,nounits \
     -l 1 >"$OUT_DIR/gpu-parallel-${profile}.csv" 2>&1 &
@@ -167,6 +212,9 @@ for profile in "${PROFILE_LIST[@]}"; do
   DIV3RSA_INFERENCE_BASE_URL="http://127.0.0.1:${MODEL_PORT}/v1" \
   DIV3RSA_INFERENCE_API_KEY="$API_KEY" \
   DIV3RSA_BENCH_CONCURRENCY="$CLIENT_MATRIX" \
+  DIV3RSA_BENCH_CONTEXT_PER_SLOT="$CONTEXT_PER_SLOT" \
+  DIV3RSA_BENCH_ACTIVE_SERVER_PARALLEL="$profile" \
+  DIV3RSA_BENCH_ACTIVE_TOTAL_CONTEXT="$total_ctx" \
   DIV3RSA_BENCH_OUTPUT="$OUT_DIR/parallel-${profile}.json" \
     node "$REPO_DIR/scripts/benchmark_model_concurrency.mjs" >"$OUT_DIR/parallel-${profile}.stdout.json" 2>"$OUT_DIR/parallel-${profile}.stderr.log"
   bench_status=$?
@@ -190,6 +238,8 @@ for (const raw of profiles) {
   for (const level of data.levels ?? []) {
     rows.push({
       serverParallel: Number(profile),
+      totalContextSize: data.configuration?.totalContextSize ?? null,
+      contextPerSlot: data.configuration?.contextPerSlot ?? null,
       clients: level.summary.concurrency,
       ttftP95Ms: level.summary.ttftMs?.p95,
       totalP95Ms: level.summary.totalMs?.p95,
@@ -199,8 +249,8 @@ for (const raw of profiles) {
     });
   }
 }
-console.log(JSON.stringify({ benchmarkDirectory: dir, rows }, null, 2));
+console.log(JSON.stringify({ benchmarkDirectory: dir, contextPreserving: true, rows }, null, 2));
 NODE
 
-log "benchmark complete; raw evidence: $OUT_DIR"
+log "context-preserving benchmark complete; raw evidence: $OUT_DIR"
 log "original production profile is restored; no benchmark profile was promoted automatically"

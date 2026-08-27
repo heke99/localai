@@ -30,11 +30,43 @@ function available(definitions: ModelToolDefinition[], name: string): boolean {
   return definitions.some((tool) => tool.name === name);
 }
 
-function searchUrls(output: unknown): Array<{ url: string; rank: number; score: number }> {
+const latestIntentPattern = /\b(?:latest|current|newest|most\s+recent|latest\s+release|senaste|nyaste|aktuell(?:a|t)?)\b/i;
+const explicitCurrentPathPattern = /(?:^|\/)(?:latest|current)(?:\/|$)/i;
+const explicitCurrentLabelPattern = /\b(?:latest\s+(?:release|version)|current\s+(?:release|version))\b/i;
+const downloadIndexPattern = /(?:^|\/)downloads?(?:\/|$)/i;
+const releaseIndexPattern = /\b(?:release\s+schedule|release\s+index|versions?|releases?)\b/i;
+const versionSpecificPathPattern = /(?:^|\/)v?\d+\.\d+\.\d+(?:\/|$)/i;
+
+function currentIntentScore(url: URL, title: string, snippet: string): number {
+  if (explicitCurrentPathPattern.test(url.pathname)) return 6;
+  if (versionSpecificPathPattern.test(url.pathname)) return 0;
+  const textualEvidence = `${title} ${snippet}`;
+  if (explicitCurrentLabelPattern.test(textualEvidence)) return 5;
+  if (downloadIndexPattern.test(url.pathname)) return 4;
+  if (releaseIndexPattern.test(`${url.pathname} ${textualEvidence}`)) return 3;
+  return 1;
+}
+
+function publishedTimestamp(value: unknown): number {
+  if (typeof value !== "string" || !value.trim()) return 0;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+export interface RankedSearchCandidate {
+  url: string;
+  rank: number;
+  score: number;
+  intentScore: number;
+  publishedAtMs: number;
+}
+
+export function rankSearchCandidates(output: unknown, prompt: string): RankedSearchCandidate[] {
   const body = record(output);
   const results = Array.isArray(body?.results) ? body!.results : [];
   const seen = new Set<string>();
-  return results.flatMap((item, index) => {
+  const asksLatest = latestIntentPattern.test(prompt);
+  const candidates = results.flatMap((item, index) => {
     const value = record(item);
     if (typeof value?.url !== "string") return [];
     let url: URL;
@@ -42,15 +74,25 @@ function searchUrls(output: unknown): Array<{ url: string; rank: number; score: 
     if (!/^https?:$/.test(url.protocol) || seen.has(url.href)) return [];
     seen.add(url.href);
     const hostname = url.hostname.toLowerCase();
+    const title = typeof value.title === "string" ? value.title : "";
+    const snippet = typeof value.snippet === "string" ? value.snippet : "";
     const primary = /(?:^|\.)(?:gov(?:\.[a-z]{2})?|europa\.eu|who\.int|un\.org|riksdagen\.se|regeringen\.se|skatteverket\.se|svk\.se|digg\.se)$/i.test(hostname)
       || /^(?:docs|developer|developers|support|help)\./i.test(hostname);
     const reputable = /\.(?:edu|ac\.[a-z]{2})$/i.test(hostname);
     return [{
       url: url.href,
       rank: primary ? 0 : reputable ? 1 : 2,
-      score: typeof value.score === "number" ? value.score : Math.max(0, 100 - index)
+      score: typeof value.score === "number" ? value.score : Math.max(0, 100 - index),
+      intentScore: asksLatest ? currentIntentScore(url, title, snippet) : 0,
+      publishedAtMs: publishedTimestamp(value.publishedAt)
     }];
-  }).sort((a, b) => a.rank - b.rank || b.score - a.score);
+  });
+
+  return candidates.sort((a, b) => {
+    if (asksLatest && a.intentScore !== b.intentScore) return b.intentScore - a.intentScore;
+    if (asksLatest && a.publishedAtMs !== b.publishedAtMs) return b.publishedAtMs - a.publishedAtMs;
+    return a.rank - b.rank || b.score - a.score;
+  });
 }
 
 async function executeRequiredTool(input: {
@@ -116,11 +158,11 @@ export async function collectRequiredFreshnessEvidence(input: {
     call: {
       id: `${run.requestId}:freshness:search`,
       name: "web_search",
-      input: { query: normalizedPrompt.slice(0, 500), limit: 8 }
+      input: { query: normalizedPrompt.slice(0, 500), limit: 12 }
     }
   });
 
-  const candidates = searchUrls(searchOutput);
+  const candidates = rankSearchCandidates(searchOutput, normalizedPrompt);
   if (!candidates.length) throw new Error("current_information_search_returned_no_sources");
   const targetSources = task.researchDepth === "deep" || task.risk === "high" || task.risk === "critical" ? 2 : 1;
   const fetchedHosts = new Set<string>();
