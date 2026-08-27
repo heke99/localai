@@ -1,0 +1,87 @@
+name: Diagnose P8 soak evidence
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/diagnose-p8-soak.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpuhub-production
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    name: Inspect failed p8 soak evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-gpuhub
+    env:
+      GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
+      GPUHUB_SSH_PORT: ${{ secrets.GPUHUB_SSH_PORT }}
+      GPUHUB_SSH_USER: ${{ secrets.GPUHUB_SSH_USER }}
+      GPUHUB_SSH_PRIVATE_KEY: ${{ secrets.GPUHUB_SSH_PRIVATE_KEY }}
+      GPUHUB_SSH_KNOWN_HOSTS: ${{ secrets.GPUHUB_SSH_KNOWN_HOSTS }}
+    steps:
+      - name: Validate diagnostic secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in GPUHUB_SSH_HOST GPUHUB_SSH_PORT GPUHUB_SSH_USER GPUHUB_SSH_PRIVATE_KEY GPUHUB_SSH_KNOWN_HOSTS; do
+            [[ -n "${!name:-}" ]] || { echo "Missing required production-gpuhub secret: ${name}" >&2; exit 1; }
+          done
+
+      - name: Configure pinned SSH host identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Read latest p8 soak evidence and runtime state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          remote="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
+          ssh_opts=(
+            -i "$HOME/.ssh/id_ed25519"
+            -p "$GPUHUB_SSH_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=4
+          )
+
+          ssh "${ssh_opts[@]}" "$remote" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          root='/root/autodl-tmp/localai'
+          app="$root/app"
+          evidence_root="$root/logs/p8-soak"
+
+          echo '=== RUNTIME STATE AFTER FAILED SOAK ==='
+          printf 'commit=' && git -C "$app" rev-parse HEAD
+          pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf' || true
+          curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health && echo
+          bash "$app/infra/runtime/check-search-capability.sh" http://127.0.0.1:8890
+          screen -list | grep -F '.localai-agent' || true
+
+          latest="$(find "$evidence_root" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)"
+          [[ -n "$latest" && -d "$latest" ]] || { echo 'No p8 soak evidence directory found' >&2; exit 1; }
+          echo "=== LATEST P8 SOAK EVIDENCE: $latest ==="
+          find "$latest" -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+
+          for file in p8-runtime.txt eval-pre.stderr.log eval-pre.stdout.json eval-pre.json load.stderr.log load.json gate-input.json gate-result.json; do
+            if [[ -f "$latest/$file" ]]; then
+              echo "=== $file ==="
+              cat "$latest/$file"
+            fi
+          done
+          REMOTE
