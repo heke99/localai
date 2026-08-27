@@ -102,16 +102,16 @@ describe("current-information deterministic evidence fallback", () => {
     const execute = vi.fn(async (_claimed: ClaimedRun, call: { id: string; name: string; input: Record<string, unknown> }) => {
       if (call.name === "web_search") {
         searchCount += 1;
-        if (searchCount === 1) {
+        if (call.id.includes("grounding-fallback-search")) {
           return {
             results: [
+              { url: "https://docs.example.org/current", title: "Current release v2.0.0", snippet: "Current release v2.0.0", score: 100 },
               { url: "https://example.com/runtime-overview", title: "Runtime overview", snippet: "Release information", score: 10 }
             ]
           };
         }
         return {
           results: [
-            { url: "https://docs.example.org/current", title: "Current release v2.0.0", snippet: "Current release v2.0.0", score: 100 },
             { url: "https://example.com/runtime-overview", title: "Runtime overview", snippet: "Release information", score: 10 }
           ]
         };
