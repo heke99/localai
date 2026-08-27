@@ -13,6 +13,7 @@ ENV_FILE="${DIV3RSA_LEGACY_ENV_FILE:-${ROOT_DIR}/secrets/gpuhub-worker.env}"
 LOG_DIR="${DIV3RSA_LEGACY_LOG_DIR:-${ROOT_DIR}/logs}"
 SCREEN_NAME="${DIV3RSA_LEGACY_WORKER_SCREEN:-localai-agent}"
 NODE_BIN="${DIV3RSA_LEGACY_NODE_BIN:-${ROOT_DIR}/runtime/node-current/bin/node}"
+RECOVERY_SCRIPT="${REPO_DIR}/infra/runtime/recover-legacy-gpuhub.sh"
 PROFILES="${DIV3RSA_BENCH_SERVER_PARALLEL:-1,2,4,8}"
 CLIENT_MATRIX="${DIV3RSA_BENCH_CONCURRENCY:-1,2,4,8}"
 RUN_ID="$(date -u +'%Y%m%dT%H%M%SZ')"
@@ -20,6 +21,7 @@ OUT_DIR="${DIV3RSA_BENCH_OUTPUT_DIR:-${LOG_DIR}/benchmarks/${RUN_ID}}"
 
 [[ -d "$REPO_DIR/.git" ]] || fatal "repository missing: $REPO_DIR"
 [[ -f "$ENV_FILE" ]] || fatal "worker env missing: $ENV_FILE"
+[[ -f "$RECOVERY_SCRIPT" ]] || fatal "recovery script missing: $RECOVERY_SCRIPT"
 mkdir -p "$OUT_DIR"
 
 if [[ -x "$NODE_BIN" ]]; then
@@ -113,7 +115,7 @@ command_with_parallel() {
 start_command() {
   local label="$1"; shift
   local logfile="$OUT_DIR/llama-${label}.log"
-  nohup "$@" >>"$logfile" 2>&1 &
+  nohup "$@" </dev/null >>"$logfile" 2>&1 &
   CURRENT_PID=$!
   local deadline=$((SECONDS + 900))
   while true; do
@@ -124,32 +126,24 @@ start_command() {
   done
 }
 
-restart_worker() {
-  command -v screen >/dev/null 2>&1 || fatal "screen is unavailable; cannot restore legacy worker"
-  screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
-  screen -dmS "$SCREEN_NAME" bash -lc "
-    set -Eeuo pipefail
-    export PATH='$(dirname "$NODE_BIN")':\$PATH
-    set -a
-    source '$ENV_FILE'
-    set +a
-    export DIV3RSA_MODEL_PARALLEL='$ORIGINAL_PARALLEL'
-    cd '$REPO_DIR'
-    exec node --experimental-transform-types --import ./infra/runpod/native-typescript-register.mjs services/agent-worker/src/main.ts >>'$LOG_DIR/agent-worker.log' 2>&1
-  "
-  sleep 3
-  screen -list | grep -F ".${SCREEN_NAME}" >/dev/null || fatal "legacy worker did not restart"
-}
-
 restore_original() {
   [[ "$RESTORED" -eq 0 ]] || return
   RESTORED=1
-  log "restoring original llama.cpp profile parallel=${ORIGINAL_PARALLEL}"
+  log "restoring original production profile parallel=${ORIGINAL_PARALLEL} through recovery runtime"
   stop_model
-  start_command restore "${ORIGINAL_CMD[@]}"
-  restart_worker
-  health || fatal "restored Qwen server failed health check"
-  log "original runtime restored"
+  DIV3RSA_MODEL_PARALLEL="$ORIGINAL_PARALLEL" \
+  DIV3RSA_MODEL_PORT="$MODEL_PORT" \
+  DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" \
+  DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" \
+  DIV3RSA_LEGACY_ENV_FILE="$ENV_FILE" \
+  DIV3RSA_LEGACY_LOG_DIR="$LOG_DIR" \
+    bash "$RECOVERY_SCRIPT"
+  mapfile -t restored_pids < <(pgrep -f 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf' || true)
+  [[ "${#restored_pids[@]}" -eq 1 ]] || fatal "expected one recovered Qwen process, found ${#restored_pids[@]}"
+  CURRENT_PID="${restored_pids[0]}"
+  health || fatal "recovered Qwen server failed health check"
+  screen -list | grep -F ".${SCREEN_NAME}" >/dev/null || fatal "agent worker missing after recovery"
+  log "original production runtime restored and healthy"
 }
 trap 'status=$?; restore_original || true; exit "$status"' EXIT TERM INT
 

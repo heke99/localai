@@ -13,6 +13,7 @@ function task(overrides: Partial<TaskAnalysis> = {}): TaskAnalysis {
     researchDepth: "none",
     requiresCurrentInformation: false,
     requiresLiveData: false,
+    liveDataKind: null,
     affectedDomains: [],
     requiresRepository: false,
     requiresBrowser: false,
@@ -31,7 +32,7 @@ describe("adaptive agent execution policy", () => {
   });
 
   it("fails fast for low-risk live data instead of multiplying model retries", () => {
-    expect(executionPolicyFor(task({ requiresCurrentInformation: true, requiresLiveData: true, informationFreshness: "live", researchDepth: "fast" })))
+    expect(executionPolicyFor(task({ requiresCurrentInformation: true, requiresLiveData: true, liveDataKind: "external", informationFreshness: "live", researchDepth: "fast" })))
       .toMatchObject({ tier: "FAST", verificationRounds: 1, maxToolIterations: 3, maxModelTurns: 4 });
   });
 

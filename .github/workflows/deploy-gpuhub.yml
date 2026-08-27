@@ -33,8 +33,11 @@ jobs:
       - name: Install locked dependencies
         run: npm ci --ignore-scripts
 
-      - name: Validate GPUHub upgrade shell
-        run: bash -n infra/runtime/upgrade-legacy-gpuhub.sh
+      - name: Validate GPUHub runtime shells
+        run: |
+          bash -n infra/runtime/upgrade-legacy-gpuhub.sh
+          bash -n infra/runtime/recover-legacy-gpuhub.sh
+          bash -n infra/runtime/benchmark-legacy-gpuhub-parallel.sh
 
       - name: Native TypeScript runtime smoke test
         run: npm run test:native-runtime
@@ -52,7 +55,7 @@ jobs:
     name: Deploy exact revision to GPUHub
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     environment: production-gpuhub
     env:
       GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
@@ -87,7 +90,7 @@ jobs:
           printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
 
-      - name: Deploy and verify GPUHub runtime
+      - name: Recover, deploy and verify GPUHub runtime
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -107,6 +110,7 @@ jobs:
           expected_sha="$1"
           app_dir="/root/autodl-tmp/localai/app"
           upgrade_script="/tmp/div3rsa-gpuhub-upgrade-${expected_sha}.sh"
+          recovery_script="/tmp/div3rsa-gpuhub-recovery-${expected_sha}.sh"
 
           [[ "$expected_sha" =~ ^[0-9a-fA-F]{40}$ ]] || {
             echo "invalid expected commit sha" >&2
@@ -125,10 +129,15 @@ jobs:
             exit 1
           }
 
+          git show "${expected_sha}:infra/runtime/recover-legacy-gpuhub.sh" > "$recovery_script"
           git show "${expected_sha}:infra/runtime/upgrade-legacy-gpuhub.sh" > "$upgrade_script"
-          chmod 700 "$upgrade_script"
-          trap 'rm -f "$upgrade_script"' EXIT
+          chmod 700 "$recovery_script" "$upgrade_script"
+          trap 'rm -f "$recovery_script" "$upgrade_script"' EXIT
 
+          echo "=== GPUHub pre-deploy recovery ==="
+          bash "$recovery_script"
+
+          echo "=== GPUHub exact-revision deploy ==="
           DIV3RSA_RUNTIME_GIT_REF=main \
           DIV3RSA_EXPECTED_COMMIT_SHA="$expected_sha" \
             bash "$upgrade_script"
@@ -142,11 +151,12 @@ jobs:
           curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null
           curl --fail --silent --show-error --max-time 8 'http://127.0.0.1:8890/search?q=div3rsa-deploy-health&format=json' >/dev/null
           screen -list | grep -F '.localai-agent' >/dev/null
+          pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf'
           echo "GPUHub deploy healthy: requested=${expected_sha} current=${current_sha}"
           REMOTE
 
   eval_benchmark:
-    name: Prompt eval and parallel 1/2/4/8 benchmark
+    name: Prompt eval then parallel 1/2/4/8 benchmark
     needs: deploy
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -239,6 +249,7 @@ jobs:
           }
           curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null
           curl --fail --silent --show-error --max-time 8 'http://127.0.0.1:8890/search?q=div3rsa-eval-health&format=json' >/dev/null
+          screen -list | grep -F '.localai-agent' >/dev/null
 
           mkdir -p "$eval_dir" "$benchmark_dir"
           set -a
@@ -263,6 +274,11 @@ jobs:
           cat "$eval_dir/stdout.json"
           echo "=== AGENT EVAL STATUS: $eval_status ==="
 
+          if [[ "$eval_status" -ne 0 ]]; then
+            echo "Agent eval failed; refusing to start GPU parallel benchmark. Evidence: $eval_dir" >&2
+            exit "$eval_status"
+          fi
+
           echo "=== PARALLEL BENCHMARK START ==="
           set +e
           bash infra/runtime/benchmark-legacy-gpuhub-parallel.sh \
@@ -274,6 +290,13 @@ jobs:
           echo "=== PARALLEL BENCHMARK STATUS: $benchmark_status ==="
           echo "Evidence: eval=$eval_dir benchmark=$benchmark_dir commit=$expected_sha"
 
+          curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null || {
+            echo "Qwen unhealthy after benchmark; invoking recovery" >&2
+            bash infra/runtime/recover-legacy-gpuhub.sh
+          }
+          screen -list | grep -F '.localai-agent' >/dev/null || bash infra/runtime/recover-legacy-gpuhub.sh
+          curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null
+          screen -list | grep -F '.localai-agent' >/dev/null
+
           if [[ "$benchmark_status" -ne 0 ]]; then exit "$benchmark_status"; fi
-          if [[ "$eval_status" -ne 0 ]]; then exit "$eval_status"; fi
           REMOTE

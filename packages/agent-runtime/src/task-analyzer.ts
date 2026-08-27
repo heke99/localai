@@ -26,6 +26,7 @@ export type TaskComplexity = "small" | "medium" | "large";
 export type ReasoningLevel = "fast" | "standard" | "deep";
 export type InformationFreshness = "stable" | "current" | "live";
 export type ResearchDepth = "none" | "fast" | "standard" | "deep";
+export type LiveDataKind = "time" | "external" | null;
 
 export interface ProjectContext {
   projectId?: string;
@@ -47,6 +48,7 @@ export interface TaskAnalysis {
   researchDepth: ResearchDepth;
   requiresCurrentInformation: boolean;
   requiresLiveData: boolean;
+  liveDataKind: LiveDataKind;
   affectedDomains: string[];
   requiresRepository: boolean;
   requiresBrowser: boolean;
@@ -77,13 +79,19 @@ const rules: Rule[] = [
   { category: "knowledge_ingestion", pattern: /learn (this|it)|ingest|knowledge source|read this.*learn/i, domains: ["knowledge"] },
   { category: "repo_understanding", pattern: /repository|repo\b|codebase|project structure|repo map/i, domains: ["repository"] },
   { category: "migration", pattern: /migrat(e|ion)|schema change|move data/i, domains: ["database", "deployment"] },
-  { category: "deployment", pattern: /deploy|deployment|release|rollback|vercel|production/i, domains: ["deployment"] },
+  { category: "deployment", pattern: /\bdeploy(?:ment|ed|ing)?\b|\brollback\b|\bvercel\b|\brelease\s+(?:this|that|the|to|into|on)\b|\bproduction\s+(?:deploy(?:ment)?|release|environment)\b/i, domains: ["deployment"] },
   { category: "build", pattern: /build|implement|create|add|make|develop/i }
 ];
 
 const CURRENT_LANGUAGE = /\b(latest|newest|current|currently|today|recent|recently|up[- ]to[- ]date|as of now|senaste|nyaste|aktuell(?:t|a)?|idag|nyligen|just nu|nuvarande)\b/i;
-const LIVE_FACT = /\b(what time is it|current time|time in|klockan|vilken tid|weather|väder|forecast|prognos|exchange rate|valutakurs|stock price|aktiekurs|live score|livescore|traffic|trafik|availability|lagerstatus|in stock)\b/i;
-const CHANGEABLE_DOMAIN = /\b(law|legal|regulation|rule|policy|tax|vat|visa|immigration|permit|government|authority|fee|price|cost|news|election|president|minister|ceo|version|release|documentation|api docs|software version|schedule|timetable|flight|hotel|travel advice|sanction|tariff|customs|interest rate|market rate|lag|juridik|regel|regler|skatt|moms|visum|uppehållstillstånd|arbetstillstånd|myndighet|avgift|pris|kostnad|nyhet|val|statsminister|vd|version|dokumentation|tidtabell|flyg|hotell|reseråd|sanktion|tull|ränta)\b/i;
+const DIRECT_TIME_OR_DATE = /\b(what time is it|current time|time in|what is today'?s date|today'?s date|current date|date in|klockan|vilken tid|dagens datum|vilket datum|datum i)\b/i;
+const LIVE_FACT = /\b(weather|väder|forecast|prognos|exchange rate|valutakurs|stock price|aktiekurs|live score|livescore|traffic|trafik|availability|lagerstatus|in stock)\b/i;
+// Only domains whose answer is intrinsically time-sensitive should force current
+// research without explicit words such as "latest" or "today". Generic words
+// such as "policy", "rule" and "version" are intentionally excluded: an
+// internal capacity policy, chess rules or a version mentioned in supplied
+// context are stable questions unless the prompt explicitly asks for freshness.
+const CHANGEABLE_DOMAIN = /\b(law|legal|regulation|legislation|tax|vat|visa|immigration|permit|government|authority|fee|price|cost|news|election|president|minister|ceo|documentation|api docs|software version|schedule|timetable|flight|hotel|travel advice|sanction|tariff|customs|interest rate|market rate|lag|juridik|regelverk|förordning|skatt|moms|visum|uppehållstillstånd|arbetstillstånd|myndighet|avgift|pris|kostnad|nyhet|val|statsminister|vd|dokumentation|tidtabell|flyg|hotell|reseråd|sanktion|tull|ränta)\b/i;
 const DEEP_REASONING = /\b(deep|deeply|thorough|comprehensive|root cause|whole|entire|all affected|end[- ]to[- ]end|multi[- ]agent|djup|grundlig|hela|samtliga|rotorsak)\b/i;
 const EXPLICIT_REPOSITORY_CONTEXT = /\b(repository|repo|codebase|project files?|source files?|github|branch|pull request|code repo|kodbas|repo:t|repository:t|filerna i projektet)\b/i;
 
@@ -109,11 +117,13 @@ function informationRouting(mode: AgentMode, prompt: string, complexity: TaskCom
   researchDepth: ResearchDepth;
   requiresCurrentInformation: boolean;
   requiresLiveData: boolean;
+  liveDataKind: LiveDataKind;
 } {
   const currentLanguage = CURRENT_LANGUAGE.test(prompt);
-  const liveFact = LIVE_FACT.test(prompt);
-  const directTimeQuestion = /\b(what time is it|current time|klockan|vilken tid)\b/i.test(prompt);
-  const requiresLiveData = directTimeQuestion || (liveFact && currentLanguage);
+  const directTimeQuestion = DIRECT_TIME_OR_DATE.test(prompt);
+  const externalLiveFact = LIVE_FACT.test(prompt) && currentLanguage;
+  const requiresLiveData = directTimeQuestion || externalLiveFact;
+  const liveDataKind: LiveDataKind = directTimeQuestion ? "time" : externalLiveFact ? "external" : null;
   const changeableDomain = CHANGEABLE_DOMAIN.test(prompt);
   const requiresCurrentInformation = mode === "research" || requiresLiveData || currentLanguage || changeableDomain;
   const informationFreshness: InformationFreshness = requiresLiveData ? "live" : requiresCurrentInformation ? "current" : "stable";
@@ -124,7 +134,7 @@ function informationRouting(mode: AgentMode, prompt: string, complexity: TaskCom
       : complexity === "large"
         ? "deep"
         : "standard";
-  return { informationFreshness, researchDepth, requiresCurrentInformation, requiresLiveData };
+  return { informationFreshness, researchDepth, requiresCurrentInformation, requiresLiveData, liveDataKind };
 }
 
 function reasoningFor(risk: TaskRisk, complexity: TaskComplexity, prompt: string, requiresCurrentInformation: boolean, requiresLiveData: boolean, repositoryReasoningRequired: boolean): ReasoningLevel {
@@ -177,6 +187,7 @@ export function analyzeTask(mode: AgentMode, prompt: string, project: ProjectCon
     researchDepth: information.researchDepth,
     requiresCurrentInformation: information.requiresCurrentInformation,
     requiresLiveData: information.requiresLiveData,
+    liveDataKind: information.liveDataKind,
     affectedDomains,
     requiresRepository,
     requiresBrowser,

@@ -76,7 +76,10 @@ describe("AgentWorkerProcessor", () => {
     let cancellationChecks = 0;
     jobs.isCancelled.mockImplementation(async () => {
       cancellationChecks += 1;
-      return cancellationChecks >= 4;
+      // The processor now checks cancellation once more after mandatory
+      // freshness preflight. Keep this test's cancellation point inside the
+      // active model request so AbortSignal behavior remains covered.
+      return cancellationChecks >= 5;
     });
     const generate = vi.fn(async (request: Parameters<ModelAdapter["generate"]>[0]) => await new Promise<never>((_resolve, reject) => {
       expect(request.signal).toBeInstanceOf(AbortSignal);

@@ -14,6 +14,7 @@ function task(overrides: Partial<TaskAnalysis> = {}): TaskAnalysis {
     researchDepth: "standard",
     requiresCurrentInformation: true,
     requiresLiveData: false,
+    liveDataKind: null,
     affectedDomains: ["research"],
     requiresRepository: false,
     requiresBrowser: false,
@@ -36,11 +37,20 @@ describe("current-information evidence gate", () => {
   });
 
   it("accepts deterministic current_time for a direct live clock request", () => {
-    const report = evaluateResearchEvidence(task({ requiresLiveData: true, informationFreshness: "live", researchDepth: "fast" }), trace([
+    const report = evaluateResearchEvidence(task({ requiresLiveData: true, liveDataKind: "time", informationFreshness: "live", researchDepth: "fast" }), trace([
       { name: "current_time", output: { timezone: "Europe/Stockholm", localTime: "12:00:00" } }
     ]));
     expect(report).toMatchObject({ required: true, passed: true, blockers: [] });
     expect(report.evidence).toContain("deterministic-current-time");
+  });
+
+  it("does not accept current_time alone for external live facts", () => {
+    const report = evaluateResearchEvidence(task({ requiresLiveData: true, liveDataKind: "external", informationFreshness: "live", researchDepth: "fast" }), trace([
+      { name: "current_time", output: { timezone: "Europe/Stockholm", localTime: "12:00:00" } }
+    ]));
+    expect(report.passed).toBe(false);
+    expect(report.blockers).toContain("current-information:web-search-required");
+    expect(report.blockers).toContain("current-information:opened-source-required");
   });
 
   it("requires search plus an opened source for changing facts", () => {
