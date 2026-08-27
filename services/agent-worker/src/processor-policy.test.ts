@@ -77,73 +77,69 @@ describe("AgentWorkerProcessor execution policy", () => {
     expect(jobs.recordVerificationRun).toHaveBeenCalledOnce();
   });
 
-  it("completes a live clock request in one verification round when current_time evidence exists", async () => {
+  it("does not use current tools for a stable internal capacity policy", async () => {
+    const run = baseRun({
+      prompt: "A service has 8 workers. Each worker can safely process 3 simultaneous requests, but production policy reserves 25% of total capacity for recovery traffic. What is the maximum normal concurrent request count?"
+    });
+    const jobs = queue(run);
+    const generate = vi.fn(async () => ({
+      modelVersionId: "model",
+      content: "18 normal concurrent requests.",
+      finishReason: "stop" as const,
+      usage: { inputTokens: 12, outputTokens: 6, cachedTokens: 0 }
+    }));
+    const execute = vi.fn(async () => { throw new Error("stable_prompt_should_not_use_current_tools"); });
+    const tools: WorkerToolRuntime = { list: vi.fn(async () => currentTools), execute };
+    await new AgentWorkerProcessor(jobs, { resolve: () => adapter(generate) }, "worker", undefined, tools).processOnce();
+    expect(generate).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(jobs.complete).toHaveBeenCalledOnce();
+    expect(jobs.fail).not.toHaveBeenCalled();
+  });
+
+  it("collects current_time evidence before the first model turn for a live clock request", async () => {
     const run = baseRun({ prompt: "Vad är klockan i Stockholm just nu?" });
     const jobs = queue(run);
-    const generate = vi.fn()
-      .mockResolvedValueOnce({
-        modelVersionId: "model",
-        content: "",
-        finishReason: "tool_call" as const,
-        toolCalls: [{ id: "time-1", name: "current_time", input: { timezone: "Europe/Stockholm" } }],
-        usage: { inputTokens: 5, outputTokens: 1, cachedTokens: 0 }
-      })
-      .mockResolvedValueOnce({
-        modelVersionId: "model",
-        content: "Klockan är 15:30 i Stockholm.",
-        finishReason: "stop" as const,
-        usage: { inputTokens: 8, outputTokens: 8, cachedTokens: 0 }
-      });
-    const model = adapter(generate);
-    const tools: WorkerToolRuntime = {
-      list: vi.fn(async () => currentTools),
-      execute: vi.fn(async (_claimed, call) => {
-        if (call.name === "current_time") return { timezone: "Europe/Stockholm", localTime: "15:30:00", retrievedAt: "2026-08-27T13:30:00.000Z" };
-        throw new Error("unexpected_tool");
-      })
-    };
-    await new AgentWorkerProcessor(jobs, { resolve: () => model }, "worker", undefined, tools).processOnce();
-    expect(generate).toHaveBeenCalledTimes(2);
+    const generate = vi.fn(async () => ({
+      modelVersionId: "model",
+      content: "Klockan är 15:30 i Stockholm.",
+      finishReason: "stop" as const,
+      usage: { inputTokens: 8, outputTokens: 8, cachedTokens: 0 }
+    }));
+    const execute = vi.fn(async (_claimed, call) => {
+      if (call.name === "current_time") return { timezone: "Europe/Stockholm", localTime: "15:30:00", retrievedAt: "2026-08-27T13:30:00.000Z" };
+      throw new Error("unexpected_tool");
+    });
+    const tools: WorkerToolRuntime = { list: vi.fn(async () => currentTools), execute };
+    await new AgentWorkerProcessor(jobs, { resolve: () => adapter(generate) }, "worker", undefined, tools).processOnce();
+    expect(generate).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]?.[1].name).toBe("current_time");
+    expect(execute.mock.calls[0]?.[1].input).toEqual({ timezone: "Europe/Stockholm" });
     expect(jobs.recordVerificationRun).toHaveBeenCalledOnce();
     expect(jobs.complete).toHaveBeenCalledOnce();
     expect(jobs.fail).not.toHaveBeenCalled();
   });
 
-  it("completes low-risk current research after search plus one opened source without verification retries", async () => {
+  it("collects search plus opened source evidence before the first model turn for current research", async () => {
     const run = baseRun({ prompt: "Vad är senaste stabila versionen av Node.js just nu?", modelAlias: "research-prod" });
     const jobs = queue(run);
-    const generate = vi.fn()
-      .mockResolvedValueOnce({
-        modelVersionId: "model",
-        content: "",
-        finishReason: "tool_call" as const,
-        toolCalls: [{ id: "search-1", name: "web_search", input: { query: "Node.js latest stable version" } }],
-        usage: { inputTokens: 5, outputTokens: 1, cachedTokens: 0 }
-      })
-      .mockResolvedValueOnce({
-        modelVersionId: "model",
-        content: "",
-        finishReason: "tool_call" as const,
-        toolCalls: [{ id: "fetch-1", name: "web_fetch", input: { url: "https://nodejs.org/en/download" } }],
-        usage: { inputTokens: 8, outputTokens: 1, cachedTokens: 0 }
-      })
-      .mockResolvedValueOnce({
-        modelVersionId: "model",
-        content: "Node.js current stable version is grounded in the opened official page.",
-        finishReason: "stop" as const,
-        usage: { inputTokens: 12, outputTokens: 10, cachedTokens: 0 }
-      });
-    const model = adapter(generate);
-    const tools: WorkerToolRuntime = {
-      list: vi.fn(async () => currentTools),
-      execute: vi.fn(async (_claimed, call) => {
-        if (call.name === "web_search") return { results: [{ url: "https://nodejs.org/en/download", title: "Download Node.js" }] };
-        if (call.name === "web_fetch") return { url: "https://nodejs.org/en/download", retrievedAt: "2026-08-27T13:30:00.000Z", text: "official release information" };
-        throw new Error("unexpected_tool");
-      })
-    };
-    await new AgentWorkerProcessor(jobs, { resolve: () => model }, "worker", undefined, tools).processOnce();
-    expect(generate).toHaveBeenCalledTimes(3);
+    const generate = vi.fn(async () => ({
+      modelVersionId: "model",
+      content: "Node.js current stable version is grounded in the opened official page.",
+      finishReason: "stop" as const,
+      usage: { inputTokens: 12, outputTokens: 10, cachedTokens: 0 }
+    }));
+    const execute = vi.fn(async (_claimed, call) => {
+      if (call.name === "web_search") return { results: [{ url: "https://nodejs.org/en/download", title: "Download Node.js", score: 10 }] };
+      if (call.name === "web_fetch") return { url: "https://nodejs.org/en/download", retrievedAt: "2026-08-27T13:30:00.000Z", text: "official release information" };
+      throw new Error("unexpected_tool");
+    });
+    const tools: WorkerToolRuntime = { list: vi.fn(async () => currentTools), execute };
+    await new AgentWorkerProcessor(jobs, { resolve: () => adapter(generate) }, "worker", undefined, tools).processOnce();
+    expect(generate).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute.mock.calls.map((call) => call[1].name)).toEqual(["web_search", "web_fetch"]);
     expect(jobs.recordVerificationRun).toHaveBeenCalledOnce();
     expect(jobs.complete).toHaveBeenCalledOnce();
     expect(jobs.fail).not.toHaveBeenCalled();
