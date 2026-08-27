@@ -1,0 +1,123 @@
+name: P8 GPUHub Soak
+
+on:
+  workflow_run:
+    workflows: ["Deploy GPUHub"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpuhub-production
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    name: P8 production-like soak and agent quality gate
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production-gpuhub
+    env:
+      GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
+      GPUHUB_SSH_PORT: ${{ secrets.GPUHUB_SSH_PORT }}
+      GPUHUB_SSH_USER: ${{ secrets.GPUHUB_SSH_USER }}
+      GPUHUB_SSH_PRIVATE_KEY: ${{ secrets.GPUHUB_SSH_PRIVATE_KEY }}
+      GPUHUB_SSH_KNOWN_HOSTS: ${{ secrets.GPUHUB_SSH_KNOWN_HOSTS }}
+    steps:
+      - name: Checkout deployed revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Detect explicit p8 soak request
+        id: requested
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          run=false
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            if git diff --name-only HEAD^ HEAD -- | grep -Fxq 'ops/gpuhub-p8-soak.request'; then
+              run=true
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "GPUHub p8 soak requested: $run"
+
+      - name: Validate production secrets
+        if: steps.requested.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in GPUHUB_SSH_HOST GPUHUB_SSH_PORT GPUHUB_SSH_USER GPUHUB_SSH_PRIVATE_KEY GPUHUB_SSH_KNOWN_HOSTS; do
+            [[ -n "${!name:-}" ]] || { echo "Missing required production-gpuhub secret: ${name}" >&2; exit 1; }
+          done
+
+      - name: Configure pinned SSH host identity
+        if: steps.requested.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Run reversible p8 soak and quality gate
+        if: steps.requested.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          expected_sha='${{ github.event.workflow_run.head_sha }}'
+          remote="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
+          ssh_opts=(
+            -i "$HOME/.ssh/id_ed25519"
+            -p "$GPUHUB_SSH_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=4
+          )
+
+          ssh "${ssh_opts[@]}" "$remote" "bash -s -- '$expected_sha'" <<'REMOTE'
+          set -Eeuo pipefail
+          expected_sha="$1"
+          root_dir="/root/autodl-tmp/localai"
+          app_dir="$root_dir/app"
+          cd "$app_dir"
+          current_sha="$(git rev-parse HEAD)"
+          [[ "$current_sha" == "$expected_sha" ]] || {
+            echo "refusing p8 soak on wrong revision: expected=$expected_sha current=$current_sha" >&2
+            exit 1
+          }
+
+          curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null
+          bash infra/runtime/check-search-capability.sh http://127.0.0.1:8890
+          screen -list | grep -F '.localai-agent' >/dev/null
+          baseline="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
+          [[ "$baseline" =~ --parallel[=\ ]+1 ]] || { echo "baseline is not parallel=1: $baseline" >&2; exit 1; }
+          [[ "$baseline" =~ --ctx-size[=\ ]+32768 ]] || { echo "baseline is not ctx=32768: $baseline" >&2; exit 1; }
+
+          DIV3RSA_P8_SOAK_CONFIRM_DOWNTIME=YES \
+          DIV3RSA_P8_SOAK_DURATION_SECONDS=300 \
+          DIV3RSA_P8_SOAK_CONCURRENCY=6 \
+          DIV3RSA_P8_GATE_MIN_REQUESTS=24 \
+          DIV3RSA_P8_GATE_MAX_ERRORS=0 \
+          DIV3RSA_P8_GATE_MAX_TTFT_P95_MS=10000 \
+          DIV3RSA_P8_GATE_MAX_TOTAL_P95_MS=20000 \
+          DIV3RSA_P8_GATE_MAX_VRAM_RATIO=0.94 \
+            bash infra/runtime/soak-legacy-gpuhub-p8.sh
+
+          curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null
+          bash infra/runtime/check-search-capability.sh http://127.0.0.1:8890
+          screen -list | grep -F '.localai-agent' >/dev/null
+          restored="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
+          [[ "$restored" =~ --parallel[=\ ]+1 ]] || { echo "post-soak runtime is not parallel=1: $restored" >&2; exit 1; }
+          [[ "$restored" =~ --ctx-size[=\ ]+32768 ]] || { echo "post-soak runtime is not ctx=32768: $restored" >&2; exit 1; }
+          echo "P8 soak workflow complete; p1/32768 remains active."
+          REMOTE
