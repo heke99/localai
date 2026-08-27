@@ -15,7 +15,7 @@ function response() {
   }), { status: 200 });
 }
 
-async function bodyFor(messages: GenerateRequest["messages"], requestTools: ModelToolDefinition[] = tools) {
+async function bodyFor(messages: GenerateRequest["messages"], requestTools: ModelToolDefinition[] = tools): Promise<Record<string, unknown>> {
   let body: Record<string, unknown> | null = null;
   const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
     body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -23,7 +23,8 @@ async function bodyFor(messages: GenerateRequest["messages"], requestTools: Mode
   });
   const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);
   await adapter.generate({ requestId: "req", alias: "general-prod", messages, tools: requestTools });
-  return body as Record<string, unknown>;
+  if (body === null) throw new Error("request body was not captured");
+  return body;
 }
 
 describe("FAST reasoning routing", () => {
