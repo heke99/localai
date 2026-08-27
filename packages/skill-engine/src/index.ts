@@ -1,3 +1,10 @@
+export type SkillCostLevel = "low" | "medium" | "high";
+
+export interface SkillRoutingCost {
+  context: SkillCostLevel;
+  latency: SkillCostLevel;
+}
+
 export interface SkillMetadata {
   name: string;
   path: string;
@@ -5,13 +12,28 @@ export interface SkillMetadata {
   description: string;
   version: string;
   sha256: string;
+  modes?: string[];
+  triggers?: string[];
+  requires?: string[];
+  cost?: SkillRoutingCost;
+  dependencies?: string[];
+  conflicts?: string[];
+  verification?: string[];
+}
+
+export interface SkillDescriptor {
+  name: string;
+  description: string;
+  category: string;
+  modes: string[];
+  cost: SkillRoutingCost;
 }
 
 export interface SkillManifest { schemaVersion: 1; skills: SkillMetadata[] }
 export interface SkillSelection { metadata: SkillMetadata; reason: string; activationOrder: number }
 export interface SkillBodyReader { read(path: string): Promise<string> }
 
-const dependencies: Record<string, string[]> = {
+const legacyDependencies: Record<string, string[]> = {
   "brainstorming-design": ["using-skills"],
   "system-design": ["using-skills"],
   "writing-plans": ["using-skills"],
@@ -68,6 +90,8 @@ const signals: Array<[RegExp, string[]]> = [
   [/property[- ]based|fuzz|invariant/i, ["property-based-testing"]]
 ];
 
+const defaultCost: SkillRoutingCost = { context: "low", latency: "low" };
+
 export class SkillEngine {
   private readonly skills: Map<string, SkillMetadata>;
   constructor(manifest: SkillManifest, private readonly reader?: SkillBodyReader) {
@@ -76,21 +100,39 @@ export class SkillEngine {
     if (this.skills.size !== manifest.skills.length) throw new Error("duplicate_skill_name");
   }
 
+  descriptors(mode?: string): SkillDescriptor[] {
+    return [...this.skills.values()]
+      .filter((skill) => !mode || !skill.modes?.length || skill.modes.includes(mode))
+      .map((skill) => ({ name: skill.name, description: skill.description, category: skill.category, modes: skill.modes ?? [], cost: skill.cost ?? defaultCost }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   select(mode: string, prompt: string): SkillSelection[] {
     const requested = new Set(modeDefaults[mode] ?? ["using-skills", "reasoning-router", "verification-before-completion"]);
     for (const [pattern, names] of signals) if (pattern.test(prompt)) names.forEach((name) => requested.add(name));
+    for (const skill of this.skills.values()) {
+      if (skill.modes?.length && !skill.modes.includes(mode)) continue;
+      if (skill.triggers?.some((trigger) => trigger.length > 0 && prompt.toLowerCase().includes(trigger.toLowerCase()))) requested.add(skill.name);
+    }
     const ordered: string[] = [];
     const visiting = new Set<string>();
     const add = (name: string) => {
       if (ordered.includes(name)) return;
       if (visiting.has(name)) throw new Error(`skill_dependency_cycle:${name}`);
-      if (!this.skills.has(name)) throw new Error(`unknown_skill:${name}`);
+      const skill = this.skills.get(name);
+      if (!skill) throw new Error(`unknown_skill:${name}`);
+      if (skill.modes?.length && !skill.modes.includes(mode)) throw new Error(`skill_mode_conflict:${name}:${mode}`);
       visiting.add(name);
-      for (const dependency of dependencies[name] ?? []) add(dependency);
+      for (const dependency of skill.dependencies ?? legacyDependencies[name] ?? []) add(dependency);
       visiting.delete(name);
       ordered.push(name);
     };
     requested.forEach(add);
+    const selected = new Set(ordered);
+    for (const name of ordered) {
+      const conflict = this.skills.get(name)?.conflicts?.find((candidate) => selected.has(candidate));
+      if (conflict) throw new Error(`skill_conflict:${name}:${conflict}`);
+    }
     const verifier = ordered.indexOf("verification-before-completion");
     if (verifier >= 0) ordered.push(...ordered.splice(verifier, 1));
     return ordered.map((name, index) => ({ metadata: this.skills.get(name)!, reason: requested.has(name) ? "mode_or_prompt_match" : "dependency", activationOrder: index + 1 }));
