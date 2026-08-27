@@ -91,9 +91,36 @@ jobs:
               | python3 -c 'import json,sys; body=json.load(sys.stdin); results=body.get("results") or []; print(json.dumps({"result_count":len(results),"result_engines":sorted({str(x.get("engine")) for x in results if x.get("engine")}),"unresponsive_engines":body.get("unresponsive_engines") or [],"answer_count":len(body.get("answers") or []),"suggestion_count":len(body.get("suggestions") or [])},ensure_ascii=False))'
           }
 
+          probe_engine() {
+            local engine="$1"
+            echo "=== ENGINE PROBE: ${engine} ==="
+            curl --get --fail --silent --show-error --max-time 15 \
+              --data-urlencode 'q=Node.js current release' \
+              --data-urlencode 'format=json' \
+              --data-urlencode "engines=${engine}" \
+              "$search_url/search" \
+              | python3 -c 'import json,sys; body=json.load(sys.stdin); results=body.get("results") or []; print(json.dumps({"result_count":len(results),"result_engines":sorted({str(x.get("engine")) for x in results if x.get("engine")}),"unresponsive_engines":body.get("unresponsive_engines") or []},ensure_ascii=False))'
+          }
+
           probe 'stable-authority' 'IANA example domains'
           probe 'software-current' 'Node.js current release'
           probe 'swedish-authority' 'Skatteverket moms 25 procent'
+
+          echo '=== EXPLICIT ENGINE CAPABILITY ==='
+          for engine in \
+            bing \
+            qwant \
+            yahoo \
+            mojeek \
+            yep \
+            seznam \
+            naver \
+            mwmbl \
+            wiby \
+            searchch \
+            wikipedia; do
+            probe_engine "$engine"
+          done
 
           echo '=== DIRECT OUTBOUND HTTPS ==='
           for url in https://www.iana.org/domains/reserved https://nodejs.org/en/download/current https://www.skatteverket.se/; do
@@ -103,7 +130,7 @@ jobs:
 
           echo '=== RECENT SEARXNG WARNINGS/ERRORS ==='
           if [[ -f "$log_file" ]]; then
-            tail -n 400 "$log_file" | grep -Ei 'error|warning|captcha|429|403|access denied|timeout|suspend|engine' | tail -n 160 || true
+            tail -n 500 "$log_file" | grep -Ei 'error|warning|captcha|429|403|access denied|timeout|suspend|engine' | tail -n 180 || true
           else
             echo 'searxng.log missing'
           fi
