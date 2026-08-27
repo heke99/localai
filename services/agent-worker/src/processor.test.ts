@@ -36,7 +36,6 @@ describe("AgentWorkerProcessor", () => {
     const jobs = queue();
     await expect(new AgentWorkerProcessor(jobs, { resolve: () => adapter }, "worker-1").processOnce()).resolves.toBe(true);
     expect(jobs.recordRunIntelligence).toHaveBeenCalledOnce();
-    expect(jobs.recordVerificationRunIntelligence).toBeUndefined;
     expect(jobs.recordVerificationRun).toHaveBeenCalledOnce();
     expect(jobs.complete).toHaveBeenCalledOnce();
     expect(jobs.recordVerificationRun.mock.invocationCallOrder[0]).toBeLessThan(jobs.complete.mock.invocationCallOrder[0]!);
