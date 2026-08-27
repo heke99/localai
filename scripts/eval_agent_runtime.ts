@@ -6,6 +6,12 @@ import { SkillEngine, type SkillManifest } from "@div3rsa/skill-engine";
 import type { ModelAlias } from "@div3rsa/model-sdk";
 import { AgentWorkerProcessor, type AgentQueue, type ClaimedRun } from "../services/agent-worker/src/processor";
 import { CoreToolRuntime } from "../services/agent-worker/src/core-tool-runtime";
+import {
+  resolveLiveEvalOracle,
+  validateLiveOracleOutput,
+  type LiveEvalOracleKind,
+  type LiveEvalOracleResult
+} from "../services/agent-worker/src/eval-oracle";
 
 interface EvalCase {
   id: string;
@@ -16,6 +22,7 @@ interface EvalCase {
   forbiddenTools?: string[];
   requiredSkills?: string[];
   dynamicPattern?: "stockholm-date";
+  liveOracle?: LiveEvalOracleKind;
 }
 
 interface EvalSuite {
@@ -144,6 +151,18 @@ const coreTools = new CoreToolRuntime({
 
 const results = [] as Array<Record<string, unknown>>;
 for (const test of suite.cases) {
+  let liveOracle: LiveEvalOracleResult | null = null;
+  let liveOracleError: string | null = null;
+  if (test.liveOracle) {
+    try {
+      liveOracle = await resolveLiveEvalOracle(test.liveOracle);
+      console.error(`[agent-eval] oracle ${test.id} expected=${liveOracle.expectedValue} source=${liveOracle.sourceUrl}`);
+    } catch (error) {
+      liveOracleError = error instanceof Error ? error.message : "live_oracle_failed";
+      console.error(`[agent-eval] oracle ${test.id} unavailable=${liveOracleError}`);
+    }
+  }
+
   const run: ClaimedRun = {
     jobId: `eval-job-${test.id}`,
     runId: randomUUID(),
@@ -180,6 +199,10 @@ for (const test of suite.cases) {
   for (const tool of test.requiredTools ?? []) if (!toolNames.includes(tool)) failures.push(`required_tool_missing:${tool}`);
   for (const tool of test.forbiddenTools ?? []) if (toolNames.includes(tool)) failures.push(`forbidden_tool_used:${tool}`);
   for (const skill of test.requiredSkills ?? []) if (!queue.skills.includes(skill)) failures.push(`required_skill_missing:${skill}`);
+  if (test.liveOracle) {
+    if (!liveOracle) failures.push(`live_oracle_unavailable:${test.liveOracle}:${liveOracleError ?? "unknown"}`);
+    else failures.push(...validateLiveOracleOutput(output, liveOracle));
+  }
 
   const result = {
     id: test.id,
@@ -192,6 +215,11 @@ for (const test of suite.cases) {
     skills: queue.skills,
     usage: queue.completion?.usage ?? null,
     modelVersionId: queue.completion?.modelVersionId ?? null,
+    liveOracle: test.liveOracle
+      ? liveOracle
+        ? { kind: liveOracle.kind, expectedValue: liveOracle.expectedValue, sourceUrl: liveOracle.sourceUrl, checkedAt: liveOracle.checkedAt }
+        : { kind: test.liveOracle, error: liveOracleError ?? "unknown" }
+      : null,
     output: output.slice(0, 12_000)
   };
   results.push(result);
