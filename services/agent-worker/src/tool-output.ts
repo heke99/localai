@@ -16,8 +16,9 @@ function compactValue(value: unknown, depth: number, seen: WeakSet<object>): unk
   seen.add(value);
   try {
     if (Array.isArray(value)) {
-      const items = value.slice(0, MAX_ARRAY_ITEMS).map((item) => compactValue(item, depth + 1, seen));
-      if (value.length > MAX_ARRAY_ITEMS) items.push({ __truncated_items: value.length - MAX_ARRAY_ITEMS });
+      const keep = value.length > MAX_ARRAY_ITEMS ? MAX_ARRAY_ITEMS - 1 : MAX_ARRAY_ITEMS;
+      const items = value.slice(0, keep).map((item) => compactValue(item, depth + 1, seen));
+      if (value.length > MAX_ARRAY_ITEMS) items.push({ __truncated_items: value.length - keep });
       return items;
     }
     const entries = Object.entries(value as Record<string, unknown>);
