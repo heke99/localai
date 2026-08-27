@@ -6,6 +6,8 @@ const names = [
   "reasoning-router",
   "current-information-research",
   "capacity-benchmarking",
+  "performance-profiling",
+  "evals-benchmarking",
   "writing-plans",
   "test-driven-development",
   "verification-before-completion",
@@ -40,6 +42,6 @@ describe("SkillEngine", () => {
 
   it("activates capacity benchmarking for concurrency tuning", () => {
     const selected = new SkillEngine(manifest).select("code", "Benchmark parallel 1 2 4 8 and compare TTFT p95 throughput");
-    expect(selected.map((item) => item.metadata.name)).toContain("capacity-benchmarking");
+    expect(selected.map((item) => item.metadata.name)).toEqual(expect.arrayContaining(["performance-profiling", "evals-benchmarking", "capacity-benchmarking"]));
   });
 });
