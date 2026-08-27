@@ -39,7 +39,8 @@ export function compactToolOutput(value: unknown, maxSerializedChars = DEFAULT_M
     serialized = JSON.stringify({ error: "tool_result_not_serializable" });
   }
   if (serialized.length <= safeLimit) return serialized;
-  const marker = JSON.stringify({ __truncated: true, originalChars: serialized.length });
-  const payloadBudget = Math.max(1, safeLimit - marker.length - 1);
-  return `${serialized.slice(0, payloadBudget)}${marker}`.slice(0, safeLimit);
+  const previewChars = Math.max(16, Math.min(4_000, Math.floor(safeLimit / 3)));
+  const fallback = JSON.stringify({ __truncated: true, originalChars: serialized.length, preview: serialized.slice(0, previewChars) });
+  if (fallback.length <= safeLimit) return fallback;
+  return JSON.stringify({ __truncated: true, originalChars: serialized.length });
 }
