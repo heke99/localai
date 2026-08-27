@@ -473,6 +473,7 @@ export class AgentWorkerProcessor {
             if (await this.queue.isCancelled(run.runId)) return true;
 
             const evidenceStart = toolTrace.length;
+            const attemptedFallbackUrls = new Set<string>();
             let repairUsage = finalResult.usage;
             let openedNewSource = false;
             messages.push({ role: "assistant", content: finalResult.content });
@@ -544,7 +545,7 @@ export class AgentWorkerProcessor {
                   .filter((item) => item.name === "web_fetch" && typeof item.input.url === "string")
                   .map((item) => String(item.input.url)));
                 const candidate = rankSearchCandidates(searchOutput, contract.normalizedPrompt)
-                  .find((item) => !openedUrls.has(item.url));
+                  .find((item) => !openedUrls.has(item.url) && !attemptedFallbackUrls.has(item.url));
                 if (!candidate) {
                   await this.queue.step(run.runId, "tool", "blocked", "Deterministic evidence fallback found no new source", {
                     verificationRound,
@@ -553,6 +554,8 @@ export class AgentWorkerProcessor {
                   });
                   continue;
                 }
+
+                attemptedFallbackUrls.add(candidate.url);
 
                 const fetchCall: ModelToolCall = {
                   id: `${run.requestId}:grounding-fallback-fetch:${verificationRound}:${researchAttempt}`,
