@@ -31,6 +31,7 @@ function available(definitions: ModelToolDefinition[], name: string): boolean {
 }
 
 const latestIntentPattern = /\b(?:latest|current|newest|most\s+recent|latest\s+release|senaste|nyaste|aktuell(?:a|t)?)\b/i;
+const latestArtifactIntentPattern = /(?:\b(?:latest|newest|most\s+recent|senaste|nyaste|current|aktuell(?:a|t)?)\b[\s\S]{0,80}\b(?:release|version(?:en)?|build|firmware)\b)|(?:\b(?:release|version(?:en)?|build|firmware)\b[\s\S]{0,80}\b(?:latest|newest|most\s+recent|senaste|nyaste|current|aktuell(?:a|t)?)\b)/i;
 const explicitCurrentPathPattern = /(?:^|\/)(?:latest|current)(?:\/|$)/i;
 const explicitCurrentLabelPattern = /\b(?:latest\s+(?:release|version)|current\s+(?:release|version))\b/i;
 const downloadIndexPattern = /(?:^|\/)downloads?(?:\/|$)/i;
@@ -82,6 +83,11 @@ function publishedTimestamp(value: unknown): number {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
+function searchResults(output: unknown): unknown[] {
+  const body = record(output);
+  return Array.isArray(body?.results) ? body.results : [];
+}
+
 export interface RankedSearchCandidate {
   url: string;
   rank: number;
@@ -91,8 +97,7 @@ export interface RankedSearchCandidate {
 }
 
 export function rankSearchCandidates(output: unknown, prompt: string): RankedSearchCandidate[] {
-  const body = record(output);
-  const results = Array.isArray(body?.results) ? body!.results : [];
+  const results = searchResults(output);
   const seen = new Set<string>();
   const asksLatest = latestIntentPattern.test(prompt);
   const candidates = results.flatMap((item, index) => {
@@ -179,6 +184,8 @@ export async function collectRequiredFreshnessEvidence(input: {
   if (!available(definitions, "web_fetch")) throw new Error("required_web_fetch_tool_unavailable");
 
   const searchQueries = freshnessSearchQueries(normalizedPrompt);
+  const requiresLatestArtifactEvidence = latestArtifactIntentPattern.test(normalizedPrompt);
+  const mergedResults: unknown[] = [];
   let candidates: RankedSearchCandidate[] = [];
   for (let index = 0; index < searchQueries.length; index += 1) {
     const query = searchQueries[index]!;
@@ -195,6 +202,11 @@ export async function collectRequiredFreshnessEvidence(input: {
           input: { query, limit: 12 }
         }
       });
+      if (requiresLatestArtifactEvidence) {
+        mergedResults.push(...searchResults(searchOutput));
+        candidates = rankSearchCandidates({ results: mergedResults }, normalizedPrompt);
+        continue;
+      }
       candidates = rankSearchCandidates(searchOutput, normalizedPrompt);
       if (candidates.length) break;
     } catch (error) {
@@ -209,16 +221,21 @@ export async function collectRequiredFreshnessEvidence(input: {
   }
 
   if (!candidates.length) throw new Error("current_information_search_returned_no_sources");
-  const targetSources = task.researchDepth === "deep" || task.risk === "high" || task.risk === "critical" ? 2 : 1;
+  const baselineTargetSources = task.researchDepth === "deep" || task.risk === "high" || task.risk === "critical" ? 2 : 1;
+  const targetSources = requiresLatestArtifactEvidence
+    ? Math.max(baselineTargetSources, Math.min(2, candidates.length))
+    : baselineTargetSources;
   const fetchedHosts = new Set<string>();
   let fetched = 0;
+  let fetchAttempt = 0;
   let lastError: unknown = null;
 
   for (const candidate of candidates) {
     if (fetched >= targetSources) break;
     let hostname = "";
     try { hostname = new URL(candidate.url).hostname.toLowerCase(); } catch { continue; }
-    if (fetchedHosts.has(hostname)) continue;
+    if (!requiresLatestArtifactEvidence && fetchedHosts.has(hostname)) continue;
+    fetchAttempt += 1;
     try {
       await executeRequiredTool({
         queue,
@@ -227,7 +244,7 @@ export async function collectRequiredFreshnessEvidence(input: {
         messages,
         trace,
         call: {
-          id: `${run.requestId}:freshness:fetch:${fetched + 1}`,
+          id: `${run.requestId}:freshness:fetch:${fetchAttempt}`,
           name: "web_fetch",
           input: { url: candidate.url }
         }
