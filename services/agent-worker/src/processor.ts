@@ -19,6 +19,8 @@ import { executeRepositoryTool, repositoryToolDefinitions } from "./repository-t
 import { SandboxVerificationRuntime } from "./sandbox-verification";
 import { compactToolOutput } from "./tool-output";
 import { collectRequiredFreshnessEvidence } from "./freshness-preflight";
+import { deterministicTimeResult, groundedSynthesisMessages, mergeUsage } from "./final-grounding";
+import { evaluateResponseIntegrity, needsGroundedSynthesis } from "./response-integrity";
 import {
   createWorkerVerificationExecutor,
   hasMutation,
@@ -129,7 +131,13 @@ function dependencyDepth(repoDepth: "none" | "targeted" | "dependency" | "full")
   return 0;
 }
 
-async function generateWithCancellation(queue: AgentQueue, model: ModelAdapter, run: ClaimedRun, request: GenerateRequest): Promise<GenerateResult | null> {
+async function generateWithCancellation(
+  queue: AgentQueue,
+  model: ModelAdapter,
+  run: ClaimedRun,
+  request: GenerateRequest,
+  streamOutput = true
+): Promise<GenerateResult | null> {
   const controller = new AbortController();
   let cancelled = false;
   let polling = false;
@@ -146,6 +154,7 @@ async function generateWithCancellation(queue: AgentQueue, model: ModelAdapter, 
   };
 
   const onDelta = async (delta: string) => {
+    if (!streamOutput) return;
     pendingStream += delta;
     if (pendingStream.length >= STREAM_FLUSH_CHARS || performance.now() - lastStreamFlush >= STREAM_FLUSH_MS) await flushStream();
   };
@@ -169,10 +178,10 @@ async function generateWithCancellation(queue: AgentQueue, model: ModelAdapter, 
   timer.unref?.();
   try {
     const streamed = model.generateStreamed;
-    const result = streamed
+    const result = streamOutput && streamed
       ? await streamed.call(model, { ...request, signal: controller.signal }, onDelta)
       : await model.generate({ ...request, signal: controller.signal });
-    await flushStream();
+    if (streamOutput) await flushStream();
     return result;
   } catch (error) {
     if (cancelled) return null;
@@ -318,39 +327,97 @@ export class AgentWorkerProcessor {
       });
       if (await this.queue.isCancelled(run.runId)) return true;
 
+      const deterministicFreshness = deterministicTimeResult(task, contract.normalizedPrompt, toolTrace);
+      if (deterministicFreshness) {
+        await this.queue.stream(run.runId, deterministicFreshness.content, true);
+        await this.queue.step(run.runId, "model", "completed", "Finalize deterministic live time answer from current_time", {
+          deterministic: true,
+          liveDataKind: task.liveDataKind
+        });
+      }
+
       for (let verificationRound = 0; verificationRound < executionPolicy.verificationRounds; verificationRound += 1) {
-        let finalResult: Awaited<ReturnType<ModelAdapter["generate"]>> | null = null;
-        for (let iteration = 0; iteration < executionPolicy.maxToolIterations && modelTurns < executionPolicy.maxModelTurns; iteration += 1) {
-          if (await this.queue.isCancelled(run.runId)) return true;
-          await this.queue.stream(run.runId, "", true);
-          await this.queue.step(run.runId, "model", "running", modelTurns === 0 ? "Generate model response" : "Continue agent loop", { iteration, verificationRound, modelTurn: modelTurns, reasoningLevel: task.reasoningLevel, informationFreshness: task.informationFreshness, executionTier: executionPolicy.tier });
-          const result = await generateWithCancellation(this.queue, this.models.resolve(run.modelAlias), run, {
-            requestId: `${run.requestId}:${verificationRound}:${iteration}`,
-            alias: run.modelAlias,
-            messages,
-            tools: toolDefinitions
-          });
-          if (!result) return true;
-          modelTurns += 1;
-          if (result.finishReason !== "tool_call") {
-            finalResult = result;
-            break;
-          }
-          await this.queue.stream(run.runId, "", true);
-          if (!result.toolCalls?.length) throw new Error("malformed_tool_call_response");
-          messages.push({ role: "assistant", content: result.content, toolCalls: result.toolCalls });
-          for (const call of result.toolCalls) {
+        let finalResult: Awaited<ReturnType<ModelAdapter["generate"]>> | null = deterministicFreshness;
+        if (!finalResult) {
+          for (let iteration = 0; iteration < executionPolicy.maxToolIterations && modelTurns < executionPolicy.maxModelTurns; iteration += 1) {
             if (await this.queue.isCancelled(run.runId)) return true;
-            loopGuard.record({ action: call.name, inputHash: hashInput(call.input) });
-            await this.queue.step(run.runId, "tool", "waiting_for_tool", call.name, { toolCallId: call.id, resourceId: call.input.resourceId, verificationRound });
-            const localRepositoryOutput = executeRepositoryTool(activeWorkspace, call);
-            const output = localRepositoryOutput === undefined ? await this.tools.execute(run, call) : localRepositoryOutput;
-            toolTrace.push({ sequence: toolTrace.length + 1, name: call.name, input: call.input, output });
-            messages.push({ role: "tool", name: call.name, toolCallId: call.id, content: compactToolOutput(output) });
+            await this.queue.stream(run.runId, "", true);
+            await this.queue.step(run.runId, "model", "running", modelTurns === 0 ? "Generate model response" : "Continue agent loop", { iteration, verificationRound, modelTurn: modelTurns, reasoningLevel: task.reasoningLevel, informationFreshness: task.informationFreshness, executionTier: executionPolicy.tier });
+            const externalCurrentDraft = task.requiresCurrentInformation && task.liveDataKind !== "time";
+            const result = await generateWithCancellation(this.queue, this.models.resolve(run.modelAlias), run, {
+              requestId: `${run.requestId}:${verificationRound}:${iteration}`,
+              alias: run.modelAlias,
+              messages,
+              tools: toolDefinitions
+            }, !externalCurrentDraft);
+            if (!result) return true;
+            modelTurns += 1;
+            if (result.finishReason !== "tool_call") {
+              finalResult = result;
+              break;
+            }
+            await this.queue.stream(run.runId, "", true);
+            if (!result.toolCalls?.length) throw new Error("malformed_tool_call_response");
+            messages.push({ role: "assistant", content: result.content, toolCalls: result.toolCalls });
+            for (const call of result.toolCalls) {
+              if (await this.queue.isCancelled(run.runId)) return true;
+              loopGuard.record({ action: call.name, inputHash: hashInput(call.input) });
+              await this.queue.step(run.runId, "tool", "waiting_for_tool", call.name, { toolCallId: call.id, resourceId: call.input.resourceId, verificationRound });
+              const localRepositoryOutput = executeRepositoryTool(activeWorkspace, call);
+              const output = localRepositoryOutput === undefined ? await this.tools.execute(run, call) : localRepositoryOutput;
+              toolTrace.push({ sequence: toolTrace.length + 1, name: call.name, input: call.input, output });
+              messages.push({ role: "tool", name: call.name, toolCallId: call.id, content: compactToolOutput(output) });
+            }
           }
         }
 
         if (!finalResult) throw new Error(modelTurns >= executionPolicy.maxModelTurns ? "model_turn_limit_exceeded" : "tool_loop_limit_exceeded");
+
+        if (!deterministicFreshness && needsGroundedSynthesis(finalResult.content, task)) {
+          let synthesisDraft = finalResult;
+          let synthesized: GenerateResult | null = null;
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            if (modelTurns >= executionPolicy.maxModelTurns) throw new Error("model_turn_limit_exceeded");
+            if (await this.queue.isCancelled(run.runId)) return true;
+            await this.queue.stream(run.runId, "", true);
+            await this.queue.step(run.runId, "model", "running", attempt === 0 ? "Synthesize grounded final answer" : "Repair grounded final answer", {
+              verificationRound,
+              modelTurn: modelTurns,
+              synthesisAttempt: attempt,
+              toolFree: true,
+              informationFreshness: task.informationFreshness
+            });
+            const synthesis = await generateWithCancellation(this.queue, this.models.resolve(run.modelAlias), run, {
+              requestId: `${run.requestId}:${verificationRound}:synthesis:${attempt}`,
+              alias: run.modelAlias,
+              messages: groundedSynthesisMessages({
+                messages,
+                draft: synthesisDraft.content,
+                originalPrompt: contract.normalizedPrompt,
+                attempt
+              }),
+              tools: [],
+              temperature: 0,
+              maxOutputTokens: 1200
+            });
+            if (!synthesis) return true;
+            modelTurns += 1;
+            synthesisDraft = { ...synthesis, usage: mergeUsage(synthesisDraft.usage, synthesis.usage) };
+            const integrity = evaluateResponseIntegrity(synthesisDraft.content, task);
+            if (synthesisDraft.finishReason === "stop" && integrity.passed) {
+              synthesized = synthesisDraft;
+              break;
+            }
+            await this.queue.step(run.runId, "verify", "verifying", "Grounded synthesis was not final; retrying without tools", {
+              verificationRound,
+              synthesisAttempt: attempt,
+              finishReason: synthesisDraft.finishReason,
+              integrity: integrity.reason
+            });
+          }
+          if (!synthesized) throw new Error("grounded_synthesis_failed");
+          finalResult = synthesized;
+        }
 
         const mutationMissing = expectsMutation(task, run) && !hasMutation(toolTrace);
         if (mutationMissing) {
