@@ -22,8 +22,17 @@ export function RunStreamPreview({ runId, conversationId, activeConversationId, 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
 
   useEffect(() => {
+    if (activeConversationId !== conversationId) {
+      setSnapshot(null);
+      return;
+    }
+    // Preserve the last streamed answer while the parent replaces it with the
+    // persisted assistant message. This prevents very fast deterministic runs
+    // from briefly disappearing when status reaches completed before the
+    // conversation refresh finishes.
+    if (terminal) return;
+
     setSnapshot(null);
-    if (terminal || activeConversationId !== conversationId) return;
     const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream`);
     const onSnapshot = (event: MessageEvent<string>) => {
       try {
@@ -46,8 +55,8 @@ export function RunStreamPreview({ runId, conversationId, activeConversationId, 
     };
   }, [runId, conversationId, activeConversationId, terminal]);
 
-  if (terminal || activeConversationId !== conversationId || !snapshot?.content) return null;
-  return <div className={styles.messageStream} data-run-stream={runId}>
+  if (activeConversationId !== conversationId || !snapshot?.content) return null;
+  return <div className={styles.messageStream} data-run-stream={runId} data-stream-revision={snapshot.revision}>
     <article className={`${styles.message} ${styles.assistantMessage}`}>
       <div className={styles.messageMeta}>DIV3RSA</div>
       <div className={styles.messageBody}>{snapshot.content}</div>
