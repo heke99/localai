@@ -91,6 +91,18 @@ search:
     - html
     - json
 
+# GPUHub production probes on 2026-08-27 proved that the default general-web
+# engines could all fail behind CAPTCHA/rate-limit/403 while SearXNG still
+# returned HTTP 200 with an empty results array. Bing and Yahoo were verified
+# from the same host to return real web results; Yahoo also returned official
+# Skatteverket sources while both returned official Node.js sources. Keep the
+# default engine catalog intact and explicitly activate this redundant pair.
+engines:
+  - name: bing
+    disabled: false
+  - name: yahoo
+    disabled: false
+
 server:
   bind_address: "127.0.0.1"
   limiter: false
@@ -128,10 +140,45 @@ screen -dmS "$SCREEN_NAME" bash -lc "
   exec '$VENV_DIR/bin/python' -m searx.webapp >>'$LOG_DIR/searxng.log' 2>&1
 "
 
+search_has_results() {
+  local url="$1"
+  local response_file
+  response_file="$(mktemp)"
+  if ! curl --fail --silent --show-error --max-time 10 "$url" >"$response_file" 2>/dev/null; then
+    rm -f "$response_file"
+    return 1
+  fi
+  if "$VENV_DIR/bin/python" - "$response_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+results = payload.get("results") or []
+if results:
+    raise SystemExit(0)
+
+unresponsive = payload.get("unresponsive_engines") or []
+print(
+    "SearXNG returned HTTP success but no usable results; "
+    f"unresponsive_engines={json.dumps(unresponsive, ensure_ascii=False)}",
+    file=sys.stderr,
+)
+raise SystemExit(1)
+PY
+  then
+    rm -f "$response_file"
+    return 0
+  fi
+  rm -f "$response_file"
+  return 1
+}
+
 deadline=$((SECONDS + ${DIV3RSA_SEARCH_BOOT_TIMEOUT_SECONDS:-120}))
-health_url="http://127.0.0.1:${SEARCH_PORT}/search?q=div3rsa-health&format=json"
+health_url="http://127.0.0.1:${SEARCH_PORT}/search?q=IANA%20example%20domains&format=json"
 while true; do
-  if curl --fail --silent --show-error --max-time 8 "$health_url" >/dev/null 2>&1; then
+  if search_has_results "$health_url"; then
     break
   fi
   if ! screen -list | grep -F ".${SCREEN_NAME}" >/dev/null 2>&1; then
@@ -140,12 +187,12 @@ while true; do
     exit 70
   fi
   if (( SECONDS >= deadline )); then
-    log "native SearXNG did not become healthy"
+    log "native SearXNG did not become search-capable"
     tail -n 120 "$LOG_DIR/searxng.log" 2>/dev/null || true
     exit 70
   fi
   sleep 2
 done
 
-log "native SearXNG healthy at revision ${SEARXNG_REVISION}"
+log "native SearXNG search-capable at revision ${SEARXNG_REVISION}"
 printf 'DIV3RSA_SEARCH_BASE_URL=http://127.0.0.1:%s\n' "$SEARCH_PORT"
