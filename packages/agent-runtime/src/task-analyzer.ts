@@ -85,6 +85,7 @@ const CURRENT_LANGUAGE = /\b(latest|newest|current|currently|today|recent|recent
 const LIVE_FACT = /\b(what time is it|current time|time in|klockan|vilken tid|weather|väder|forecast|prognos|exchange rate|valutakurs|stock price|aktiekurs|live score|livescore|traffic|trafik|availability|lagerstatus|in stock)\b/i;
 const CHANGEABLE_DOMAIN = /\b(law|legal|regulation|rule|policy|tax|vat|visa|immigration|permit|government|authority|fee|price|cost|news|election|president|minister|ceo|version|release|documentation|api docs|software version|schedule|timetable|flight|hotel|travel advice|sanction|tariff|customs|interest rate|market rate|lag|juridik|regel|regler|skatt|moms|visum|uppehållstillstånd|arbetstillstånd|myndighet|avgift|pris|kostnad|nyhet|val|statsminister|vd|version|dokumentation|tidtabell|flyg|hotell|reseråd|sanktion|tull|ränta)\b/i;
 const DEEP_REASONING = /\b(deep|deeply|thorough|comprehensive|root cause|whole|entire|all affected|end[- ]to[- ]end|multi[- ]agent|djup|grundlig|hela|samtliga|rotorsak)\b/i;
+const EXPLICIT_REPOSITORY_CONTEXT = /\b(repository|repo|codebase|project files?|source files?|github|branch|pull request|code repo|kodbas|repo:t|repository:t|filerna i projektet)\b/i;
 
 const unique = <T>(values: T[]) => [...new Set(values)];
 
@@ -145,13 +146,14 @@ export function analyzeTask(mode: AgentMode, prompt: string, project: ProjectCon
   ]);
   const risk = riskFor(categories, prompt, mode);
   const complexity = complexityFor(categories, prompt, project);
-  const requiresRepository = mode === "code" || categories.some((category) => ["build", "bugfix", "debug", "refactor", "audit", "repo_understanding", "architecture", "testing"].includes(category));
+  const repositoryIntent = categories.some((category) => ["build", "bugfix", "debug", "refactor", "audit", "repo_understanding", "architecture", "testing"].includes(category));
+  const requiresRepository = mode === "code" || (repositoryIntent && EXPLICIT_REPOSITORY_CONTEXT.test(prompt));
   const requiresBrowser = categories.some((category) => ["frontend", "design", "testing", "performance"].includes(category));
   const requiresDatabase = categories.some((category) => ["database", "migration"].includes(category));
   const requiresDeployment = categories.includes("deployment");
   const requiresSecurityReview = risk === "critical" || risk === "high" || categories.includes("security");
   const information = informationRouting(mode, prompt, complexity);
-  const reasoningLevel = reasoningFor(risk, complexity, prompt, information.requiresCurrentInformation, information.requiresLiveData, requiresRepository && mode === "code");
+  const reasoningLevel = reasoningFor(risk, complexity, prompt, information.requiresCurrentInformation, information.requiresLiveData, requiresRepository);
 
   const verificationRequirements = unique([
     "diff-review",
