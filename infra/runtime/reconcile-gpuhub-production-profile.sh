@@ -15,16 +15,22 @@ SEARCH_CHECK="${REPO_DIR}/infra/runtime/check-search-capability.sh"
 MODEL_PORT="${DIV3RSA_MODEL_PORT:-6006}"
 SCREEN_NAME="${DIV3RSA_LEGACY_WORKER_SCREEN:-localai-agent}"
 API_KEY_FILE="${DIV3RSA_INFERENCE_API_KEY_FILE:-${ROOT_DIR}/secrets/inference-api-key}"
+VERIFY_ATTEMPTS="${DIV3RSA_GPUHUB_PROFILE_VERIFY_ATTEMPTS:-15}"
+VERIFY_POLL_SECONDS="${DIV3RSA_GPUHUB_PROFILE_VERIFY_POLL_SECONDS:-1}"
 ENV_BACKUP=""
 BEFORE_PARALLEL=""
 BEFORE_TOTAL_CONTEXT=""
 MUTATED=0
+PROFILE_READ_DETAIL="not_checked"
+VERIFY_DETAIL="not_checked"
 
 [[ -f "$PROFILE_FILE" ]] || fatal "tracked GPUHub production profile missing: $PROFILE_FILE"
 [[ -f "$ENV_FILE" ]] || fatal "worker env missing: $ENV_FILE"
 [[ -f "$RECOVERY_SCRIPT" ]] || fatal "recovery script missing: $RECOVERY_SCRIPT"
 [[ -f "$SEARCH_CHECK" ]] || fatal "search checker missing: $SEARCH_CHECK"
 [[ -r "$API_KEY_FILE" ]] || fatal "inference API key file missing: $API_KEY_FILE"
+[[ "$VERIFY_ATTEMPTS" =~ ^[0-9]+$ && "$VERIFY_ATTEMPTS" -ge 1 ]] || fatal "invalid verification attempts: $VERIFY_ATTEMPTS"
+[[ "$VERIFY_POLL_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || fatal "invalid verification poll seconds: $VERIFY_POLL_SECONDS"
 # shellcheck disable=SC1090
 source "$PROFILE_FILE"
 TARGET_PARALLEL="${DIV3RSA_GPUHUB_PRODUCTION_PARALLEL:-}"
@@ -56,23 +62,66 @@ PY
 read_active_profile() {
   local cmd
   mapfile -t pids < <(pgrep -f 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf' || true)
-  [[ "${#pids[@]}" -eq 1 ]] || return 1
+  if [[ "${#pids[@]}" -ne 1 ]]; then
+    PROFILE_READ_DETAIL="llama_process_count=${#pids[@]}"
+    return 1
+  fi
   cmd="$(tr '\0' ' ' <"/proc/${pids[0]}/cmdline")"
   ACTIVE_PARALLEL="$(sed -nE 's/.*--parallel[= ]+([0-9]+).*/\1/p' <<<"$cmd")"
   ACTIVE_TOTAL_CONTEXT="$(sed -nE 's/.*--ctx-size[= ]+([0-9]+).*/\1/p' <<<"$cmd")"
-  [[ "$ACTIVE_PARALLEL" =~ ^[0-9]+$ && "$ACTIVE_TOTAL_CONTEXT" =~ ^[0-9]+$ ]] || return 1
+  if [[ ! "$ACTIVE_PARALLEL" =~ ^[0-9]+$ || ! "$ACTIVE_TOTAL_CONTEXT" =~ ^[0-9]+$ ]]; then
+    PROFILE_READ_DETAIL="llama_profile_flags_unreadable"
+    return 1
+  fi
+  PROFILE_READ_DETAIL="parallel=${ACTIVE_PARALLEL} total_context=${ACTIVE_TOTAL_CONTEXT}"
+}
+
+verify_target_once() {
+  local reported
+  if ! read_active_profile; then
+    VERIFY_DETAIL="$PROFILE_READ_DETAIL"
+    return 1
+  fi
+  if [[ "$ACTIVE_PARALLEL" != "$TARGET_PARALLEL" || "$ACTIVE_TOTAL_CONTEXT" != "$TARGET_TOTAL_CONTEXT" ]]; then
+    VERIFY_DETAIL="profile_mismatch active=${ACTIVE_PARALLEL}/${ACTIVE_TOTAL_CONTEXT} target=${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}"
+    return 1
+  fi
+  if ! curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${MODEL_PORT}/health" >/dev/null; then
+    VERIFY_DETAIL="model_health_unavailable"
+    return 1
+  fi
+  if ! screen -list | grep -F ".${SCREEN_NAME}" >/dev/null; then
+    VERIFY_DETAIL="worker_screen_missing"
+    return 1
+  fi
+  if ! bash "$SEARCH_CHECK" http://127.0.0.1:8890 >/dev/null; then
+    VERIFY_DETAIL="search_unavailable"
+    return 1
+  fi
+  if ! reported="$(curl --fail --silent --show-error --max-time 5 \
+    -H "Authorization: Bearer $(head -n1 "$API_KEY_FILE")" \
+    "http://127.0.0.1:${MODEL_PORT}/props" | python3 -c 'import json,sys; v=json.load(sys.stdin).get("default_generation_settings",{}).get("n_ctx"); print(v if isinstance(v,int) else "")')"; then
+    VERIFY_DETAIL="model_props_unavailable"
+    return 1
+  fi
+  if [[ ! "$reported" =~ ^[0-9]+$ || "$reported" -lt "$TARGET_CONTEXT_PER_SLOT" ]]; then
+    VERIFY_DETAIL="reported_context_too_small reported=${reported:-missing} required=${TARGET_CONTEXT_PER_SLOT}"
+    return 1
+  fi
+  VERIFY_DETAIL="ok active=${ACTIVE_PARALLEL}/${ACTIVE_TOTAL_CONTEXT} reported_context=${reported}"
 }
 
 verify_target() {
-  read_active_profile || return 1
-  [[ "$ACTIVE_PARALLEL" == "$TARGET_PARALLEL" && "$ACTIVE_TOTAL_CONTEXT" == "$TARGET_TOTAL_CONTEXT" ]] || return 1
-  curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${MODEL_PORT}/health" >/dev/null || return 1
-  screen -list | grep -F ".${SCREEN_NAME}" >/dev/null || return 1
-  bash "$SEARCH_CHECK" http://127.0.0.1:8890 >/dev/null || return 1
-  reported="$(curl --fail --silent --show-error --max-time 5 \
-    -H "Authorization: Bearer $(head -n1 "$API_KEY_FILE")" \
-    "http://127.0.0.1:${MODEL_PORT}/props" | python3 -c 'import json,sys; v=json.load(sys.stdin).get("default_generation_settings",{}).get("n_ctx"); print(v if isinstance(v,int) else "")')"
-  [[ "$reported" =~ ^[0-9]+$ && "$reported" -ge "$TARGET_CONTEXT_PER_SLOT" ]] || return 1
+  local attempt
+  for ((attempt=1; attempt<=VERIFY_ATTEMPTS; attempt++)); do
+    if verify_target_once; then
+      [[ "$attempt" -gt 1 ]] && log "tracked profile verification stabilized on attempt ${attempt}/${VERIFY_ATTEMPTS}: ${VERIFY_DETAIL}"
+      return 0
+    fi
+    log "tracked profile verification pending attempt ${attempt}/${VERIFY_ATTEMPTS}: ${VERIFY_DETAIL}"
+    [[ "$attempt" -lt "$VERIFY_ATTEMPTS" ]] && sleep "$VERIFY_POLL_SECONDS"
+  done
+  return 1
 }
 
 rollback_on_exit() {
@@ -92,7 +141,7 @@ rollback_on_exit() {
 }
 trap rollback_on_exit EXIT
 
-read_active_profile || fatal "could not read active llama.cpp profile before reconciliation"
+read_active_profile || fatal "could not read active llama.cpp profile before reconciliation: ${PROFILE_READ_DETAIL}"
 BEFORE_PARALLEL="$ACTIVE_PARALLEL"
 BEFORE_TOTAL_CONTEXT="$ACTIVE_TOTAL_CONTEXT"
 ENV_BACKUP="$(mktemp /tmp/div3rsa-gpuhub-env.XXXXXX)"
@@ -116,7 +165,7 @@ else
   log "llama.cpp already matches tracked production profile ${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}"
 fi
 
-verify_target || fatal "tracked production profile verification failed"
+verify_target || fatal "tracked production profile verification failed after ${VERIFY_ATTEMPTS} attempts: ${VERIFY_DETAIL}"
 MUTATED=0
 rm -f "$ENV_BACKUP"
 trap - EXIT
