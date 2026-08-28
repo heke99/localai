@@ -66,7 +66,7 @@ describe("Agent Kernel V2 contracts", () => {
     const missingCapability = validPlan();
     expect(() => assertValidKernelPlan({
       ...missingCapability,
-      agents: missingCapability.agents.map((agent) => agent.agentId === "coder" ? { ...agent, capabilities: ["reasoning"] } : agent)
+      agents: missingCapability.agents.map((agent) => agent.agentId === "coder" ? { ...agent, capabilities: ["reasoning"] as const } : agent)
     })).toThrow(/lacks capability repository/);
 
     const cyclic = validPlan();
