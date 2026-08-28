@@ -5,6 +5,8 @@ import { AgentWorkerProcessor } from "./processor";
 import { SupabaseAgentQueue } from "./supabase-queue";
 import { AgentKernelShadowQueue } from "./agent-kernel/shadow-queue";
 import { agentKernelConfigFromEnvironment } from "./agent-kernel/config";
+import { AgentKernelShadowProbeRunner } from "./agent-kernel/shadow-probe";
+import { shadowProbeConfigFromEnvironment } from "./agent-kernel/shadow-probe-config";
 import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
 import { CompositeWorkerToolRuntime } from "./composite-tool-runtime";
 import { CoreToolRuntime } from "./core-tool-runtime";
@@ -86,7 +88,11 @@ const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApi
 const adapter = new OpenAiCompatibleAdapter(inferenceBaseUrl, inferenceApiKey, fetch, admission);
 const baseQueue = new SupabaseAgentQueue(supabase);
 const agentKernelConfig = agentKernelConfigFromEnvironment();
-const queue = new AgentKernelShadowQueue(baseQueue, agentKernelConfig);
+const shadowProbeConfig = shadowProbeConfigFromEnvironment();
+const shadowProbeRunner = agentKernelConfig.enabled && agentKernelConfig.mode === "shadow"
+  ? new AgentKernelShadowProbeRunner(shadowProbeConfig, { generate: (input) => adapter.generate(input) })
+  : undefined;
+const queue = new AgentKernelShadowQueue(baseQueue, agentKernelConfig, shadowProbeRunner);
 const workerId = process.env.DIV3RSA_WORKER_ID ?? `agent-worker-${process.pid}`;
 const runtimeConfig = runtimeRegistrationConfigFromEnvironment(modelPort);
 const runtimeRegistration = runtimeConfig
@@ -188,7 +194,7 @@ if (runtimeRegistration) {
 
 const idlePollMs = Math.max(50, numericEnvironment("DIV3RSA_QUEUE_IDLE_POLL_MS", 100));
 const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BACKOFF_MS", 750));
-console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; aggregateIdlePollMs=${idlePollMs}`);
+console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; aggregateIdlePollMs=${idlePollMs}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}`);
 
 await runWorkerLanes({
   concurrency: workerConcurrency,
