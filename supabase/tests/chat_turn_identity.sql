@@ -4,9 +4,13 @@ declare
   claim_definition text;
   complete_definition text;
   get_definition text;
+  resume_internal_definition text;
+  resume_public_definition text;
   normalized_complete text;
   input_unique boolean;
   output_unique boolean;
+  resume_internal_definer boolean;
+  resume_public_definer boolean;
 begin
   if not exists (
     select 1 from information_schema.columns
@@ -71,6 +75,38 @@ begin
     raise exception 'get_agent_run does not expose exact conversation/output identity';
   end if;
 
+  select pg_get_functiondef('internal.get_active_agent_run_for_conversation(uuid)'::regprocedure), p.prosecdef
+  into resume_internal_definition, resume_internal_definer
+  from pg_proc p
+  where p.oid='internal.get_active_agent_run_for_conversation(uuid)'::regprocedure;
+
+  if not coalesce(resume_internal_definer,false)
+     or position('auth.uid()' in lower(resume_internal_definition)) = 0
+     or position('internal.is_workspace_member' in lower(resume_internal_definition)) = 0
+     or position('r.requested_by = actor_id' in lower(resume_internal_definition)) = 0
+     or position('waiting_for_tool' in lower(resume_internal_definition)) = 0 then
+    raise exception 'active-run resume helper is not strongly authenticated and scoped';
+  end if;
+
+  select pg_get_functiondef('public.get_active_agent_run(uuid)'::regprocedure), p.prosecdef
+  into resume_public_definition, resume_public_definer
+  from pg_proc p
+  where p.oid='public.get_active_agent_run(uuid)'::regprocedure;
+
+  if coalesce(resume_public_definer,true)
+     or position('internal.get_active_agent_run_for_conversation' in lower(resume_public_definition)) = 0 then
+    raise exception 'public active-run wrapper must remain security invoker and delegate to the guarded helper';
+  end if;
+
+  if not has_function_privilege('authenticated', 'public.get_active_agent_run(uuid)', 'execute') then
+    raise exception 'authenticated cannot resume its own active run';
+  end if;
+  if has_function_privilege('anon', 'public.get_active_agent_run(uuid)', 'execute') then
+    raise exception 'anon can call active-run resume RPC';
+  end if;
+  if has_table_privilege('authenticated', 'internal.agent_runs', 'select') then
+    raise exception 'authenticated gained direct SELECT access to internal.agent_runs';
+  end if;
   if has_function_privilege('authenticated', 'public.worker_complete_agent_run(uuid,uuid,text,uuid,jsonb)', 'execute') then
     raise exception 'authenticated can complete worker jobs';
   end if;
