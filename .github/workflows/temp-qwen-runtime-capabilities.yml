@@ -1,0 +1,69 @@
+name: Temporary Qwen runtime capabilities
+
+on:
+  push:
+    branches: ["perf/qwen-runtime-latency-20260828"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpuhub-production
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production-gpuhub
+    env:
+      GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
+      GPUHUB_SSH_PORT: ${{ secrets.GPUHUB_SSH_PORT }}
+      GPUHUB_SSH_USER: ${{ secrets.GPUHUB_SSH_USER }}
+      GPUHUB_SSH_PRIVATE_KEY: ${{ secrets.GPUHUB_SSH_PRIVATE_KEY }}
+      GPUHUB_SSH_KNOWN_HOSTS: ${{ secrets.GPUHUB_SSH_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Configure pinned SSH identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in GPUHUB_SSH_HOST GPUHUB_SSH_PORT GPUHUB_SSH_USER GPUHUB_SSH_PRIVATE_KEY GPUHUB_SSH_KNOWN_HOSTS; do
+            [[ -n "${!name:-}" ]] || { echo "Missing $name" >&2; exit 1; }
+          done
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Inspect production runtime without mutation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          remote="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
+          opts=(-i "$HOME/.ssh/id_ed25519" -p "$GPUHUB_SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          ssh "${opts[@]}" "$remote" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          root=/root/autodl-tmp/localai
+          app="$root/app"
+          server="$root/runtime/llama.cpp/build/bin/llama-server"
+          cd "$app"
+          echo "=== APP SHA ==="
+          git rev-parse HEAD
+          echo "=== LLAMA PROCESS ==="
+          pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf' || true
+          echo "=== SERVER VERSION ==="
+          "$server" --version || true
+          echo "=== RELEVANT HELP ==="
+          "$server" --help 2>&1 | grep -Ei -C 2 'cache-reuse|speculat|draft|ngram|lookup|slot-save|cache-prompt|cont-batching|batch-size|ubatch-size' || true
+          echo "=== GPU ==="
+          nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,pstate,clocks.sm,clocks.mem --format=csv,noheader
+          echo "=== SLOTS ==="
+          key="$(cat "$root/secrets/inference-api-key")"
+          curl --fail --silent --show-error -H "Authorization: Bearer $key" http://127.0.0.1:6006/slots | head -c 12000
+          echo
+          REMOTE
