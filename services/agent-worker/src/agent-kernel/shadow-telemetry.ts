@@ -8,7 +8,7 @@ export interface LegacyExecutionSnapshot {
   readonly repoDepth: string;
   readonly verificationRounds: number;
   readonly selectedSkills: readonly string[];
-  readonly toolNames: readonly string[];
+  readonly allowedToolGroups: readonly string[];
 }
 
 export interface ShadowTelemetryState {
@@ -54,11 +54,10 @@ function compare(task: TaskAnalysis, state: ReturnType<AgentKernelShadowOrchestr
   const stepIds = new Set(state.plan.steps.map((step) => step.id));
   const differences: string[] = [];
   const researchExpected = task.requiresCurrentInformation || task.researchDepth !== "none";
-  const executionExpected = true;
   const verificationExpected = baseline.verificationRounds > 0 || task.verificationRequirements.length > 0;
 
   if (stepIds.has("research") !== researchExpected) differences.push("research_step_mismatch");
-  if (stepIds.has("execute") !== executionExpected) differences.push("execution_step_mismatch");
+  if (!stepIds.has("execute")) differences.push("execution_step_mismatch");
   if ((state.plan.finalVerifierAgentId !== null) !== verificationExpected) differences.push("verification_step_mismatch");
   if (state.metrics.maxParallelWidth < 1) differences.push("parallel_width_invalid");
   if (state.metrics.agentCount < 2) differences.push("agent_count_below_minimum");
