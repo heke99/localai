@@ -1,4 +1,4 @@
-name: Temporary Qwen runtime benchmark run
+name: Temporary ngram full-agent gate
 
 on:
   push:
@@ -12,9 +12,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  benchmark:
+  gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     environment: production-gpuhub
     env:
       GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
@@ -26,7 +26,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-
       - name: Configure pinned SSH identity
         shell: bash
         run: |
@@ -37,13 +36,11 @@ jobs:
           printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
           printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
-
-      - name: Upload and execute benchmark
+      - name: Run candidate full-agent gate
         shell: bash
         run: |
           set -Eeuo pipefail
           remote="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
           opts=(-i "$HOME/.ssh/id_ed25519" -p "$GPUHUB_SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
-          ssh "${opts[@]}" "$remote" 'cat > /tmp/div3rsa-qwen-runtime-perf.mjs' < scripts/temp_qwen_runtime_perf_probe.mjs
-          ssh "${opts[@]}" "$remote" 'cat > /tmp/div3rsa-qwen-runtime-benchmark.sh && chmod 700 /tmp/div3rsa-qwen-runtime-benchmark.sh' < scripts/temp_qwen_runtime_benchmark.sh
-          ssh "${opts[@]}" "$remote" 'bash /tmp/div3rsa-qwen-runtime-benchmark.sh'
+          ssh "${opts[@]}" "$remote" 'cat > /tmp/div3rsa-ngram-agent-gate.sh && chmod 700 /tmp/div3rsa-ngram-agent-gate.sh' < scripts/temp_ngram_agent_gate.sh
+          ssh "${opts[@]}" "$remote" 'bash /tmp/div3rsa-ngram-agent-gate.sh'
