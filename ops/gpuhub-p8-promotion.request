@@ -1,0 +1,9 @@
+requested_at=2026-08-28T10:38:00+02:00
+target_parallel=8
+total_context=262144
+context_per_slot=32768
+post_promotion_eval_cases=8
+post_promotion_min_pass_rate=1
+rollback_parallel=1
+rollback_total_context=32768
+reason=promote-production-after-successful-p8-production-like-soak
