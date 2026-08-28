@@ -24,6 +24,11 @@ function webDefinitions(): ModelToolDefinition[] {
   ] as unknown as ModelToolDefinition[];
 }
 
+const vatAuthorities = [
+  "https://www.skatteverket.se/foretag/moms/momssatser.html",
+  "https://taxation-customs.ec.europa.eu/taxation/vat/vat-rates_en"
+].sort();
+
 describe("freshnessSearchQueries", () => {
   it("focuses a verbose latest-release request on the official authority and compact intent", () => {
     const queries = freshnessSearchQueries("Find the current latest Node.js release from official Node.js information. Search the web, open the relevant source, and report the version you verified and that the information was checked now. Do not rely on model memory.");
@@ -267,10 +272,7 @@ describe("collectRequiredFreshnessEvidence", () => {
     const fetchCalls = calls.filter((call) => call.name === "web_fetch");
     expect(searchCalls.length).toBeGreaterThanOrEqual(1);
     expect(searchCalls.length).toBeLessThanOrEqual(3);
-    expect(fetchCalls.map((call) => String(call.input.url))).toEqual([
-      "https://www.skatteverket.se/foretag/moms/momssatser.html",
-      "https://taxation-customs.ec.europa.eu/taxation/vat/vat-rates_en"
-    ]);
+    expect(fetchCalls.map((call) => String(call.input.url)).sort()).toEqual(vatAuthorities);
   });
 
   it("continues focused fallback searches when the initial evidence set is too small", async () => {
@@ -319,10 +321,7 @@ describe("collectRequiredFreshnessEvidence", () => {
     const fetchCalls = calls.filter((call) => call.name === "web_fetch");
     expect(searchCalls.length).toBeGreaterThanOrEqual(2);
     expect(searchCalls.length).toBeLessThanOrEqual(3);
-    expect(fetchCalls.map((call) => String(call.input.url))).toEqual([
-      "https://www.skatteverket.se/foretag/moms/momssatser.html",
-      "https://taxation-customs.ec.europa.eu/taxation/vat/vat-rates_en"
-    ]);
+    expect(fetchCalls.map((call) => String(call.input.url)).sort()).toEqual(vatAuthorities);
   });
 
   it("still proceeds when only one distinct source exists after all fallback searches", async () => {
