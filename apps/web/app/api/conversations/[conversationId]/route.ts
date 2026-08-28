@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
+import { createSupabaseAdminClient } from "../../../../lib/supabase/admin";
 import { createSupabaseServerClient } from "../../../../lib/supabase/server";
 
 type RpcClient = { rpc: <T>(name: string, args: Record<string, unknown>) => Promise<{ data: T | null; error: { message: string } | null }> };
+
+const resumableRunStatuses = ["queued", "retrying", "planning", "running", "waiting_for_tool", "verifying"];
 
 export async function GET(_: Request, context: { params: Promise<{ conversationId: string }> }) {
   const supabase = await createSupabaseServerClient();
@@ -17,16 +20,29 @@ export async function GET(_: Request, context: { params: Promise<{ conversationI
 
   if (conversationError || !conversation) return NextResponse.json({ error: "conversation_not_found" }, { status: 404 });
 
-  const { data: messages, error: messagesError } = await supabase
-    .from("messages")
-    .select("id,role,content,created_at")
-    .eq("conversation_id", conversationId)
-    .order("created_at", { ascending: true })
-    .limit(500);
+  const [{ data: messages, error: messagesError }, activeRunResult] = await Promise.all([
+    supabase
+      .from("messages")
+      .select("id,role,content,created_at")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true })
+      .limit(500),
+    createSupabaseAdminClient()
+      .schema("internal")
+      .from("agent_runs")
+      .select("id,status,mode,model_alias,failure_code,conversation_id,input_message_id,output_message_id,created_at")
+      .eq("conversation_id", conversationId)
+      .eq("requested_by", user.id)
+      .in("status", resumableRunStatuses)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+  ]);
 
   if (messagesError) return NextResponse.json({ error: "conversation_load_failed" }, { status: 500 });
+  if (activeRunResult.error) return NextResponse.json({ error: "conversation_run_resume_lookup_failed" }, { status: 500 });
 
-  return NextResponse.json({ conversation, messages: messages ?? [] });
+  return NextResponse.json({ conversation, messages: messages ?? [], activeRun: activeRunResult.data ?? null });
 }
 
 export async function DELETE(_: Request, context: { params: Promise<{ conversationId: string }> }) {

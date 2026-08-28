@@ -40,4 +40,26 @@ describe("chat streaming UI contract", () => {
     expect(shellV4).toContain("RunStreamPreview");
     expect(shellV4).toContain("/api/runs/${run.id}");
   });
+
+  it("checkpoints the exact conversation and active run so reload can resume safely", () => {
+    const shellV4 = source("apps/web/app/dashboard/workspace-shell-v4.tsx");
+    const conversationRoute = source("apps/web/app/api/conversations/[conversationId]/route.ts");
+
+    expect(shellV4).toContain('const dashboardConversationParam = "conversation";');
+    expect(shellV4).toContain('const dashboardRunParam = "run";');
+    expect(shellV4).toContain("window.history.replaceState");
+    expect(shellV4).toContain("requestedConversationId");
+    expect(shellV4).toContain("requestedRunId");
+    expect(shellV4).toContain("replaceDashboardLocation(mode, conversation.id, null);");
+    expect(shellV4).toContain("replaceDashboardLocation(activeMode, body.conversationId, body.runId);");
+    expect(shellV4).toContain("body.activeRun");
+    expect(shellV4).toContain("void refreshRun();");
+
+    expect(conversationRoute).toContain("createSupabaseAdminClient");
+    expect(conversationRoute).toContain('.schema("internal")');
+    expect(conversationRoute).toContain('.from("agent_runs")');
+    expect(conversationRoute).toContain('.eq("requested_by", user.id)');
+    expect(conversationRoute).toContain("resumableRunStatuses");
+    expect(conversationRoute).toContain("activeRun: activeRunResult.data ?? null");
+  });
 });
