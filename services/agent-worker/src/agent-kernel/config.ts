@@ -8,6 +8,8 @@ export interface AgentKernelConfig {
   readonly verificationRequired: boolean;
 }
 
+type EnvironmentMap = Readonly<Record<string, string | undefined>>;
+
 function booleanValue(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined || value.trim() === "") return fallback;
   const normalized = value.trim().toLowerCase();
@@ -29,7 +31,7 @@ function modeValue(value: string | undefined): KernelRunMode {
   throw new Error(`invalid_agent_kernel_mode:${value}`);
 }
 
-export function agentKernelConfigFromEnvironment(env: NodeJS.ProcessEnv = process.env): AgentKernelConfig {
+export function agentKernelConfigFromEnvironment(env: EnvironmentMap = process.env): AgentKernelConfig {
   const enabled = booleanValue(env.DIV3RSA_AGENT_KERNEL_V2_ENABLED, false);
   const requestedMode = modeValue(env.DIV3RSA_AGENT_KERNEL_V2_MODE);
   const mode: KernelRunMode = enabled ? requestedMode : "legacy";
