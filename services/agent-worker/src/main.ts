@@ -10,6 +10,7 @@ import { RemoteProviderToolExecutor } from "./remote-provider-executor";
 import { RemoteRepositoryWorkspaceRuntime } from "./repository-runtime";
 import { SandboxVerificationRuntime } from "./sandbox-verification";
 import { RuntimeRegistration, runtimeRegistrationConfigFromEnvironment, type RuntimeRpcClient } from "./runtime-registration";
+import { boundedWorkerConcurrency, runWorkerLanes } from "./worker-loop";
 import { SkillEngine, type SkillManifest } from "@div3rsa/skill-engine";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -58,11 +59,12 @@ function errorDetail(error: unknown): string {
 const supabase = createClient<Database>(required("SUPABASE_URL"), required("SUPABASE_SECRET_KEY"), { auth: { persistSession: false, autoRefreshToken: false } });
 const modelPort = numericEnvironment("DIV3RSA_MODEL_PORT", 8080);
 const modelParallel = Math.max(1, Math.floor(numericEnvironment("DIV3RSA_MODEL_PARALLEL", 4)));
+const workerConcurrency = boundedWorkerConcurrency(numericEnvironment("DIV3RSA_WORKER_CONCURRENCY", modelParallel), modelParallel);
 const inferenceBaseUrl = process.env.DIV3RSA_INFERENCE_BASE_URL?.trim()
   || process.env.QWEN_INFERENCE_BASE_URL?.trim()
   || `http://127.0.0.1:${modelPort}/v1`;
 const inferenceApiKey = requiredAny(["DIV3RSA_INFERENCE_API_KEY", "QWEN_INFERENCE_API_KEY"]);
-const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApiKey, {
+const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApiKey, fetch, {
   contextLimit: numericEnvironment("DIV3RSA_MODEL_CONTEXT_SIZE", 32768),
   batchSize: numericEnvironment("DIV3RSA_MODEL_BATCH_SIZE", 2048),
   maxActiveSequences: numericEnvironment("DIV3RSA_ADMISSION_MAX_ACTIVE_SEQUENCES", modelParallel),
@@ -110,12 +112,21 @@ const integrationToolRuntime = new PermissionedIntegrationToolRuntime(supabase a
 const toolRuntime = new CompositeWorkerToolRuntime([coreToolRuntime, integrationToolRuntime]);
 const repositoryRuntime = new RemoteRepositoryWorkspaceRuntime(supabase as unknown as ConstructorParameters<typeof RemoteRepositoryWorkspaceRuntime>[0], gatewayUrl);
 const sandboxRuntime = new SandboxVerificationRuntime(process.env.DIV3RSA_SANDBOX_IMAGE_DIGEST?.trim() || null);
-const processor = new AgentWorkerProcessor(queue, { resolve: () => adapter }, workerId, {
-  prepare: async (mode, prompt) => {
+const skillRuntime = {
+  prepare: async (mode: Parameters<typeof skillEngine.select>[0], prompt: string) => {
     const loaded = await skillEngine.load(skillEngine.select(mode, prompt));
     return { names: loaded.map((skill) => skill.metadata.name), instructions: loaded.map((skill) => `## ${skill.metadata.name}@${skill.metadata.version}\n${skill.instructions}`).join("\n\n") };
   }
-}, toolRuntime, repositoryRuntime, sandboxRuntime);
+};
+const processors = Array.from({ length: workerConcurrency }, (_, lane) => new AgentWorkerProcessor(
+  queue,
+  { resolve: () => adapter },
+  `${workerId}:lane-${lane + 1}`,
+  skillRuntime,
+  toolRuntime,
+  repositoryRuntime,
+  sandboxRuntime
+));
 let stopping = false;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -173,14 +184,16 @@ if (runtimeRegistration) {
 
 const idlePollMs = Math.max(50, numericEnvironment("DIV3RSA_QUEUE_IDLE_POLL_MS", 100));
 const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BACKOFF_MS", 750));
+console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; aggregateIdlePollMs=${idlePollMs}`);
 
-while (!stopping) {
-  try {
-    const processed = await processor.processOnce();
-    if (!processed) await sleep(idlePollMs);
-  } catch (error) {
+await runWorkerLanes({
+  concurrency: workerConcurrency,
+  aggregateIdlePollMs: idlePollMs,
+  errorBackoffMs,
+  shouldStop: () => stopping,
+  processOnce: (lane) => processors[lane]!.processOnce(),
+  onError: (error, lane) => {
     const detail = errorDetail(error);
-    console.error(`[agent-worker] processing loop error; worker=${workerId}; detail=${detail}`);
-    if (!stopping) await sleep(errorBackoffMs);
+    console.error(`[agent-worker] processing lane error; worker=${workerId}; lane=${lane + 1}; detail=${detail}`);
   }
-}
+});
