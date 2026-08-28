@@ -1,7 +1,9 @@
-requested_at=2026-08-28T09:16:00+02:00
-suite=evals/agent-runtime-smoke.json
-server_parallel=1,2,4,8
-client_concurrency=1,2,4,8
+requested_at=2026-08-28T09:55:16+02:00
+run_agent_eval=true
+benchmark_parallel=1,2,4,8
+benchmark_concurrency=1,2,4,8
 context_per_slot=32768
+production_parallel_after=1
+production_ctx_after=32768
 promotion=disabled
-reason=post-live-time-ui-p1-8-of-8-truth-eval
+reason=post-pr95-authority-node-sse-p1-truth-eval
