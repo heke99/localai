@@ -20,6 +20,7 @@ mkdir -p "$(dirname "$OVERRIDE_FILE")"
 cat >"$OVERRIDE_FILE" <<'OVERRIDE'
 DIV3RSA_GPUHUB_OVERRIDE_PARALLEL=1
 DIV3RSA_GPUHUB_OVERRIDE_TOTAL_CONTEXT=32768
+DIV3RSA_GPUHUB_OVERRIDE_SPEC_TYPE=none
 OVERRIDE
 chmod 600 "$OVERRIDE_FILE"
 
@@ -41,10 +42,12 @@ chmod 600 "$ENV_FILE"
 DIV3RSA_FORCE_MODEL_RESTART=1 \
 DIV3RSA_MODEL_PARALLEL=1 \
 DIV3RSA_MODEL_CONTEXT_SIZE=32768 \
+DIV3RSA_MODEL_SPEC_TYPE=none \
   bash "$RECOVERY_SCRIPT"
 cmd="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
 [[ "$cmd" =~ --parallel[=\ ]+1 ]] || fatal "rollback did not restore parallel=1: $cmd"
 [[ "$cmd" =~ --ctx-size[=\ ]+32768 ]] || fatal "rollback did not restore ctx=32768: $cmd"
+[[ "$cmd" != *"--spec-type"* ]] || fatal "rollback did not disable speculative decoding: $cmd"
 curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${MODEL_PORT}/health" >/dev/null
 bash "$SEARCH_CHECK" http://127.0.0.1:8890 >/dev/null
 screen -list | grep -F ".${SCREEN_NAME}" >/dev/null

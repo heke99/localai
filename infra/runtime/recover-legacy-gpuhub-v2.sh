@@ -32,6 +32,7 @@ PID_FILE="${ROOT_DIR}/runtime/qwen.pid"
 # durable tracked profile become the normal production default.
 REQUESTED_MODEL_PARALLEL="${DIV3RSA_MODEL_PARALLEL:-}"
 REQUESTED_MODEL_TOTAL_CONTEXT="${DIV3RSA_MODEL_CONTEXT_SIZE:-}"
+REQUESTED_MODEL_SPEC_TYPE="${DIV3RSA_MODEL_SPEC_TYPE:-}"
 
 [[ -d "$REPO_DIR" ]] || fatal "repository missing: $REPO_DIR"
 [[ -f "$ENV_FILE" ]] || fatal "worker env missing: $ENV_FILE"
@@ -53,25 +54,30 @@ set +a
 PROFILE_PARALLEL=8
 PROFILE_TOTAL_CONTEXT=262144
 PROFILE_CONTEXT_PER_SLOT=32768
+PROFILE_SPEC_TYPE=ngram-mod
 if [[ -f "$PROFILE_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$PROFILE_FILE"
   PROFILE_PARALLEL="${DIV3RSA_GPUHUB_PRODUCTION_PARALLEL:-$PROFILE_PARALLEL}"
   PROFILE_TOTAL_CONTEXT="${DIV3RSA_GPUHUB_PRODUCTION_TOTAL_CONTEXT:-$PROFILE_TOTAL_CONTEXT}"
   PROFILE_CONTEXT_PER_SLOT="${DIV3RSA_GPUHUB_PRODUCTION_CONTEXT_PER_SLOT:-$PROFILE_CONTEXT_PER_SLOT}"
+  PROFILE_SPEC_TYPE="${DIV3RSA_GPUHUB_PRODUCTION_SPEC_TYPE:-$PROFILE_SPEC_TYPE}"
 fi
 
 OVERRIDE_PARALLEL=""
 OVERRIDE_TOTAL_CONTEXT=""
+OVERRIDE_SPEC_TYPE=""
 if [[ -f "$OVERRIDE_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$OVERRIDE_FILE"
   OVERRIDE_PARALLEL="${DIV3RSA_GPUHUB_OVERRIDE_PARALLEL:-}"
   OVERRIDE_TOTAL_CONTEXT="${DIV3RSA_GPUHUB_OVERRIDE_TOTAL_CONTEXT:-}"
+  OVERRIDE_SPEC_TYPE="${DIV3RSA_GPUHUB_OVERRIDE_SPEC_TYPE:-}"
 fi
 
 MODEL_PARALLEL="${REQUESTED_MODEL_PARALLEL:-${OVERRIDE_PARALLEL:-$PROFILE_PARALLEL}}"
 MODEL_TOTAL_CONTEXT="${REQUESTED_MODEL_TOTAL_CONTEXT:-${OVERRIDE_TOTAL_CONTEXT:-$PROFILE_TOTAL_CONTEXT}}"
+MODEL_SPEC_TYPE="${REQUESTED_MODEL_SPEC_TYPE:-${OVERRIDE_SPEC_TYPE:-$PROFILE_SPEC_TYPE}}"
 
 for value_name in MODEL_PARALLEL MODEL_TOTAL_CONTEXT PROFILE_CONTEXT_PER_SLOT; do
   value="${!value_name}"
@@ -81,6 +87,10 @@ done
 MODEL_CONTEXT_PER_SLOT=$((MODEL_TOTAL_CONTEXT / MODEL_PARALLEL))
 [[ "$MODEL_CONTEXT_PER_SLOT" -ge "$PROFILE_CONTEXT_PER_SLOT" ]] \
   || fatal "resolved context per slot ${MODEL_CONTEXT_PER_SLOT} is below required ${PROFILE_CONTEXT_PER_SLOT}"
+case "$MODEL_SPEC_TYPE" in
+  none|ngram-mod) ;;
+  *) fatal "unsupported production speculative decoder: ${MODEL_SPEC_TYPE}" ;;
+esac
 
 health() {
   curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${MODEL_PORT}/health" >/dev/null 2>&1
@@ -94,6 +104,8 @@ read_active_profile() {
   cmd="$(tr '\0' ' ' <"/proc/${pid}/cmdline")"
   ACTIVE_PARALLEL="$(sed -nE 's/.*--parallel[= ]+([0-9]+).*/\1/p' <<<"$cmd")"
   ACTIVE_TOTAL_CONTEXT="$(sed -nE 's/.*--ctx-size[= ]+([0-9]+).*/\1/p' <<<"$cmd")"
+  ACTIVE_SPEC_TYPE="$(sed -nE 's/.*--spec-type[= ]+([^ ]+).*/\1/p' <<<"$cmd")"
+  [[ -n "$ACTIVE_SPEC_TYPE" ]] || ACTIVE_SPEC_TYPE=none
   [[ "$ACTIVE_PARALLEL" =~ ^[0-9]+$ && "$ACTIVE_TOTAL_CONTEXT" =~ ^[0-9]+$ ]] || return 1
   (( ACTIVE_TOTAL_CONTEXT % ACTIVE_PARALLEL == 0 )) || return 1
   ACTIVE_CONTEXT_PER_SLOT=$((ACTIVE_TOTAL_CONTEXT / ACTIVE_PARALLEL))
@@ -129,9 +141,9 @@ if health && [[ "$FORCE_MODEL_RESTART" != "1" ]]; then
 fi
 
 if [[ "$FORCE_MODEL_RESTART" == "1" ]]; then
-  log "forced profile reconciliation requested: parallel=${MODEL_PARALLEL} total_context=${MODEL_TOTAL_CONTEXT} context_per_slot=${MODEL_CONTEXT_PER_SLOT}"
+  log "forced profile reconciliation requested: parallel=${MODEL_PARALLEL} total_context=${MODEL_TOTAL_CONTEXT} context_per_slot=${MODEL_CONTEXT_PER_SLOT} spec_type=${MODEL_SPEC_TYPE}"
 else
-  log "Qwen is unhealthy; beginning recovery with parallel=${MODEL_PARALLEL} total_context=${MODEL_TOTAL_CONTEXT}"
+  log "Qwen is unhealthy; beginning recovery with parallel=${MODEL_PARALLEL} total_context=${MODEL_TOTAL_CONTEXT} spec_type=${MODEL_SPEC_TYPE}"
 fi
 screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
 
@@ -162,10 +174,13 @@ MODEL_CMD=(
   --ubatch-size "$MODEL_UBATCH_SIZE"
   --no-webui
 )
+if [[ "$MODEL_SPEC_TYPE" != "none" ]]; then
+  MODEL_CMD+=(--spec-type "$MODEL_SPEC_TYPE")
+fi
 
 for ((attempt=1; attempt<=MODEL_RECOVERY_ATTEMPTS; attempt+=1)); do
-  printf '\n=== %s recovery-v2 attempt %d/%d parallel=%s total_context=%s ===\n' \
-    "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$attempt" "$MODEL_RECOVERY_ATTEMPTS" "$MODEL_PARALLEL" "$MODEL_TOTAL_CONTEXT" >>"$RECOVERY_LOG"
+  printf '\n=== %s recovery-v2 attempt %d/%d parallel=%s total_context=%s spec_type=%s ===\n' \
+    "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$attempt" "$MODEL_RECOVERY_ATTEMPTS" "$MODEL_PARALLEL" "$MODEL_TOTAL_CONTEXT" "$MODEL_SPEC_TYPE" >>"$RECOVERY_LOG"
   nohup "${MODEL_CMD[@]}" </dev/null >>"$RECOVERY_LOG" 2>&1 &
   model_pid=$!
   printf '%s\n' "$model_pid" >"$PID_FILE"
@@ -173,7 +188,7 @@ for ((attempt=1; attempt<=MODEL_RECOVERY_ATTEMPTS; attempt+=1)); do
 
   while true; do
     if health; then
-      log "Qwen recovered on attempt ${attempt}; pid=${model_pid} parallel=${MODEL_PARALLEL} total_context=${MODEL_TOTAL_CONTEXT}"
+      log "Qwen recovered on attempt ${attempt}; pid=${model_pid} parallel=${MODEL_PARALLEL} total_context=${MODEL_TOTAL_CONTEXT} spec_type=${MODEL_SPEC_TYPE}"
       start_worker "$MODEL_PARALLEL" "$MODEL_CONTEXT_PER_SLOT"
       health || fatal "Qwen became unhealthy after worker restart"
       log "recovery complete; Qwen and agent worker are healthy"
