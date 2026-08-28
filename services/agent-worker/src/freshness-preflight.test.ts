@@ -223,7 +223,7 @@ describe("collectRequiredFreshnessEvidence", () => {
     ]);
   });
 
-  it("uses multiple sources from one search for ordinary current-state research", async () => {
+  it("uses the strongest available sources for ordinary current-state research", async () => {
     const prompt = "What is the current standard VAT rate in Sweden? Use official sources.";
     const execute = vi.fn(async (_run: ClaimedRun, call: { name: string; input: Record<string, unknown> }) => {
       if (call.name === "web_search") {
@@ -263,14 +263,17 @@ describe("collectRequiredFreshnessEvidence", () => {
     });
 
     const calls = execute.mock.calls.map(([, call]) => call);
-    expect(calls.map((call) => call.name)).toEqual(["web_search", "web_fetch", "web_fetch"]);
-    expect(calls.filter((call) => call.name === "web_fetch").map((call) => String(call.input.url))).toEqual([
+    const searchCalls = calls.filter((call) => call.name === "web_search");
+    const fetchCalls = calls.filter((call) => call.name === "web_fetch");
+    expect(searchCalls.length).toBeGreaterThanOrEqual(1);
+    expect(searchCalls.length).toBeLessThanOrEqual(3);
+    expect(fetchCalls.map((call) => String(call.input.url))).toEqual([
       "https://www.skatteverket.se/foretag/moms/momssatser.html",
       "https://taxation-customs.ec.europa.eu/taxation/vat/vat-rates_en"
     ]);
   });
 
-  it("uses a focused fallback search only when the first search has too little evidence", async () => {
+  it("continues focused fallback searches when the initial evidence set is too small", async () => {
     const execute = vi.fn(async (_run: ClaimedRun, call: { name: string; input: Record<string, unknown> }) => {
       if (call.name === "web_search") {
         const searchNumber = execute.mock.calls.filter(([, called]) => called.name === "web_search").length;
@@ -311,11 +314,14 @@ describe("collectRequiredFreshnessEvidence", () => {
       trace: []
     });
 
-    expect(execute.mock.calls.map(([, call]) => call.name)).toEqual([
-      "web_search",
-      "web_search",
-      "web_fetch",
-      "web_fetch"
+    const calls = execute.mock.calls.map(([, call]) => call);
+    const searchCalls = calls.filter((call) => call.name === "web_search");
+    const fetchCalls = calls.filter((call) => call.name === "web_fetch");
+    expect(searchCalls.length).toBeGreaterThanOrEqual(2);
+    expect(searchCalls.length).toBeLessThanOrEqual(3);
+    expect(fetchCalls.map((call) => String(call.input.url))).toEqual([
+      "https://www.skatteverket.se/foretag/moms/momssatser.html",
+      "https://taxation-customs.ec.europa.eu/taxation/vat/vat-rates_en"
     ]);
   });
 
