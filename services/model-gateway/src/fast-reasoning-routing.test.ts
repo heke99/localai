@@ -46,12 +46,12 @@ describe("latency-aware Qwen reasoning routing", () => {
     expect(body.reasoning_effort).toBe("low");
   });
 
-  it("uses medium reasoning for STANDARD work", async () => {
+  it("preserves the model default for STANDARD work when lower efforts do not improve measured latency", async () => {
     const body = await bodyFor([
       { role: "system", content: "Task risk: medium. Reasoning policy: STANDARD: decompose material subproblems. STABLE INFORMATION: external research is optional. Research depth: none." },
       { role: "user", content: "Analyze this architecture tradeoff." }
     ], []);
-    expect(body.reasoning_effort).toBe("medium");
+    expect(body.reasoning_effort).toBeUndefined();
   });
 
   it("retains xhigh reasoning for DEEP or critical work", async () => {

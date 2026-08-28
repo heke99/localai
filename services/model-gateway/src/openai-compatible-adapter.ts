@@ -170,14 +170,13 @@ function reasoningEffort(request: GenerateRequest): QwenReasoningEffort {
   const freshnessRequired = /(?:CURRENT|LIVE) INFORMATION REQUIRED:/i.test(system);
   const critical = /Task risk:\s*critical\b/i.test(system);
 
-  // Qwen3.8 defaults to its deepest reasoning level when no effort is supplied.
-  // Keep full reasoning for DEEP/CRITICAL work, but avoid paying that latency on
-  // normal STANDARD or FAST requests. llama.cpp maps `none` to
-  // enable_thinking=false and forwards the explicit effort into the Qwen chat
-  // template for the remaining levels.
+  // Measured on the production p8 runtime: stable FAST work becomes much
+  // faster when hidden reasoning is disabled, while low/medium did not reduce
+  // STANDARD visible-token latency. Preserve the model's default STANDARD
+  // reasoning rather than changing quality for no measured latency benefit.
   if (fast && stable && !freshnessRequired) return "none";
   if (fast) return "low";
-  if (standard) return "medium";
+  if (standard) return undefined;
   if (deep || critical) return "xhigh";
   return undefined;
 }
