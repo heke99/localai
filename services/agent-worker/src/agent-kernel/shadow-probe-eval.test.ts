@@ -50,7 +50,7 @@ describe("evaluateShadowProbePromotion", () => {
   it("blocks weak detection regressions and false positives", () => {
     const degraded = cases().map((item, index) => index < 4
       ? { ...item, verifierScore: 90, verifierPassed: true, reasonCode: "missed_weakness" }
-      : index === 9
+      : index === 9 || index === 10
         ? { ...item, verifierScore: 40, verifierPassed: false, reasonCode: "false_alarm" }
         : item);
     const report = evaluateShadowProbePromotion(degraded, load());
