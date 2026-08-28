@@ -93,9 +93,10 @@ begin
   from pg_proc p
   where p.oid='public.get_active_agent_run(uuid)'::regprocedure;
 
-  if coalesce(resume_public_definer,true)
-     or position('internal.get_active_agent_run_for_conversation' in lower(resume_public_definition)) = 0 then
-    raise exception 'public active-run wrapper must remain security invoker and delegate to the guarded helper';
+  if not coalesce(resume_public_definer,false)
+     or position('internal.get_active_agent_run_for_conversation' in lower(resume_public_definition)) = 0
+     or position('set search_path to ''''' in lower(resume_public_definition)) = 0 then
+    raise exception 'public active-run wrapper must be a locked-down definer delegating to the guarded private helper';
   end if;
 
   if not has_function_privilege('authenticated', 'public.get_active_agent_run(uuid)', 'execute') then
@@ -104,8 +105,14 @@ begin
   if has_function_privilege('anon', 'public.get_active_agent_run(uuid)', 'execute') then
     raise exception 'anon can call active-run resume RPC';
   end if;
+  if has_schema_privilege('authenticated', 'internal', 'usage') then
+    raise exception 'authenticated gained USAGE on internal schema';
+  end if;
   if has_table_privilege('authenticated', 'internal.agent_runs', 'select') then
     raise exception 'authenticated gained direct SELECT access to internal.agent_runs';
+  end if;
+  if has_function_privilege('authenticated', 'internal.get_active_agent_run_for_conversation(uuid)', 'execute') then
+    raise exception 'authenticated can bypass the public resume RPC boundary';
   end if;
   if has_function_privilege('authenticated', 'public.worker_complete_agent_run(uuid,uuid,text,uuid,jsonb)', 'execute') then
     raise exception 'authenticated can complete worker jobs';
