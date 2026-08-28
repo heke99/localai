@@ -1,0 +1,46 @@
+name: Temporary STANDARD Qwen probe
+
+on:
+  push:
+    branches:
+      - perf/end-to-end-latency-20260828
+    paths:
+      - scripts/temp_qwen_standard_probe.mjs
+      - .github/workflows/temp-qwen-standard-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production-gpuhub
+    env:
+      GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
+      GPUHUB_SSH_PORT: ${{ secrets.GPUHUB_SSH_PORT }}
+      GPUHUB_SSH_USER: ${{ secrets.GPUHUB_SSH_USER }}
+      GPUHUB_SSH_PRIVATE_KEY: ${{ secrets.GPUHUB_SSH_PRIVATE_KEY }}
+      GPUHUB_SSH_KNOWN_HOSTS: ${{ secrets.GPUHUB_SSH_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Configure pinned SSH identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in GPUHUB_SSH_HOST GPUHUB_SSH_PORT GPUHUB_SSH_USER GPUHUB_SSH_PRIVATE_KEY GPUHUB_SSH_KNOWN_HOSTS; do test -n "${!name:-}"; done
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+      - name: Compare STANDARD default and low effort
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
+          opts=(-i "$HOME/.ssh/id_ed25519" -p "$GPUHUB_SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          ssh "${opts[@]}" "$remote" 'cat > /tmp/div3rsa-qwen-standard-probe.mjs' < scripts/temp_qwen_standard_probe.mjs
+          ssh "${opts[@]}" "$remote" 'set -e; trap "rm -f /tmp/div3rsa-qwen-standard-probe.mjs" EXIT; curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null; /root/autodl-tmp/localai/runtime/node-current/bin/node /tmp/div3rsa-qwen-standard-probe.mjs'
