@@ -25,11 +25,18 @@ function webDefinitions(): ModelToolDefinition[] {
 }
 
 describe("freshnessSearchQueries", () => {
-  it("falls back from a verbose research instruction to the intent-bearing sentence and compact query", () => {
+  it("focuses a verbose latest-release request on the official authority and compact intent", () => {
     const queries = freshnessSearchQueries("Find the current latest Node.js release from official Node.js information. Search the web, open the relevant source, and report the version you verified and that the information was checked now. Do not rely on model memory.");
-    expect(queries[0]).toContain("Search the web");
-    expect(queries[1]).toBe("Find the current latest Node.js release from official Node.js information");
-    expect(queries[2]).toBe("current latest Node.js release");
+    expect(queries[0]).toBe("site:nodejs.org current latest Node.js release");
+    expect(queries[1]).toBe("current latest Node.js release");
+    expect(queries[2]).toBe("Find the current latest Node.js release from official Node.js information");
+  });
+
+  it("targets Skatteverket first for current Swedish VAT research", () => {
+    const queries = freshnessSearchQueries("What is the current standard VAT rate (normal momssats) in Sweden? Verify it using current web research, open an authoritative source such as Skatteverket, and state the source in the answer.");
+    expect(queries[0]).toMatch(/^site:skatteverket\.se /);
+    expect(queries[0]).toContain("VAT rate");
+    expect(queries[0]).toContain("Sweden");
   });
 });
 
@@ -84,6 +91,28 @@ describe("rankSearchCandidates", () => {
     expect(ranked[0]?.url).toBe("https://nodejs.org/en/download/current");
     expect(ranked[0]?.intentScore).toBe(6);
     expect(ranked[1]?.intentScore).toBe(4);
+  });
+
+  it("does not let generic current pages outrank materially relevant VAT authority evidence", () => {
+    const ranked = rankSearchCandidates({
+      results: [
+        {
+          url: "https://current.com/",
+          title: "Current",
+          snippet: "Current banking products",
+          score: 100
+        },
+        {
+          url: "https://www.skatteverket.se/foretag/moms/momssatser.html",
+          title: "Momssatser och undantag från moms",
+          snippet: "Den generella momssatsen är 25 procent i Sverige",
+          score: 1
+        }
+      ]
+    }, "What is the current standard VAT rate (normal momssats) in Sweden?");
+
+    expect(ranked[0]?.url).toContain("skatteverket.se");
+    expect(ranked[0]?.relevanceScore).toBeGreaterThan(ranked[1]?.relevanceScore ?? 0);
   });
 });
 
