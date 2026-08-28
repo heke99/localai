@@ -19,4 +19,10 @@ describe("agent run start latency contract", () => {
     expect(deferredAt).toBeGreaterThan(queuedAt);
     expect(responseAt).toBeGreaterThan(deferredAt);
   });
+
+  it("keeps resource selection and run creation inside one transactional RPC", () => {
+    expect(source).not.toContain('rpc.rpc<Record<string, unknown>>("set_conversation_resources"');
+    expect(source).toContain("resource_ids: resourceIds");
+    expect(source.match(/rpc\.rpc</g)?.length).toBe(1);
+  });
 });
