@@ -33,10 +33,11 @@ jobs:
           npm run validate:runtime-startup
           npm run test:gpuhub-production-profile
           git diff --check
-          # This Actions token may write repository contents but GitHub blocks it
-          # from changing workflow files. Keep those at HEAD here; the connected
-          # repo action applies the already-validated workflow delta separately.
+          # The Actions token cannot modify workflow files. Keep every workflow
+          # delta at HEAD here; the connected repo action applies the validated
+          # deploy/verification changes separately with the required permission.
           git checkout HEAD -- \
+            .github/workflows/deploy-gpuhub.yml \
             .github/workflows/p8-promotion-verify.yml \
             .github/workflows/temp-apply-ngram-promotion.yml
           git config user.name "heke99"
