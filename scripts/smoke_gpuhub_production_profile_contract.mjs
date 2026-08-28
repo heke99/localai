@@ -32,6 +32,7 @@ const checks = [
   [upgradeWrapper.includes("reconcile-gpuhub-production-profile.sh"), "upgrade does not reconcile tracked profile"],
   [reconcile.includes("TARGET_PARALLEL") && reconcile.includes("TARGET_TOTAL_CONTEXT"), "profile reconciler target validation missing"],
   [reconcile.includes("verify_target"), "profile reconciler post-restart verification missing"],
+  [reconcile.includes("VERIFY_ATTEMPTS") && reconcile.includes("tracked profile verification pending attempt"), "profile reconciler transient verification retry missing"],
   [rollback.includes("DIV3RSA_GPUHUB_OVERRIDE_PARALLEL=1"), "explicit p1 emergency rollback missing"],
   [rollback.includes("DIV3RSA_FORCE_MODEL_RESTART=1 \\") && rollback.includes("DIV3RSA_MODEL_PARALLEL=1 \\") && rollback.includes("DIV3RSA_MODEL_CONTEXT_SIZE=32768"), "p1 rollback does not override inherited p8 recovery values"],
   [workflow.includes('result.get("passed") != 8') && workflow.includes('result.get("liveOracleFailures") != []') && workflow.includes('result.get("modelParallel") != expected_parallel'), "post-promotion 8/8 agent gate missing"],
@@ -39,4 +40,4 @@ const checks = [
 ];
 for (const [ok, message] of checks) if (!ok) throw new Error(message);
 
-console.log("[gpuhub-production-profile] durable p8/262144 profile, p1 rollback and post-promotion 8/8 gate present");
+console.log("[gpuhub-production-profile] durable p8/262144 profile, retrying verification, p1 rollback and post-promotion 8/8 gate present");
