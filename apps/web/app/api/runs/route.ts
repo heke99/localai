@@ -22,17 +22,10 @@ export async function POST(request: Request) {
   const traceId = request.headers.get("x-trace-id") ?? crypto.randomUUID();
   const rpc = supabase as unknown as RpcClient;
 
-  if (body.conversationId) {
-    const { error: selectionError } = await rpc.rpc<Record<string, unknown>>("set_conversation_resources", {
-      target_conversation_id: body.conversationId,
-      target_resource_ids: resourceIds
-    });
-    if (selectionError) {
-      const denied = /permission_denied|workspace_access_denied|conversation_access_denied|resource_not_available/.test(selectionError.message);
-      return NextResponse.json({ error: denied ? "resource_or_access_denied" : "run_start_failed", requestId }, { status: denied ? 403 : 500 });
-    }
-  }
-
+  // start_agent_run already applies resource_ids transactionally for both new
+  // and existing conversations. Keeping resource selection and run creation in
+  // one RPC removes a full Supabase round trip from every submitted prompt and
+  // guarantees that the queued run sees the exact selected resource snapshot.
   const { data, error } = await rpc.rpc<Array<{ run_id: string; resolved_conversation_id: string }>>("start_agent_run", {
     workspace_id: body.workspaceId,
     conversation_id: body.conversationId ?? null,
@@ -40,7 +33,7 @@ export async function POST(request: Request) {
     prompt,
     request_id: requestId,
     trace_id: traceId,
-    resource_ids: body.conversationId ? null : resourceIds
+    resource_ids: resourceIds
   });
 
   if (error) {

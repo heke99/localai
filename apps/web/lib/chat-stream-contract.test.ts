@@ -32,6 +32,30 @@ describe("chat streaming UI contract", () => {
     expect(preview).toContain("data-stream-revision");
   });
 
+  it("uses SSE as the primary run-status transport and only slow REST recovery polling", () => {
+    const shellV4 = source("apps/web/app/dashboard/workspace-shell-v4.tsx");
+    const preview = source("apps/web/app/dashboard/run-stream-preview.tsx");
+    expect(shellV4).toContain("onSnapshot={(snapshot) => {");
+    expect(preview).toContain("onSnapshotRef.current?.(next);");
+    expect(shellV4).toContain("window.setInterval(() => { void refreshRun(); }, 5_000)");
+    expect(shellV4).toContain("let refreshPending = false;");
+    expect(shellV4).not.toContain("window.setInterval(() => { void refreshRun(); }, 750)");
+  });
+
+  it("acknowledges submit immediately and avoids a separate conversation request for new standalone chats", () => {
+    const shellV4 = source("apps/web/app/dashboard/workspace-shell-v4.tsx");
+    const submitStart = shellV4.indexOf("async function submitPrompt()");
+    const optimisticAt = shellV4.indexOf("setMessages((current) => [...current, { id: optimisticId", submitStart);
+    const ensureAt = shellV4.indexOf("await ensureConversation(activeMode)", submitStart);
+    const runAt = shellV4.indexOf('fetch("/api/runs"', submitStart);
+    expect(submitStart).toBeGreaterThanOrEqual(0);
+    expect(optimisticAt).toBeGreaterThan(submitStart);
+    expect(ensureAt).toBeGreaterThan(optimisticAt);
+    expect(runAt).toBeGreaterThan(optimisticAt);
+    expect(shellV4).toContain("existingConversationId ?? (projectIdAtSubmit ? await ensureConversation(activeMode) : null)");
+    expect(shellV4).toContain("if (!conversationId) {");
+  });
+
   it("prewarms the runtime before submit and preserves SSE preview in the active dashboard", () => {
     const shellV5 = source("apps/web/app/dashboard/workspace-shell-v5.tsx");
     const shellV4 = source("apps/web/app/dashboard/workspace-shell-v4.tsx");
@@ -53,7 +77,7 @@ describe("chat streaming UI contract", () => {
     expect(shellV4).toContain("replaceDashboardLocation(mode, conversation.id, null);");
     expect(shellV4).toContain("replaceDashboardLocation(activeMode, body.conversationId, body.runId);");
     expect(shellV4).toContain("body.activeRun");
-    expect(shellV4).toContain("void refreshRun();");
+    expect(shellV4).toContain("const refreshRun = async () => {");
 
     expect(conversationRoute).toContain('rpc.rpc<ActiveRun[]>("get_active_agent_run"');
     expect(conversationRoute).not.toContain("createSupabaseAdminClient");

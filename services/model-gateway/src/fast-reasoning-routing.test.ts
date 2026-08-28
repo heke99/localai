@@ -27,29 +27,38 @@ async function bodyFor(messages: GenerateRequest["messages"], requestTools: Mode
   return body;
 }
 
-describe("FAST reasoning routing", () => {
+describe("latency-aware Qwen reasoning routing", () => {
   it("disables hidden reasoning for stable FAST work even when optional tools are available", async () => {
     const body = await bodyFor([
       { role: "system", content: "Task risk: low. Reasoning policy: FAST: solve directly. STABLE INFORMATION: external research is optional. Research depth: none." },
       { role: "user", content: "What is 17 + 25?" }
     ]);
     expect(body.reasoning_effort).toBe("none");
+    expect(body.cache_prompt).toBe(true);
     expect(body.tool_choice).toBe("auto");
   });
 
-  it("keeps model reasoning enabled for FAST live-information work", async () => {
+  it("uses low reasoning for FAST live-information work instead of Qwen's deepest default", async () => {
     const body = await bodyFor([
       { role: "system", content: "Task risk: low. Reasoning policy: FAST: solve directly. LIVE INFORMATION REQUIRED: use an available deterministic/live tool. Research depth: fast." },
       { role: "user", content: "Vad är klockan i Stockholm just nu?" }
     ]);
-    expect(body).not.toHaveProperty("reasoning_effort");
+    expect(body.reasoning_effort).toBe("low");
   });
 
-  it("keeps model reasoning enabled for STANDARD work", async () => {
+  it("preserves the model default for STANDARD work when lower efforts do not improve measured latency", async () => {
     const body = await bodyFor([
       { role: "system", content: "Task risk: medium. Reasoning policy: STANDARD: decompose material subproblems. STABLE INFORMATION: external research is optional. Research depth: none." },
       { role: "user", content: "Analyze this architecture tradeoff." }
     ], []);
-    expect(body).not.toHaveProperty("reasoning_effort");
+    expect(body.reasoning_effort).toBeUndefined();
+  });
+
+  it("retains xhigh reasoning for DEEP or critical work", async () => {
+    const body = await bodyFor([
+      { role: "system", content: "Task risk: critical. Reasoning policy: DEEP: track constraints and assumptions. STABLE INFORMATION: external research is optional. Research depth: deep." },
+      { role: "user", content: "Perform a deep production migration review." }
+    ], []);
+    expect(body.reasoning_effort).toBe("xhigh");
   });
 });

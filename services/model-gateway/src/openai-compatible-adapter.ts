@@ -159,11 +159,26 @@ function systemInstructions(request: GenerateRequest): string {
   return request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n");
 }
 
-function reasoningEffort(request: GenerateRequest): "none" | undefined {
+type QwenReasoningEffort = "none" | "low" | "medium" | "xhigh" | undefined;
+
+function reasoningEffort(request: GenerateRequest): QwenReasoningEffort {
   const system = systemInstructions(request);
-  const stableFast = /Reasoning policy:\s*FAST(?:\b|:)/i.test(system) && /STABLE INFORMATION:/i.test(system);
+  const fast = /Reasoning policy:\s*FAST(?:\b|:)/i.test(system);
+  const standard = /Reasoning policy:\s*STANDARD(?:\b|:)/i.test(system);
+  const deep = /Reasoning policy:\s*DEEP(?:\b|:)/i.test(system);
+  const stable = /STABLE INFORMATION:/i.test(system);
   const freshnessRequired = /(?:CURRENT|LIVE) INFORMATION REQUIRED:/i.test(system);
-  return stableFast && !freshnessRequired ? "none" : undefined;
+  const critical = /Task risk:\s*critical\b/i.test(system);
+
+  // Measured on the production p8 runtime: stable FAST work becomes much
+  // faster when hidden reasoning is disabled, while low/medium did not reduce
+  // STANDARD visible-token latency. Preserve the model's default STANDARD
+  // reasoning rather than changing quality for no measured latency benefit.
+  if (fast && stable && !freshnessRequired) return "none";
+  if (fast) return "low";
+  if (standard) return undefined;
+  if (deep || critical) return "xhigh";
+  return undefined;
 }
 
 function toolChoice(request: GenerateRequest): OpenAiToolChoice | undefined {
@@ -196,6 +211,7 @@ function requestBody(request: GenerateRequest, stream: boolean) {
     max_tokens: request.maxOutputTokens,
     temperature: request.temperature,
     reasoning_effort: reasoningEffort(request),
+    cache_prompt: true,
     stream,
     stream_options: stream ? { include_usage: true } : undefined,
     tools: request.tools?.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
