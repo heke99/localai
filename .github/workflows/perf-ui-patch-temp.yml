@@ -1,0 +1,167 @@
+name: Temporary performance UI patch
+
+on:
+  push:
+    branches: [perf/end-to-end-latency-20260828]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/end-to-end-latency-20260828
+          fetch-depth: 0
+      - name: Apply exact UI latency replacements
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('apps/web/app/dashboard/workspace-shell-v4.tsx')
+          text = path.read_text()
+
+          old_poll = '''  useEffect(() => {
+    if (!run || terminalStatuses.has(run.status)) return;
+    let disposed = false;
+    const refreshRun = async () => {
+      const response = await fetch(`/api/runs/${run.id}`, { cache: "no-store" });
+      if (!response.ok || disposed) return;
+      const next = await response.json() as Run;
+      if (next.conversation_id && next.conversation_id !== run.conversationId) {
+        setError("Svarskedjan matchade inte den öppna chatten. Svaret renderades inte i fel chatt.");
+        setRun({ ...next, conversationId: run.conversationId, failure_code: "conversation_identity_mismatch" });
+        return;
+      }
+      const nextRun = { ...next, conversationId: run.conversationId };
+      setRun(nextRun);
+      if (terminalStatuses.has(next.status) && selectedConversationIdRef.current === run.conversationId) void loadConversation(run.conversationId);
+    };
+    void refreshRun();
+    const timer = window.setInterval(() => { void refreshRun(); }, 750);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [run?.id, run?.conversationId, run?.status]);'''
+          new_poll = '''  useEffect(() => {
+    if (!run || terminalStatuses.has(run.status)) return;
+    let disposed = false;
+    let refreshPending = false;
+    const refreshRun = async () => {
+      if (refreshPending || disposed) return;
+      refreshPending = true;
+      try {
+        const response = await fetch(`/api/runs/${run.id}`, { cache: "no-store" });
+        if (!response.ok || disposed) return;
+        const next = await response.json() as Run;
+        if (next.conversation_id && next.conversation_id !== run.conversationId) {
+          setError("Svarskedjan matchade inte den öppna chatten. Svaret renderades inte i fel chatt.");
+          setRun({ ...next, conversationId: run.conversationId, failure_code: "conversation_identity_mismatch" });
+          return;
+        }
+        const nextRun = { ...next, conversationId: run.conversationId };
+        setRun(nextRun);
+        if (terminalStatuses.has(next.status) && selectedConversationIdRef.current === run.conversationId) void loadConversation(run.conversationId);
+      } finally {
+        refreshPending = false;
+      }
+    };
+    // SSE is the primary low-latency transport. REST polling is only a slow
+    // recovery path if EventSource is interrupted, and overlapping requests are
+    // explicitly coalesced.
+    const timer = window.setInterval(() => { void refreshRun(); }, 5_000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [run?.id, run?.conversationId, run?.status]);'''
+          if old_poll not in text:
+            raise SystemExit('poll block not found exactly')
+          text = text.replace(old_poll, new_poll, 1)
+
+          old_submit = '''  async function submitPrompt() {
+    const text = prompt.trim(); if (!text || busy || runInProgress) return;
+    let optimisticId: string | null = null;
+    setBusy(true); setError(null);
+    try {
+      const conversationId = await ensureConversation(activeMode);
+      optimisticId = `local-${crypto.randomUUID()}`;
+      setMessages((current) => [...current, { id: optimisticId!, role: "user", content: { text }, created_at: new Date().toISOString() }]); setPrompt("");
+      const response = await fetch("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId, conversationId, mode: activeMode, prompt: text, resourceIds: selectedResourceIds }) });
+      const body = await response.json() as { runId?: string; conversationId?: string; error?: string };
+      if (!response.ok || !body.runId || !body.conversationId) throw new Error(body.error ?? "run_start_failed");
+      if (body.conversationId !== conversationId) throw new Error("conversation_identity_mismatch");
+      const title = text.slice(0, 100);
+      replaceDashboardLocation(activeMode, body.conversationId, body.runId);
+      setRun({ id: body.runId, conversationId: body.conversationId, conversation_id: body.conversationId, status: "queued", mode: activeMode, model_alias: `${activeMode === "chat" ? "general" : activeMode}-prod` });
+      setConversations((current) => current.map((conversation) => conversation.id === conversationId ? { ...conversation, title: conversation.title === "Ny chatt" || !conversation.title ? title : conversation.title, updated_at: new Date().toISOString(), last_message_at: new Date().toISOString(), selected_resource_ids: selectedResourceIds } : conversation));
+    } catch (caught) {
+      if (optimisticId) setMessages((current) => current.filter((message) => message.id !== optimisticId));
+      setPrompt((current) => current || text);
+      if (caught instanceof Error && caught.message === "conversation_identity_mismatch") setError("Chatten tappade sin identitet mellan request och run. Inget svar renderades i fel chatt.");
+      else setError(caught instanceof Error && /resource|access|permission|mode/.test(caught.message) ? "Projektet eller en vald resurs passar inte den här arbetsytan längre. Uppdatera valet och försök igen." : "Uppgiften kunde inte startas. Försök igen.");
+    }
+    finally { setBusy(false); }
+  }'''
+          new_submit = '''  async function submitPrompt() {
+    const text = prompt.trim(); if (!text || busy || runInProgress) return;
+    const optimisticId = `local-${crypto.randomUUID()}`;
+    const submittedAt = new Date().toISOString();
+    const existingConversationId = selectedConversationId;
+    const projectIdAtSubmit = selectedProjectId;
+    // Render the user's turn immediately. Conversation/run creation happens
+    // after the browser has already acknowledged the click visually.
+    setMessages((current) => [...current, { id: optimisticId, role: "user", content: { text }, created_at: submittedAt }]);
+    setPrompt("");
+    setBusy(true); setError(null);
+    try {
+      // Standalone chats can be created transactionally by start_agent_run, so
+      // avoid a separate conversation HTTP/RPC waterfall. Project chats still
+      // create their project-bound conversation first.
+      const conversationId = existingConversationId ?? (projectIdAtSubmit ? await ensureConversation(activeMode) : null);
+      const response = await fetch("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId, conversationId, mode: activeMode, prompt: text, resourceIds: selectedResourceIds }) });
+      const body = await response.json() as { runId?: string; conversationId?: string; error?: string };
+      if (!response.ok || !body.runId || !body.conversationId) throw new Error(body.error ?? "run_start_failed");
+      if (conversationId && body.conversationId !== conversationId) throw new Error("conversation_identity_mismatch");
+      const title = text.slice(0, 100);
+      const now = new Date().toISOString();
+      if (!conversationId) {
+        const created: Conversation = { id: body.conversationId, project_id: null, mode: activeMode, title, created_at: now, updated_at: now, last_message_at: now, selected_resource_ids: selectedResourceIds };
+        setConversations((current) => [created, ...current.filter((conversation) => conversation.id !== created.id)]);
+        setSelectedConversationId(created.id);
+        selectedConversationIdRef.current = created.id;
+      } else {
+        setConversations((current) => current.map((conversation) => conversation.id === conversationId ? { ...conversation, title: conversation.title === "Ny chatt" || !conversation.title ? title : conversation.title, updated_at: now, last_message_at: now, selected_resource_ids: selectedResourceIds } : conversation));
+      }
+      replaceDashboardLocation(activeMode, body.conversationId, body.runId);
+      setRun({ id: body.runId, conversationId: body.conversationId, conversation_id: body.conversationId, status: "queued", mode: activeMode, model_alias: `${activeMode === "chat" ? "general" : activeMode}-prod` });
+    } catch (caught) {
+      setMessages((current) => current.filter((message) => message.id !== optimisticId));
+      setPrompt((current) => current || text);
+      if (caught instanceof Error && caught.message === "conversation_identity_mismatch") setError("Chatten tappade sin identitet mellan request och run. Inget svar renderades i fel chatt.");
+      else setError(caught instanceof Error && /resource|access|permission|mode/.test(caught.message) ? "Projektet eller en vald resurs passar inte den här arbetsytan längre. Uppdatera valet och försök igen." : "Uppgiften kunde inte startas. Försök igen.");
+    }
+    finally { setBusy(false); }
+  }'''
+          if old_submit not in text:
+            raise SystemExit('submit block not found exactly')
+          text = text.replace(old_submit, new_submit, 1)
+
+          old_preview = '''{run && <RunStreamPreview runId={run.id} conversationId={run.conversationId} activeConversationId={selectedConversationId} terminal={terminalStatuses.has(run.status)}/>}'''
+          new_preview = '''{run && <RunStreamPreview runId={run.id} conversationId={run.conversationId} activeConversationId={selectedConversationId} terminal={terminalStatuses.has(run.status)} onSnapshot={(snapshot) => {
+          if (snapshot.runId !== run.id || snapshot.conversationId !== run.conversationId) return;
+          setRun((current) => current && current.id === snapshot.runId ? { ...current, status: snapshot.status } : current);
+          if (terminalStatuses.has(snapshot.status) && selectedConversationIdRef.current === snapshot.conversationId) void loadConversation(snapshot.conversationId);
+        }}/>}'''
+          if old_preview not in text:
+            raise SystemExit('stream preview invocation not found exactly')
+          text = text.replace(old_preview, new_preview, 1)
+
+          path.write_text(text)
+          PY
+
+          rm .github/workflows/perf-ui-patch-temp.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add apps/web/app/dashboard/workspace-shell-v4.tsx .github/workflows/perf-ui-patch-temp.yml
+          git diff --cached --check
+          git commit -m "Make chat submit and stream UI low latency"
+          git push origin HEAD:perf/end-to-end-latency-20260828
