@@ -1,10 +1,18 @@
 import { NextResponse } from "next/server";
-import { createSupabaseAdminClient } from "../../../../lib/supabase/admin";
 import { createSupabaseServerClient } from "../../../../lib/supabase/server";
 
 type RpcClient = { rpc: <T>(name: string, args: Record<string, unknown>) => Promise<{ data: T | null; error: { message: string } | null }> };
-
-const resumableRunStatuses = ["queued", "retrying", "planning", "running", "waiting_for_tool", "verifying"];
+type ActiveRun = {
+  id: string;
+  status: string;
+  mode: string;
+  model_alias: string;
+  failure_code: string | null;
+  conversation_id: string;
+  input_message_id: string | null;
+  output_message_id: string | null;
+  created_at: string;
+};
 
 export async function GET(_: Request, context: { params: Promise<{ conversationId: string }> }) {
   const supabase = await createSupabaseServerClient();
@@ -20,6 +28,7 @@ export async function GET(_: Request, context: { params: Promise<{ conversationI
 
   if (conversationError || !conversation) return NextResponse.json({ error: "conversation_not_found" }, { status: 404 });
 
+  const rpc = supabase as unknown as RpcClient;
   const [{ data: messages, error: messagesError }, activeRunResult] = await Promise.all([
     supabase
       .from("messages")
@@ -27,22 +36,18 @@ export async function GET(_: Request, context: { params: Promise<{ conversationI
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: true })
       .limit(500),
-    createSupabaseAdminClient()
-      .schema("internal")
-      .from("agent_runs")
-      .select("id,status,mode,model_alias,failure_code,conversation_id,input_message_id,output_message_id,created_at")
-      .eq("conversation_id", conversationId)
-      .eq("requested_by", user.id)
-      .in("status", resumableRunStatuses)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    rpc.rpc<ActiveRun[]>("get_active_agent_run", { target_conversation_id: conversationId })
   ]);
 
   if (messagesError) return NextResponse.json({ error: "conversation_load_failed" }, { status: 500 });
-  if (activeRunResult.error) return NextResponse.json({ error: "conversation_run_resume_lookup_failed" }, { status: 500 });
+  if (activeRunResult.error) {
+    if (/authentication_required|conversation_access_denied|permission_denied/.test(activeRunResult.error.message)) {
+      return NextResponse.json({ error: "conversation_not_found" }, { status: 404 });
+    }
+    return NextResponse.json({ error: "conversation_run_resume_lookup_failed" }, { status: 500 });
+  }
 
-  return NextResponse.json({ conversation, messages: messages ?? [], activeRun: activeRunResult.data ?? null });
+  return NextResponse.json({ conversation, messages: messages ?? [], activeRun: activeRunResult.data?.[0] ?? null });
 }
 
 export async function DELETE(_: Request, context: { params: Promise<{ conversationId: string }> }) {
