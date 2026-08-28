@@ -222,21 +222,28 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
   useEffect(() => {
     if (!run || terminalStatuses.has(run.status)) return;
     let disposed = false;
+    let refreshPending = false;
     const refreshRun = async () => {
-      const response = await fetch(`/api/runs/${run.id}`, { cache: "no-store" });
-      if (!response.ok || disposed) return;
-      const next = await response.json() as Run;
-      if (next.conversation_id && next.conversation_id !== run.conversationId) {
-        setError("Svarskedjan matchade inte den öppna chatten. Svaret renderades inte i fel chatt.");
-        setRun({ ...next, conversationId: run.conversationId, failure_code: "conversation_identity_mismatch" });
-        return;
+      if (refreshPending || disposed) return;
+      refreshPending = true;
+      try {
+        const response = await fetch(`/api/runs/${run.id}`, { cache: "no-store" });
+        if (!response.ok || disposed) return;
+        const next = await response.json() as Run;
+        if (next.conversation_id && next.conversation_id !== run.conversationId) {
+          setError("Svarskedjan matchade inte den öppna chatten. Svaret renderades inte i fel chatt.");
+          setRun({ ...next, conversationId: run.conversationId, failure_code: "conversation_identity_mismatch" });
+          return;
+        }
+        const nextRun = { ...next, conversationId: run.conversationId };
+        setRun(nextRun);
+        if (terminalStatuses.has(next.status) && selectedConversationIdRef.current === run.conversationId) void loadConversation(run.conversationId);
+      } finally {
+        refreshPending = false;
       }
-      const nextRun = { ...next, conversationId: run.conversationId };
-      setRun(nextRun);
-      if (terminalStatuses.has(next.status) && selectedConversationIdRef.current === run.conversationId) void loadConversation(run.conversationId);
     };
-    void refreshRun();
-    const timer = window.setInterval(() => { void refreshRun(); }, 750);
+    // SSE is primary; REST polling is only a slow recovery path if EventSource is interrupted.
+    const timer = window.setInterval(() => { void refreshRun(); }, 5_000);
     return () => { disposed = true; window.clearInterval(timer); };
   }, [run?.id, run?.conversationId, run?.status]);
 
@@ -364,22 +371,36 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
 
   async function submitPrompt() {
     const text = prompt.trim(); if (!text || busy || runInProgress) return;
-    let optimisticId: string | null = null;
+    const optimisticId = `local-${crypto.randomUUID()}`;
+    const submittedAt = new Date().toISOString();
+    const existingConversationId = selectedConversationId;
+    const projectIdAtSubmit = selectedProjectId;
+    // Acknowledge the click visually before any network round trip.
+    setMessages((current) => [...current, { id: optimisticId, role: "user", content: { text }, created_at: submittedAt }]);
+    setPrompt("");
     setBusy(true); setError(null);
     try {
-      const conversationId = await ensureConversation(activeMode);
-      optimisticId = `local-${crypto.randomUUID()}`;
-      setMessages((current) => [...current, { id: optimisticId!, role: "user", content: { text }, created_at: new Date().toISOString() }]); setPrompt("");
+      // start_agent_run can create standalone conversations transactionally.
+      // Project chats still create their project-bound conversation first.
+      const conversationId = existingConversationId ?? (projectIdAtSubmit ? await ensureConversation(activeMode) : null);
       const response = await fetch("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId, conversationId, mode: activeMode, prompt: text, resourceIds: selectedResourceIds }) });
       const body = await response.json() as { runId?: string; conversationId?: string; error?: string };
       if (!response.ok || !body.runId || !body.conversationId) throw new Error(body.error ?? "run_start_failed");
-      if (body.conversationId !== conversationId) throw new Error("conversation_identity_mismatch");
+      if (conversationId && body.conversationId !== conversationId) throw new Error("conversation_identity_mismatch");
       const title = text.slice(0, 100);
+      const now = new Date().toISOString();
+      if (!conversationId) {
+        const created: Conversation = { id: body.conversationId, project_id: null, mode: activeMode, title, created_at: now, updated_at: now, last_message_at: now, selected_resource_ids: selectedResourceIds };
+        setConversations((current) => [created, ...current.filter((conversation) => conversation.id !== created.id)]);
+        setSelectedConversationId(created.id);
+        selectedConversationIdRef.current = created.id;
+      } else {
+        setConversations((current) => current.map((conversation) => conversation.id === conversationId ? { ...conversation, title: conversation.title === "Ny chatt" || !conversation.title ? title : conversation.title, updated_at: now, last_message_at: now, selected_resource_ids: selectedResourceIds } : conversation));
+      }
       replaceDashboardLocation(activeMode, body.conversationId, body.runId);
       setRun({ id: body.runId, conversationId: body.conversationId, conversation_id: body.conversationId, status: "queued", mode: activeMode, model_alias: `${activeMode === "chat" ? "general" : activeMode}-prod` });
-      setConversations((current) => current.map((conversation) => conversation.id === conversationId ? { ...conversation, title: conversation.title === "Ny chatt" || !conversation.title ? title : conversation.title, updated_at: new Date().toISOString(), last_message_at: new Date().toISOString(), selected_resource_ids: selectedResourceIds } : conversation));
     } catch (caught) {
-      if (optimisticId) setMessages((current) => current.filter((message) => message.id !== optimisticId));
+      setMessages((current) => current.filter((message) => message.id !== optimisticId));
       setPrompt((current) => current || text);
       if (caught instanceof Error && caught.message === "conversation_identity_mismatch") setError("Chatten tappade sin identitet mellan request och run. Inget svar renderades i fel chatt.");
       else setError(caught instanceof Error && /resource|access|permission|mode/.test(caught.message) ? "Projektet eller en vald resurs passar inte den här arbetsytan längre. Uppdatera valet och försök igen." : "Uppgiften kunde inte startas. Försök igen.");
@@ -433,7 +454,11 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
 
     <main className={styles.main}>
       {showChat && <><header className={styles.chatHeader}><div><div className={styles.breadcrumb}>{selectedProject ? selectedProject.name : "Fristående"} <span>/</span> {modeMeta[activeMode].label}</div><h1>{selectedConversation?.title && selectedConversation.title !== "Ny chatt" ? selectedConversation.title : "Ny chatt"}</h1></div><button className={styles.headerNewChat} type="button" onClick={() => startNewChat(activeMode, selectedProjectId)}>＋ Ny chatt</button></header>
-        <section className={styles.chatCanvas}>{loadingConversation ? <div className={styles.centerState}>Laddar chatt…</div> : messages.length ? <div className={styles.messageStream}>{messages.map((message) => <article key={message.id} className={`${styles.message} ${message.role === "user" ? styles.userMessage : styles.assistantMessage}`}><div className={styles.messageMeta}>{message.role === "user" ? "Du" : "DIV3RSA"}</div><div className={styles.messageBody}>{messageText(message.content)}</div></article>)}</div> : <div className={styles.emptyChat}><div className={styles.emptyIcon}>{modeMeta[activeMode].short}</div><h2>{selectedProject ? `Arbeta i ${selectedProject.name}` : "Vad vill du göra?"}</h2><p>{modeMeta[activeMode].description}</p><button className={styles.emptyResourceButton} type="button" onClick={() => setResourcePickerOpen(true)}>＋ Lägg till repo eller resurs</button><small>När relationer kan bevisas kopplar DIV3RSA även in rätt deployment och databas som read-only kontext automatiskt.</small></div>}{run && <RunStreamPreview runId={run.id} conversationId={run.conversationId} activeConversationId={selectedConversationId} terminal={terminalStatuses.has(run.status)}/>} {run && <div className={styles.runBar}><span className={`${styles.runDot} ${terminalStatuses.has(run.status) ? styles.runDotIdle : ""}`}/><strong>{run.status}</strong><span>{run.model_alias}</span>{run.failure_code && <span className={styles.runError}>{run.failure_code}</span>}{!terminalStatuses.has(run.status) && <button onClick={cancelRun}>Stoppa</button>}</div>}</section>
+        <section className={styles.chatCanvas}>{loadingConversation ? <div className={styles.centerState}>Laddar chatt…</div> : messages.length ? <div className={styles.messageStream}>{messages.map((message) => <article key={message.id} className={`${styles.message} ${message.role === "user" ? styles.userMessage : styles.assistantMessage}`}><div className={styles.messageMeta}>{message.role === "user" ? "Du" : "DIV3RSA"}</div><div className={styles.messageBody}>{messageText(message.content)}</div></article>)}</div> : <div className={styles.emptyChat}><div className={styles.emptyIcon}>{modeMeta[activeMode].short}</div><h2>{selectedProject ? `Arbeta i ${selectedProject.name}` : "Vad vill du göra?"}</h2><p>{modeMeta[activeMode].description}</p><button className={styles.emptyResourceButton} type="button" onClick={() => setResourcePickerOpen(true)}>＋ Lägg till repo eller resurs</button><small>När relationer kan bevisas kopplar DIV3RSA även in rätt deployment och databas som read-only kontext automatiskt.</small></div>}{run && <RunStreamPreview runId={run.id} conversationId={run.conversationId} activeConversationId={selectedConversationId} terminal={terminalStatuses.has(run.status)} onSnapshot={(snapshot) => {
+          if (snapshot.runId !== run.id || snapshot.conversationId !== run.conversationId) return;
+          setRun((current) => current && current.id === snapshot.runId ? { ...current, status: snapshot.status } : current);
+          if (terminalStatuses.has(snapshot.status) && selectedConversationIdRef.current === snapshot.conversationId) void loadConversation(snapshot.conversationId);
+        }}/>} {run && <div className={styles.runBar}><span className={`${styles.runDot} ${terminalStatuses.has(run.status) ? styles.runDotIdle : ""}`}/><strong>{run.status}</strong><span>{run.model_alias}</span>{run.failure_code && <span className={styles.runError}>{run.failure_code}</span>}{!terminalStatuses.has(run.status) && <button onClick={cancelRun}>Stoppa</button>}</div>}</section>
         <footer className={styles.composerArea}><div className={styles.contextLine}><span className={styles.locationChip}>{selectedProject?.name ?? "Fristående chatt"}</span>{selectedResources.map((resource) => <button type="button" className={styles.resourceChip} key={resource.id} onClick={() => toggleResource(resource.id)} title="Ta bort resurs"><span className={styles.chipMark}>{providerMark(resource.provider)}</span><span>{resource.display_name}</span><span className={styles.chipClose}>×</span></button>)}</div><div className={styles.composer}><button className={`${styles.addResourceButton} ${selectedResources.length ? styles.addResourceButtonActive : ""}`} type="button" title="Lägg till repo, projekt eller plugin" onClick={() => setResourcePickerOpen(true)}>＋</button><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submitPrompt(); } }} placeholder={runInProgress ? "Väntar på svar…" : modeMeta[activeMode].placeholder} disabled={busy || runInProgress} rows={2}/><button className={styles.sendButton} type="button" onClick={() => void submitPrompt()} disabled={busy || runInProgress || !prompt.trim()}>{busy ? "…" : "↑"}</button></div><div className={styles.composerHelp}><span>{selectedResources.length ? `${selectedResources.length} aktiv${selectedResources.length === 1 ? " resurs" : "a resurser"}` : "Ingen extern resurs vald"}</span><span>{runInProgress ? "Svar genereras för den här chatten" : "Enter för att skicka · Shift+Enter för ny rad"}</span></div>{error && <p className={styles.error}>{error}</p>}</footer></>}
 
       {activeSection === "projects" && <section className={styles.page}>
