@@ -18,8 +18,10 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          python3 scripts/temp_fix_ngram_patch.py
           python3 scripts/temp_apply_ngram_promotion.py
           rm -f \
+            scripts/temp_fix_ngram_patch.py \
             scripts/temp_apply_ngram_promotion.py \
             scripts/temp_ngram_agent_gate.sh \
             scripts/temp_qwen_runtime_perf_probe.mjs \
