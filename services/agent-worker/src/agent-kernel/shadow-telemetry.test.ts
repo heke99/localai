@@ -39,11 +39,11 @@ function task(overrides: Partial<TaskAnalysis> = {}): TaskAnalysis {
 }
 
 const baseline: LegacyExecutionSnapshot = {
-  executionTier: "standard",
+  executionTier: "STANDARD",
   repoDepth: "none",
   verificationRounds: 1,
   selectedSkills: ["general-reasoning"],
-  toolNames: []
+  allowedToolGroups: []
 };
 
 function input(overrides: Record<string, unknown> = {}) {
@@ -74,8 +74,8 @@ describe("AgentKernelShadowTelemetry", () => {
     const outcome = await telemetry.observe(input({
       objective: "SECRET USER PROMPT",
       task: task({ requiresCurrentInformation: true, researchDepth: "deep" }),
-      availableToolNames: ["web_search", "web_fetch"]
-    }), { ...baseline, toolNames: ["web_search", "web_fetch"] });
+      availableToolNames: ["research"]
+    }), { ...baseline, allowedToolGroups: ["research"] });
 
     expect(outcome.status).toBe("observed");
     expect(record).toHaveBeenCalledOnce();
@@ -90,7 +90,7 @@ describe("AgentKernelShadowTelemetry", () => {
     const outcome = await telemetry.observe(input({ task: task({ requiresRepository: true }) }), {
       ...baseline,
       repoDepth: "dependency",
-      toolNames: ["repository.inspect"]
+      allowedToolGroups: ["repository"]
     });
     expect(outcome.status).toBe("observed");
     if (outcome.status !== "observed") throw new Error("expected_observed");
