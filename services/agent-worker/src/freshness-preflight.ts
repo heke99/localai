@@ -37,6 +37,9 @@ const explicitCurrentLabelPattern = /\b(?:latest\s+(?:release|version)|current\s
 const downloadIndexPattern = /(?:^|\/)downloads?(?:\/|$)/i;
 const releaseIndexPattern = /\b(?:release\s+schedule|release\s+index|versions?|releases?)\b/i;
 const versionSpecificPathPattern = /(?:^|\/)v?\d+\.\d+\.\d+(?:\/|$)/i;
+const searchStopWords = new Set([
+  "what", "which", "find", "search", "look", "verify", "check", "tell", "show", "please", "using", "from", "with", "that", "this", "the", "and", "for", "now", "current", "latest", "newest", "recent", "official", "information", "source", "sources", "web", "open", "relevant", "report", "state", "answer", "memory", "alone", "today", "right", "currently", "senaste", "nyaste", "aktuell", "aktuellt", "idag", "sök", "söka", "källa", "källor"
+]);
 
 function normalizedSearchQuery(value: string, maxLength = 500): string {
   return value.replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "").slice(0, maxLength).trim();
@@ -52,6 +55,15 @@ function compactSearchSentence(sentence: string): string {
   return normalizedSearchQuery(compact, 180);
 }
 
+function authorityFocusedQuery(prompt: string, compact: string): string | null {
+  const sweden = /\b(?:sweden|sverige|swedish|svensk(?:a|t)?)\b/i.test(prompt);
+  if (sweden && /\b(?:vat|moms|momssats|tax|skatt)\b/i.test(prompt)) return `site:skatteverket.se ${compact}`;
+  if (sweden && /\b(?:visa|visum|immigration|residence\s+permit|uppehållstillstånd|work\s+permit|arbetstillstånd)\b/i.test(prompt)) return `site:migrationsverket.se ${compact}`;
+  if (sweden && /\b(?:law|legal|regulation|legislation|lag|förordning|regelverk)\b/i.test(prompt)) return `site:riksdagen.se ${compact}`;
+  if (/\bnode\.?js\b/i.test(prompt) && /\b(?:release|version)\b/i.test(prompt)) return `site:nodejs.org ${compact}`;
+  return null;
+}
+
 export function freshnessSearchQueries(prompt: string): string[] {
   const normalized = normalizedSearchQuery(prompt);
   if (!normalized) return [];
@@ -63,8 +75,22 @@ export function freshnessSearchQueries(prompt: string): string[] {
     ?? sentences[0]
     ?? normalized;
   const compact = compactSearchSentence(intentSentence);
-  const queries = [normalized, intentSentence, compact];
-  return [...new Set(queries.filter((query) => query.length >= 4))].slice(0, 3);
+  const authorityQuery = authorityFocusedQuery(normalized, compact);
+  const queries = [authorityQuery, compact, intentSentence, normalized];
+  return [...new Set(queries.filter((query): query is string => typeof query === "string" && query.length >= 4))].slice(0, 3);
+}
+
+function promptSearchTerms(prompt: string): string[] {
+  const matches = prompt.toLowerCase().match(/[\p{L}\p{N}.+-]+/gu) ?? [];
+  const terms = matches
+    .map((term) => term.replace(/^[.+-]+|[.+-]+$/g, ""))
+    .filter((term) => term.length >= 3 && !searchStopWords.has(term));
+  return [...new Set(terms)].slice(0, 16);
+}
+
+function candidateRelevance(url: URL, title: string, snippet: string, prompt: string): number {
+  const haystack = `${url.hostname} ${url.pathname} ${title} ${snippet}`.toLowerCase();
+  return promptSearchTerms(prompt).reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
 }
 
 function currentIntentScore(url: URL, title: string, snippet: string): number {
@@ -94,7 +120,7 @@ function desiredFreshnessSources(task: TaskAnalysis): number {
 
 function authorityRank(hostname: string): number {
   if (/(?:^|\.)(?:gov|gob|gouv)\.[a-z.]+$/i.test(hostname)) return 0;
-  if (/(?:^|\.)(?:europa\.eu|who\.int|un\.org|riksdagen\.se|regeringen\.se|skatteverket\.se|svk\.se|digg\.se)$/i.test(hostname)) return 0;
+  if (/(?:^|\.)(?:europa\.eu|who\.int|un\.org|riksdagen\.se|regeringen\.se|skatteverket\.se|migrationsverket\.se|polisen\.se|forsakringskassan\.se|arbetsformedlingen\.se|bolagsverket\.se|verksamt\.se|transportstyrelsen\.se|svk\.se|digg\.se)$/i.test(hostname)) return 0;
   if (/^(?:docs|developer|developers|support|help)\./i.test(hostname)) return 0;
   if (/\.(?:edu|ac\.[a-z]{2})$/i.test(hostname)) return 1;
   return 2;
@@ -104,6 +130,7 @@ export interface RankedSearchCandidate {
   url: string;
   rank: number;
   score: number;
+  relevanceScore: number;
   intentScore: number;
   publishedAtMs: number;
 }
@@ -126,6 +153,7 @@ export function rankSearchCandidates(output: unknown, prompt: string): RankedSea
       url: url.href,
       rank: authorityRank(hostname),
       score: typeof value.score === "number" ? value.score : Math.max(0, 100 - index),
+      relevanceScore: candidateRelevance(url, title, snippet, prompt),
       intentScore: asksLatest ? currentIntentScore(url, title, snippet) : 0,
       publishedAtMs: publishedTimestamp(value.publishedAt)
     }];
@@ -133,8 +161,10 @@ export function rankSearchCandidates(output: unknown, prompt: string): RankedSea
 
   return candidates.sort((a, b) => {
     if (asksLatest && a.intentScore !== b.intentScore) return b.intentScore - a.intentScore;
+    if (a.relevanceScore !== b.relevanceScore) return b.relevanceScore - a.relevanceScore;
+    if (a.rank !== b.rank) return a.rank - b.rank;
     if (asksLatest && a.publishedAtMs !== b.publishedAtMs) return b.publishedAtMs - a.publishedAtMs;
-    return a.rank - b.rank || b.score - a.score;
+    return b.score - a.score;
   });
 }
 
@@ -232,7 +262,8 @@ export async function collectRequiredFreshnessEvidence(input: {
       });
       mergedResults.push(...searchResults(searchOutput));
       candidates = rankSearchCandidates({ results: mergedResults }, normalizedPrompt);
-      if (!requiresLatestArtifactEvidence && candidates.length >= desiredSources) break;
+      const materiallyRelevant = candidates.filter((candidate) => candidate.relevanceScore >= 2);
+      if (!requiresLatestArtifactEvidence && materiallyRelevant.length >= desiredSources) break;
     } catch (error) {
       await queue.step(run.runId, "tool", "blocked", "web_search", {
         runtimeRequired: true,

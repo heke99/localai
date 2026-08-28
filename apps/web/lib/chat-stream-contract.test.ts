@@ -15,6 +15,15 @@ describe("chat streaming UI contract", () => {
     expect(route).toContain('send("snapshot"');
   });
 
+  it("rotates long SSE connections before the Vercel 300 second function timeout", () => {
+    const route = source("apps/web/app/api/runs/[runId]/stream/route.ts");
+    expect(route).toContain("const STREAM_RETRY_MS = 250;");
+    expect(route).toContain("const MAX_CONNECTION_MS = 240_000;");
+    expect(route).toContain("retry: ${STREAM_RETRY_MS}");
+    expect(route).toContain('send("rotate"');
+    expect(route).toContain("Date.now() - connectionStartedAt >= MAX_CONNECTION_MS");
+  });
+
   it("keeps the last streamed answer visible while persisted conversation state catches up", () => {
     const preview = source("apps/web/app/dashboard/run-stream-preview.tsx");
     expect(preview).toContain("if (terminal) return;");

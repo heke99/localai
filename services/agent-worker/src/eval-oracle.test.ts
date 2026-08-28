@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   extractNodeCurrentRelease,
   failedLiveOracleCaseIds,
+  observedNodeCurrentValues,
   resolveLiveEvalOracle,
   validateLiveOracleOutput,
   type OracleFetch
@@ -23,7 +24,7 @@ describe("live eval oracle", () => {
     expect(extractNodeCurrentRelease("v26.8.1 Current v26.9.0 Latest Release")).toBeNull();
   });
 
-  it("requires the answer to contain exactly the oracle semver", () => {
+  it("validates the version claimed as Current while allowing separate LTS context", () => {
     const oracle = {
       kind: "node-current-release" as const,
       expectedValue: "v26.8.1",
@@ -32,7 +33,18 @@ describe("live eval oracle", () => {
     };
     expect(validateLiveOracleOutput("Latest Release: v26.8.1.", oracle)).toEqual([]);
     expect(validateLiveOracleOutput("Latest Release: v24.18.0.", oracle)[0]).toContain("live_oracle_version_mismatch");
-    expect(validateLiveOracleOutput("Current is v26.8.1; LTS is v24.20.0.", oracle)[0]).toContain("live_oracle_version_mismatch");
+    expect(validateLiveOracleOutput("The current latest Node.js release is v26.8.1. The latest LTS is v24.20.0.", oracle)).toEqual([]);
+    expect(observedNodeCurrentValues("Current is v26.8.1; LTS is v24.20.0.")).toEqual(["v26.8.1"]);
+  });
+
+  it("fails closed when multiple versions are explicitly presented as Current", () => {
+    const oracle = {
+      kind: "node-current-release" as const,
+      expectedValue: "v26.8.1",
+      sourceUrl: "https://nodejs.org/en/download/current",
+      checkedAt: "2026-08-27T17:00:00.000Z"
+    };
+    expect(validateLiveOracleOutput("Current is v26.8.1. Latest Release: v26.9.0.", oracle)[0]).toContain("live_oracle_current_claim_ambiguous");
   });
 
   it("treats any failed live-oracle case as a blocking gate independent of pass rate", () => {

@@ -24,12 +24,24 @@ function webDefinitions(): ModelToolDefinition[] {
   ] as unknown as ModelToolDefinition[];
 }
 
+const vatAuthorities = [
+  "https://www.skatteverket.se/foretag/moms/momssatser.html",
+  "https://taxation-customs.ec.europa.eu/taxation/vat/vat-rates_en"
+].sort();
+
 describe("freshnessSearchQueries", () => {
-  it("falls back from a verbose research instruction to the intent-bearing sentence and compact query", () => {
+  it("focuses a verbose latest-release request on the official authority and compact intent", () => {
     const queries = freshnessSearchQueries("Find the current latest Node.js release from official Node.js information. Search the web, open the relevant source, and report the version you verified and that the information was checked now. Do not rely on model memory.");
-    expect(queries[0]).toContain("Search the web");
-    expect(queries[1]).toBe("Find the current latest Node.js release from official Node.js information");
-    expect(queries[2]).toBe("current latest Node.js release");
+    expect(queries[0]).toBe("site:nodejs.org current latest Node.js release");
+    expect(queries[1]).toBe("current latest Node.js release");
+    expect(queries[2]).toBe("Find the current latest Node.js release from official Node.js information");
+  });
+
+  it("targets Skatteverket first for current Swedish VAT research", () => {
+    const queries = freshnessSearchQueries("What is the current standard VAT rate (normal momssats) in Sweden? Verify it using current web research, open an authoritative source such as Skatteverket, and state the source in the answer.");
+    expect(queries[0]).toMatch(/^site:skatteverket\.se /);
+    expect(queries[0]).toContain("VAT rate");
+    expect(queries[0]).toContain("Sweden");
   });
 });
 
@@ -84,6 +96,28 @@ describe("rankSearchCandidates", () => {
     expect(ranked[0]?.url).toBe("https://nodejs.org/en/download/current");
     expect(ranked[0]?.intentScore).toBe(6);
     expect(ranked[1]?.intentScore).toBe(4);
+  });
+
+  it("does not let generic current pages outrank materially relevant VAT authority evidence", () => {
+    const ranked = rankSearchCandidates({
+      results: [
+        {
+          url: "https://current.com/",
+          title: "Current",
+          snippet: "Current banking products",
+          score: 100
+        },
+        {
+          url: "https://www.skatteverket.se/foretag/moms/momssatser.html",
+          title: "Momssatser och undantag från moms",
+          snippet: "Den generella momssatsen är 25 procent i Sverige",
+          score: 1
+        }
+      ]
+    }, "What is the current standard VAT rate (normal momssats) in Sweden?");
+
+    expect(ranked[0]?.url).toContain("skatteverket.se");
+    expect(ranked[0]?.relevanceScore).toBeGreaterThan(ranked[1]?.relevanceScore ?? 0);
   });
 });
 
@@ -194,7 +228,7 @@ describe("collectRequiredFreshnessEvidence", () => {
     ]);
   });
 
-  it("uses multiple sources from one search for ordinary current-state research", async () => {
+  it("uses the strongest available sources for ordinary current-state research", async () => {
     const prompt = "What is the current standard VAT rate in Sweden? Use official sources.";
     const execute = vi.fn(async (_run: ClaimedRun, call: { name: string; input: Record<string, unknown> }) => {
       if (call.name === "web_search") {
@@ -234,14 +268,14 @@ describe("collectRequiredFreshnessEvidence", () => {
     });
 
     const calls = execute.mock.calls.map(([, call]) => call);
-    expect(calls.map((call) => call.name)).toEqual(["web_search", "web_fetch", "web_fetch"]);
-    expect(calls.filter((call) => call.name === "web_fetch").map((call) => String(call.input.url))).toEqual([
-      "https://www.skatteverket.se/foretag/moms/momssatser.html",
-      "https://taxation-customs.ec.europa.eu/taxation/vat/vat-rates_en"
-    ]);
+    const searchCalls = calls.filter((call) => call.name === "web_search");
+    const fetchCalls = calls.filter((call) => call.name === "web_fetch");
+    expect(searchCalls.length).toBeGreaterThanOrEqual(1);
+    expect(searchCalls.length).toBeLessThanOrEqual(3);
+    expect(fetchCalls.map((call) => String(call.input.url)).sort()).toEqual(vatAuthorities);
   });
 
-  it("uses a focused fallback search only when the first search has too little evidence", async () => {
+  it("continues focused fallback searches when the initial evidence set is too small", async () => {
     const execute = vi.fn(async (_run: ClaimedRun, call: { name: string; input: Record<string, unknown> }) => {
       if (call.name === "web_search") {
         const searchNumber = execute.mock.calls.filter(([, called]) => called.name === "web_search").length;
@@ -282,12 +316,12 @@ describe("collectRequiredFreshnessEvidence", () => {
       trace: []
     });
 
-    expect(execute.mock.calls.map(([, call]) => call.name)).toEqual([
-      "web_search",
-      "web_search",
-      "web_fetch",
-      "web_fetch"
-    ]);
+    const calls = execute.mock.calls.map(([, call]) => call);
+    const searchCalls = calls.filter((call) => call.name === "web_search");
+    const fetchCalls = calls.filter((call) => call.name === "web_fetch");
+    expect(searchCalls.length).toBeGreaterThanOrEqual(2);
+    expect(searchCalls.length).toBeLessThanOrEqual(3);
+    expect(fetchCalls.map((call) => String(call.input.url)).sort()).toEqual(vatAuthorities);
   });
 
   it("still proceeds when only one distinct source exists after all fallback searches", async () => {

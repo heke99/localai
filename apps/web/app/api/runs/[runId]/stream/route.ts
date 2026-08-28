@@ -7,6 +7,8 @@ export const runtime = "nodejs";
 const TERMINAL = new Set(["completed", "failed", "cancelled", "timed_out"]);
 const POLL_MS = 50;
 const HEARTBEAT_MS = 15_000;
+const STREAM_RETRY_MS = 250;
+const MAX_CONNECTION_MS = 240_000;
 
 type RunStreamRow = {
   id: string;
@@ -52,6 +54,7 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
       let lastRevision = -1;
       let lastStatus = "";
       let lastHeartbeat = Date.now();
+      const connectionStartedAt = Date.now();
 
       const close = () => {
         if (closed) return;
@@ -64,6 +67,7 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
       };
       const abort = () => close();
       request.signal.addEventListener("abort", abort, { once: true });
+      controller.enqueue(encoder.encode(`retry: ${STREAM_RETRY_MS}\n\n`));
 
       try {
         let current: RunStreamRow | null = first;
@@ -82,6 +86,15 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
           }
           if (TERMINAL.has(current.status)) {
             send("done", { runId: current.id, conversationId: current.conversation_id, status: current.status });
+            break;
+          }
+          if (Date.now() - connectionStartedAt >= MAX_CONNECTION_MS) {
+            send("rotate", {
+              runId: current.id,
+              conversationId: current.conversation_id,
+              status: current.status,
+              revision: current.stream_revision
+            });
             break;
           }
           if (Date.now() - lastHeartbeat >= HEARTBEAT_MS) {

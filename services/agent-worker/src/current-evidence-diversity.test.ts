@@ -50,7 +50,7 @@ function currentRun(): ClaimedRun {
 }
 
 describe("current-information evidence diversity", () => {
-  it("opens a second ranked fallback when the first successful fetch does not strengthen the rejected claim", async () => {
+  it("opens multiple ranked fallback sources and prioritizes the stronger relevant claim", async () => {
     const run = currentRun();
     const jobs = queue(run);
     const requests: GenerateRequest[] = [];
@@ -143,7 +143,7 @@ describe("current-information evidence diversity", () => {
 
     expect(attemptedFetches).toContain(irrelevantUrl);
     expect(attemptedFetches).toContain(goodUrl);
-    expect(attemptedFetches.indexOf(irrelevantUrl)).toBeLessThan(attemptedFetches.indexOf(goodUrl));
+    expect(attemptedFetches.indexOf(goodUrl)).toBeLessThan(attemptedFetches.indexOf(irrelevantUrl));
     expect(jobs.fail).not.toHaveBeenCalled();
     expect(jobs.complete).toHaveBeenCalledWith(run, expect.objectContaining({ content: expect.stringContaining("25%") }));
   });
