@@ -1,8 +1,8 @@
 begin;
 
--- Keep privileged access to internal.agent_runs behind a narrowly scoped,
--- authenticated function. The public Data API wrapper remains security invoker;
--- callers never receive table privileges on the internal queue/run tables.
+-- Keep all privileged access to internal.agent_runs in the private schema. The
+-- helper authenticates and scopes every lookup to the caller before reading the
+-- internal run table.
 create or replace function internal.get_active_agent_run_for_conversation(target_conversation_id uuid)
 returns table(
   id uuid,
@@ -57,12 +57,10 @@ end;
 $$;
 
 revoke all on function internal.get_active_agent_run_for_conversation(uuid) from public, anon, authenticated, service_role;
-grant execute on function internal.get_active_agent_run_for_conversation(uuid) to authenticated, service_role;
 
--- USAGE only permits resolving names in the private schema. No table privilege is
--- granted; authenticated users still cannot select from internal.agent_runs.
-grant usage on schema internal to authenticated, service_role;
-
+-- PostgREST can expose only the public wrapper. It runs as the migration owner so
+-- authenticated never needs USAGE on the private schema; the internal helper above
+-- remains the mandatory auth/membership/ownership gate.
 create or replace function public.get_active_agent_run(target_conversation_id uuid)
 returns table(
   id uuid,
@@ -77,7 +75,7 @@ returns table(
 )
 language sql
 stable
-security invoker
+security definer
 set search_path = ''
 as $$
   select *
