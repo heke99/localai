@@ -3,6 +3,8 @@ import type { Database } from "@div3rsa/db";
 import { LlamaCppAdmissionController, OpenAiCompatibleAdapter } from "@div3rsa/model-gateway";
 import { AgentWorkerProcessor } from "./processor";
 import { SupabaseAgentQueue } from "./supabase-queue";
+import { AgentKernelShadowQueue } from "./agent-kernel/shadow-queue";
+import { agentKernelConfigFromEnvironment } from "./agent-kernel/config";
 import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
 import { CompositeWorkerToolRuntime } from "./composite-tool-runtime";
 import { CoreToolRuntime } from "./core-tool-runtime";
@@ -82,7 +84,9 @@ const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApi
   gpuMetricsUrl: process.env.DIV3RSA_GPU_METRICS_URL?.trim() || null
 });
 const adapter = new OpenAiCompatibleAdapter(inferenceBaseUrl, inferenceApiKey, fetch, admission);
-const queue = new SupabaseAgentQueue(supabase);
+const baseQueue = new SupabaseAgentQueue(supabase);
+const agentKernelConfig = agentKernelConfigFromEnvironment();
+const queue = new AgentKernelShadowQueue(baseQueue, agentKernelConfig);
 const workerId = process.env.DIV3RSA_WORKER_ID ?? `agent-worker-${process.pid}`;
 const runtimeConfig = runtimeRegistrationConfigFromEnvironment(modelPort);
 const runtimeRegistration = runtimeConfig
