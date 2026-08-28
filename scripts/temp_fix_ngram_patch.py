@@ -18,10 +18,14 @@ replacements = [
         '    \'console.log("[gpuhub-production-profile] durable p8/262144 + ngram-mod profile, retrying verification, conservative p1 rollback and post-promotion 8/8 gate present");\\n\',\n',
         '    \'console.log("[gpuhub-production-profile] durable p8/262144 + ngram-mod profile, retrying verification, conservative p1 rollback and post-promotion 8/8 gate present");\',\n',
     ),
+    (
+        '    \'  [reconcile.includes("BEFORE_SPEC_TYPE") && reconcile.includes("DIV3RSA_MODEL_SPEC_TYPE=\\\"$BEFORE_SPEC_TYPE\\\""), "profile reconciler speculative rollback missing"],\\n\',\n',
+        '    \'  [reconcile.includes("BEFORE_SPEC_TYPE") && reconcile.includes("DIV3RSA_MODEL_SPEC_TYPE"), "profile reconciler speculative rollback missing"],\\n\',\n',
+    ),
 ]
 for old, new in replacements:
     if t.count(old) != 1:
         raise SystemExit(f"expected patch literal not found exactly once: {old[:100]!r}")
     t = t.replace(old, new, 1)
 p.write_text(t, encoding="utf-8")
-print("fixed no-newline matchers")
+print("fixed no-newline matchers and smoke quoting")
