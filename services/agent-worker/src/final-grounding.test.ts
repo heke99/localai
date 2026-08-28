@@ -40,7 +40,7 @@ describe("groundedSynthesisMessages", () => {
       attempt: 1,
       reviewerFeedback: "Canonical Current page says v26.8.1; the draft relied on a historical release page."
     });
-    expect(String(messages.at(-1)?.content ?? "")).toContain("Independent evidence reviewer feedback to correct");
+    expect(String(messages.at(-1)?.content ?? "")).toContain("Independent evidence reviewer feedback:");
     expect(String(messages.at(-1)?.content ?? "")).toContain("Canonical Current page says v26.8.1");
   });
 });

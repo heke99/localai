@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const TERMINAL = new Set(["completed", "failed", "cancelled", "timed_out"]);
-const POLL_MS = 120;
+const POLL_MS = 50;
 const HEARTBEAT_MS = 15_000;
 
 type RunStreamRow = {

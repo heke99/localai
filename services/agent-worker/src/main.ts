@@ -40,6 +40,21 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function errorDetail(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const value = error as Record<string, unknown>;
+    const message = typeof value.message === "string" ? value.message : null;
+    const code = typeof value.code === "string" ? value.code : null;
+    const details = typeof value.details === "string" ? value.details : null;
+    const hint = typeof value.hint === "string" ? value.hint : null;
+    const structured = [message, code ? `code=${code}` : null, details ? `details=${details}` : null, hint ? `hint=${hint}` : null].filter(Boolean).join("; ");
+    if (structured) return structured.slice(0, 1500);
+    try { return JSON.stringify(error).slice(0, 1500); } catch { /* fall through */ }
+  }
+  return String(error ?? "worker_loop_failed").slice(0, 1500);
+}
+
 const supabase = createClient<Database>(required("SUPABASE_URL"), required("SUPABASE_SECRET_KEY"), { auth: { persistSession: false, autoRefreshToken: false } });
 const modelPort = numericEnvironment("DIV3RSA_MODEL_PORT", 8080);
 const modelParallel = Math.max(1, Math.floor(numericEnvironment("DIV3RSA_MODEL_PARALLEL", 4)));
@@ -126,7 +141,7 @@ async function waitForHealthyModel() {
       }
       lastDetail = health.detail ?? "unhealthy";
     } catch (error) {
-      lastDetail = error instanceof Error ? error.message : "health_check_failed";
+      lastDetail = errorDetail(error);
     }
 
     if (Date.now() - startedAt >= timeoutMs) {
@@ -144,7 +159,7 @@ async function syncRuntimeRegistration() {
     const registered = await runtimeRegistration.sync();
     if (registered) console.info(`[agent-worker] runtime registry ready; worker=${workerId}; provider=${runtimeConfig?.providerKey}`);
   } catch (error) {
-    console.warn(`[agent-worker] runtime registry sync failed; worker=${workerId}; detail=${error instanceof Error ? error.message : "runtime_registry_failed"}`);
+    console.warn(`[agent-worker] runtime registry sync failed; worker=${workerId}; detail=${errorDetail(error)}`);
   }
 }
 
@@ -156,15 +171,15 @@ if (runtimeRegistration) {
   heartbeatTimer.unref?.();
 }
 
-const idlePollMs = Math.max(100, numericEnvironment("DIV3RSA_QUEUE_IDLE_POLL_MS", 200));
-const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BACKOFF_MS", 1000));
+const idlePollMs = Math.max(50, numericEnvironment("DIV3RSA_QUEUE_IDLE_POLL_MS", 100));
+const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BACKOFF_MS", 750));
 
 while (!stopping) {
   try {
     const processed = await processor.processOnce();
     if (!processed) await sleep(idlePollMs);
   } catch (error) {
-    const detail = error instanceof Error ? error.message : "worker_loop_failed";
+    const detail = errorDetail(error);
     console.error(`[agent-worker] processing loop error; worker=${workerId}; detail=${detail}`);
     if (!stopping) await sleep(errorBackoffMs);
   }

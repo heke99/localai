@@ -16,6 +16,7 @@ export default defineConfig({
     command: process.env.CI ? "npm run start --workspace=@div3rsa/web" : "npm run dev",
     url: "http://127.0.0.1:3000",
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000
+    timeout: 120_000,
+    env: { DIV3RSA_E2E_UI_HARNESS: "1" }
   }
 });
