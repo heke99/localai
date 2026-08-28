@@ -55,11 +55,9 @@ describe("chat streaming UI contract", () => {
     expect(shellV4).toContain("body.activeRun");
     expect(shellV4).toContain("void refreshRun();");
 
-    expect(conversationRoute).toContain("createSupabaseAdminClient");
-    expect(conversationRoute).toContain('.schema("internal")');
-    expect(conversationRoute).toContain('.from("agent_runs")');
-    expect(conversationRoute).toContain('.eq("requested_by", user.id)');
-    expect(conversationRoute).toContain("resumableRunStatuses");
-    expect(conversationRoute).toContain("activeRun: activeRunResult.data ?? null");
+    expect(conversationRoute).toContain('rpc.rpc<ActiveRun[]>("get_active_agent_run"');
+    expect(conversationRoute).not.toContain("createSupabaseAdminClient");
+    expect(conversationRoute).not.toContain('.schema("internal")');
+    expect(conversationRoute).toContain("activeRun: activeRunResult.data?.[0] ?? null");
   });
 });
