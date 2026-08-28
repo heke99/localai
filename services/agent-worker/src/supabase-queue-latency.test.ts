@@ -16,8 +16,9 @@ const run: ClaimedRun = {
 };
 
 type RpcResult = { data: unknown; error: { message: string } | null };
+type RpcMock = ReturnType<typeof vi.fn<(name: string, args?: Record<string, unknown>) => Promise<RpcResult>>>;
 
-function queueWith(rpc: ReturnType<typeof vi.fn>) {
+function queueWith(rpc: RpcMock) {
   return new SupabaseAgentQueue({ rpc } as unknown as SupabaseClient<Database>);
 }
 
@@ -29,7 +30,7 @@ describe("SupabaseAgentQueue latency controls", () => {
   it("does not make token delivery wait on a pending stream RPC and drains before completion", async () => {
     let releaseAppend!: () => void;
     const appendGate = new Promise<void>((resolve) => { releaseAppend = resolve; });
-    const rpc = vi.fn(async (name: string): Promise<RpcResult> => {
+    const rpc = vi.fn<(name: string, args?: Record<string, unknown>) => Promise<RpcResult>>(async (name) => {
       if (name === "worker_append_agent_run_stream") {
         await appendGate;
         return { data: null, error: null };
@@ -59,7 +60,7 @@ describe("SupabaseAgentQueue latency controls", () => {
   });
 
   it("coalesces adjacent deltas into one durable append before completing", async () => {
-    const rpc = vi.fn(async (): Promise<RpcResult> => ({ data: null, error: null }));
+    const rpc = vi.fn<(name: string, args?: Record<string, unknown>) => Promise<RpcResult>>(async () => ({ data: null, error: null }));
     const queue = queueWith(rpc);
 
     await queue.stream(run.runId, "Hel");
@@ -69,15 +70,17 @@ describe("SupabaseAgentQueue latency controls", () => {
     const appendCalls = rpc.mock.calls.filter(([name]) => name === "worker_append_agent_run_stream");
     expect(appendCalls).toHaveLength(1);
     expect(appendCalls[0]?.[1]).toEqual(expect.objectContaining({ delta: "Hello", reset_stream: false }));
-    const appendOrder = rpc.mock.invocationCallOrder[rpc.mock.calls.findIndex(([name]) => name === "worker_append_agent_run_stream")]!;
-    const completeOrder = rpc.mock.invocationCallOrder[rpc.mock.calls.findIndex(([name]) => name === "worker_complete_agent_run")]!;
-    expect(appendOrder).toBeLessThan(completeOrder);
+    const appendIndex = rpc.mock.calls.findIndex(([name]) => name === "worker_append_agent_run_stream");
+    const completeIndex = rpc.mock.calls.findIndex(([name]) => name === "worker_complete_agent_run");
+    expect(appendIndex).toBeGreaterThanOrEqual(0);
+    expect(completeIndex).toBeGreaterThanOrEqual(0);
+    expect(rpc.mock.invocationCallOrder[appendIndex]!).toBeLessThan(rpc.mock.invocationCallOrder[completeIndex]!);
   });
 
   it("deduplicates cancellation checks for 400ms while preserving a fresh check afterward", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-28T15:00:00Z"));
-    const rpc = vi.fn(async (name: string): Promise<RpcResult> => ({ data: name === "worker_is_agent_run_cancelled" ? false : null, error: null }));
+    const rpc = vi.fn<(name: string, args?: Record<string, unknown>) => Promise<RpcResult>>(async (name) => ({ data: name === "worker_is_agent_run_cancelled" ? false : null, error: null }));
     const queue = queueWith(rpc);
 
     await expect(queue.isCancelled(run.runId)).resolves.toBe(false);
