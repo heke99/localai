@@ -14,10 +14,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: perf/qwen-runtime-latency-20260828
-      - name: Apply exact permanent patch and remove temporary harnesses
+      - name: Apply validated permanent non-workflow patch
         shell: bash
         run: |
           set -Eeuo pipefail
+          if [[ ! -f scripts/temp_apply_ngram_promotion.py ]]; then
+            echo "Permanent non-workflow patch already applied."
+            exit 0
+          fi
           python3 scripts/temp_fix_ngram_patch.py
           python3 scripts/temp_apply_ngram_promotion.py
           rm -f \
@@ -25,12 +29,17 @@ jobs:
             scripts/temp_apply_ngram_promotion.py \
             scripts/temp_ngram_agent_gate.sh \
             scripts/temp_qwen_runtime_perf_probe.mjs \
-            scripts/temp_qwen_runtime_benchmark.sh \
-            .github/workflows/temp-apply-ngram-promotion.yml \
-            .github/workflows/temp-ngram-full-agent-gate.yml
+            scripts/temp_qwen_runtime_benchmark.sh
           npm run validate:runtime-startup
           npm run test:gpuhub-production-profile
           git diff --check
+          # This Actions token may write repository contents but GitHub blocks it
+          # from changing workflow files. Keep those at HEAD here; the connected
+          # repo action applies the already-validated workflow delta separately.
+          git checkout HEAD -- \
+            .github/workflows/p8-promotion-verify.yml \
+            .github/workflows/temp-apply-ngram-promotion.yml \
+            .github/workflows/temp-ngram-full-agent-gate.yml
           git config user.name "heke99"
           git config user.email "129280077+heke99@users.noreply.github.com"
           git add -A
