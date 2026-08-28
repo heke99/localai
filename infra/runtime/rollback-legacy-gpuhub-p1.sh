@@ -34,7 +34,14 @@ p.write_text(t,encoding="utf-8")
 PY
 chmod 600 "$ENV_FILE"
 
-DIV3RSA_FORCE_MODEL_RESTART=1 bash "$RECOVERY_SCRIPT"
+# Explicit command-scoped values must win over any p8 values inherited by the
+# verification shell that invokes this rollback. Recovery-v2 captures these
+# before sourcing persistent worker state, so omitting them can accidentally
+# resolve 32768 as total context across 8 slots instead of p1 total context.
+DIV3RSA_FORCE_MODEL_RESTART=1 \
+DIV3RSA_MODEL_PARALLEL=1 \
+DIV3RSA_MODEL_CONTEXT_SIZE=32768 \
+  bash "$RECOVERY_SCRIPT"
 cmd="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
 [[ "$cmd" =~ --parallel[=\ ]+1 ]] || fatal "rollback did not restore parallel=1: $cmd"
 [[ "$cmd" =~ --ctx-size[=\ ]+32768 ]] || fatal "rollback did not restore ctx=32768: $cmd"
