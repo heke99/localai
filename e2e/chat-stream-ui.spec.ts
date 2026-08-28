@@ -23,7 +23,7 @@ test("streamed assistant text becomes visible and survives terminal transition",
     });
   });
 
-  await page.goto("/__e2e/chat-stream");
+  await page.goto("/e2e-chat-stream");
   const answer = page.getByText("The current time in Europe/Stockholm is 00:09:00.");
   await expect(answer).toBeVisible();
   await expect(page.locator(`[data-run-stream="${runId}"]`)).toHaveAttribute("data-stream-revision", "1");
