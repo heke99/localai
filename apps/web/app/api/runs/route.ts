@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
 import { publicRuntimeWake, runtimeAliasForMode } from "../../../lib/runtime/contracts";
 import { ensureModelRuntime } from "../../../lib/runtime/production";
@@ -57,12 +57,19 @@ export async function POST(request: Request) {
   if (!run) return NextResponse.json({ error: "run_start_failed", requestId }, { status: 500 });
 
   const alias = runtimeAliasForMode(body.mode);
-  const runtimeWake = await ensureModelRuntime(alias)
-    .then(publicRuntimeWake)
-    .catch((wakeError) => {
-      console.error("[run-start] runtime ensure failed", wakeError instanceof Error ? wakeError.message : "runtime_wake_failed");
-      return null;
-    });
+  after(async () => {
+    try {
+      const runtime = await ensureModelRuntime(alias);
+      const wake = publicRuntimeWake(runtime);
+      console.info(`[run-start] runtime prewarm completed; request=${requestId}; alias=${alias}; state=${wake.state}`);
+    } catch (wakeError) {
+      console.error("[run-start] runtime prewarm failed", wakeError instanceof Error ? wakeError.message : "runtime_wake_failed");
+    }
+  });
 
-  return NextResponse.json({ runId: run.run_id, conversationId: run.resolved_conversation_id, requestId, traceId, runtimeWake }, { status: 202 });
+  // Return the durable run identity immediately. The worker can begin claiming
+  // the queued run and the browser can attach the SSE stream without waiting on
+  // GPU wake-up. Deterministic LIVE tools (for example current_time) therefore
+  // never inherit model-startup latency.
+  return NextResponse.json({ runId: run.run_id, conversationId: run.resolved_conversation_id, requestId, traceId, runtimeWake: null }, { status: 202 });
 }
