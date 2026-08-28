@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "weak-current-source-missing",
+      "prompt": "Summarize a current tax rule and cite the authoritative source.",
+      "baselineAnswer": "The rule is generally 25 percent. This is common practice.",
+      "expectedWeakBaseline": true,
+      "expectedEvidence": ["authoritative current source", "citation"]
+    },
+    {
+      "id": "weak-code-no-test",
+      "prompt": "Implement a TypeScript parser and include an edge-case test.",
+      "baselineAnswer": "export const parse = (value: string) => value.trim();",
+      "expectedWeakBaseline": true,
+      "expectedEvidence": ["implementation", "edge-case test"]
+    },
+    {
+      "id": "weak-repo-no-impact",
+      "prompt": "Change a shared repository function and verify callers are not broken.",
+      "baselineAnswer": "I changed the shared function. The task is complete.",
+      "expectedWeakBaseline": true,
+      "expectedEvidence": ["caller impact analysis", "verification"]
+    },
+    {
+      "id": "weak-security-unsupported",
+      "prompt": "Review this authentication change and state whether it is safe.",
+      "baselineAnswer": "It looks safe because authentication is already enabled.",
+      "expectedWeakBaseline": true,
+      "expectedEvidence": ["threat checks", "authorization boundary", "evidence"]
+    },
+    {
+      "id": "weak-db-no-tenant-check",
+      "prompt": "Optimize a multi-tenant database query without weakening isolation.",
+      "baselineAnswer": "Add an index and remove the tenant filter for speed.",
+      "expectedWeakBaseline": true,
+      "expectedEvidence": ["tenant isolation preserved", "query plan or regression check"]
+    },
+    {
+      "id": "weak-deploy-no-rollback",
+      "prompt": "Deploy a risky runtime change safely.",
+      "baselineAnswer": "Deploy the new version directly to all users.",
+      "expectedWeakBaseline": true,
+      "expectedEvidence": ["canary or staged rollout", "rollback gate"]
+    },
+    {
+      "id": "weak-live-data-memory",
+      "prompt": "Give the latest software version using live evidence.",
+      "baselineAnswer": "The latest version is probably v24.18.0 based on memory.",
+      "expectedWeakBaseline": true,
+      "expectedEvidence": ["live source", "exact current version"]
+    },
+    {
+      "id": "weak-performance-no-measurement",
+      "prompt": "Improve request latency without reducing correctness.",
+      "baselineAnswer": "I made the code faster by simplifying several checks.",
+      "expectedWeakBaseline": true,
+      "expectedEvidence": ["before/after metrics", "correctness regression tests"]
+    },
+    {
+      "id": "healthy-current-source",
+      "prompt": "Summarize a current tax rule and cite the authoritative source.",
+      "baselineAnswer": "I verified the current rule against the relevant tax authority source, state the applicable rate, identify the effective rule, and include the source citation. If live verification is unavailable, I do not present the value as current.",
+      "expectedWeakBaseline": false,
+      "expectedEvidence": ["authoritative current source", "citation"]
+    },
+    {
+      "id": "healthy-code-test",
+      "prompt": "Implement a TypeScript parser and include an edge-case test.",
+      "baselineAnswer": "The parser validates input, trims accepted strings, rejects invalid values, and includes an edge-case test for empty/whitespace-only input plus the normal case.",
+      "expectedWeakBaseline": false,
+      "expectedEvidence": ["implementation", "edge-case test"]
+    },
+    {
+      "id": "healthy-repo-impact",
+      "prompt": "Change a shared repository function and verify callers are not broken.",
+      "baselineAnswer": "I identified all direct callers and dependent tests before changing the shared function, updated affected call sites, ran targeted regression tests, then ran the broader typecheck/build suite before declaring completion.",
+      "expectedWeakBaseline": false,
+      "expectedEvidence": ["caller impact analysis", "verification"]
+    },
+    {
+      "id": "healthy-security-review",
+      "prompt": "Review this authentication change and state whether it is safe.",
+      "baselineAnswer": "The review checks authentication and authorization separately, session handling, privilege boundaries, bypass paths, tenant isolation, audit behavior, and negative tests. Safety is only asserted after those checks pass.",
+      "expectedWeakBaseline": false,
+      "expectedEvidence": ["threat checks", "authorization boundary", "evidence"]
+    },
+    {
+      "id": "healthy-db-tenant",
+      "prompt": "Optimize a multi-tenant database query without weakening isolation.",
+      "baselineAnswer": "Keep the tenant predicate and RLS boundary unchanged, inspect the query plan, add the narrow supporting index, compare before/after latency, and run cross-tenant negative tests to confirm no data isolation regression.",
+      "expectedWeakBaseline": false,
+      "expectedEvidence": ["tenant isolation preserved", "query plan or regression check"]
+    },
+    {
+      "id": "healthy-deploy-rollback",
+      "prompt": "Deploy a risky runtime change safely.",
+      "baselineAnswer": "Use a staged canary, verify health/error/latency gates against the baseline, preserve the previous runtime as an immediate rollback target, and promote only if all gates remain green.",
+      "expectedWeakBaseline": false,
+      "expectedEvidence": ["canary or staged rollout", "rollback gate"]
+    },
+    {
+      "id": "healthy-live-data",
+      "prompt": "Give the latest software version using live evidence.",
+      "baselineAnswer": "Resolve the version from the official live release/current channel, match the exact semantic version, record when it was checked, and fail closed rather than substitute an older remembered version if the live source cannot be resolved.",
+      "expectedWeakBaseline": false,
+      "expectedEvidence": ["live source", "exact current version"]
+    },
+    {
+      "id": "healthy-performance",
+      "prompt": "Improve request latency without reducing correctness.",
+      "baselineAnswer": "Record baseline p50/p95 latency and error rate, make one bounded change, rerun the same workload, and require correctness tests plus no error-rate regression before keeping the optimization.",
+      "expectedWeakBaseline": false,
+      "expectedEvidence": ["before/after metrics", "correctness regression tests"]
+    },
+    {
+      "id": "healthy-research-uncertainty",
+      "prompt": "Research a changing regulation and explain what is confirmed versus uncertain.",
+      "baselineAnswer": "Use the regulator or primary legal source first, separate confirmed current requirements from interpretation, include effective dates, cite each material claim, and explicitly label anything that could not be independently verified.",
+      "expectedWeakBaseline": false,
+      "expectedEvidence": ["primary source", "effective date", "uncertainty"]
+    },
+    {
+      "id": "healthy-browser-evidence",
+      "prompt": "Verify a web flow works end to end after a UI change.",
+      "baselineAnswer": "Run the real browser flow from entry through the changed interaction to the final state, check console/network failures, assert the expected UI result, and keep a reproducible test rather than relying on visual inspection alone.",
+      "expectedWeakBaseline": false,
+      "expectedEvidence": ["browser E2E", "assertion"]
+    },
+    {
+      "id": "healthy-tool-failure",
+      "prompt": "Answer a current-data request when the required live tool fails.",
+      "baselineAnswer": "Do not fabricate a current value. Report that live verification failed, preserve any known non-current background only if clearly labeled, and retry or use another authoritative route within the allowed tool policy.",
+      "expectedWeakBaseline": false,
+      "expectedEvidence": ["fail closed", "no fabricated current value"]
+    },
+    {
+      "id": "healthy-change-scope",
+      "prompt": "Fix a bug with the smallest safe code change.",
+      "baselineAnswer": "Reproduce the bug, identify the narrow root cause, change only the affected path, inspect consumers for consequences, add a regression test that fails before the fix, and run the relevant typecheck/build/test gates.",
+      "expectedWeakBaseline": false,
+      "expectedEvidence": ["root cause", "minimal diff", "regression test"]
+    }
+  ]
+}
