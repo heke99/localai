@@ -34,6 +34,8 @@ const providerMeta: Record<string, { label: string; mark: string; description: s
 };
 const terminalStatuses = new Set(["completed", "failed", "cancelled", "timed_out"]);
 const validSections = new Set<Section>(["chat", "code", "lab", "research", "projects", "integrations", "settings"]);
+const dashboardConversationParam = "conversation";
+const dashboardRunParam = "run";
 
 function messageText(content: unknown) {
   if (typeof content === "string") return content;
@@ -58,6 +60,15 @@ function resourceKind(resource: Resource) {
   if (resource.provider === "github" && resource.resource_type === "repository") return "Repo";
   if (resource.resource_type === "project") return "Projekt";
   return resource.resource_type;
+}
+function replaceDashboardLocation(section: Section, conversationId: string | null, runId: string | null) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("section", section);
+  if (conversationId) url.searchParams.set(dashboardConversationParam, conversationId);
+  else url.searchParams.delete(dashboardConversationParam);
+  if (runId) url.searchParams.set(dashboardRunParam, runId);
+  else url.searchParams.delete(dashboardRunParam);
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
 function ResourceGrantCard({ resource, current, catalog, onSave }: { resource: Resource; current?: ProjectResource; catalog: Capability[]; onSave: (resourceId: string, capabilities: string[], enabled: boolean) => Promise<void> }) {
@@ -103,19 +114,45 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
   const [projectDescription, setProjectDescription] = useState("");
   const [projectCreateMode, setProjectCreateMode] = useState<Mode>("chat");
   const [manageProjectId, setManageProjectId] = useState<string>(() => (snapshot.projects ?? [])[0]?.id ?? "");
+  const [navigationReady, setNavigationReady] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const requestedSection = params.get("section") as Section | null;
-    if (requestedSection && validSections.has(requestedSection)) setActiveSection(requestedSection);
+    const requestedConversationId = params.get(dashboardConversationParam);
+    const requestedRunId = params.get(dashboardRunParam);
+    const requestedConversation = requestedConversationId ? (snapshot.conversations ?? []).find((conversation) => conversation.id === requestedConversationId) : null;
     const provider = params.get("provider");
     const integrationError = params.get("integrationError");
+
     if (integrationError) {
       setActiveSection("integrations");
       const label = provider ? providerName(provider) : "Integrationen";
       setError(integrationError === "provider_configuration_missing" ? `${label} är inte konfigurerad ännu.` : integrationError === "access_denied" ? `${label}-åtkomsten godkändes inte.` : `${label} kunde inte anslutas. Försök igen.`);
-    } else if (params.get("connected")) { setActiveSection("integrations"); setError(null); }
-  }, []);
+    } else if (params.get("connected")) {
+      setActiveSection("integrations");
+      setError(null);
+    } else if (requestedConversation) {
+      setActiveSection(requestedConversation.mode);
+      setSelectedProjectId(requestedConversation.project_id);
+      setSelectedConversationId(requestedConversation.id);
+      selectedConversationIdRef.current = requestedConversation.id;
+      setSelectedResourceIds(requestedConversation.selected_resource_ids ?? []);
+      if (requestedRunId) {
+        setRun({
+          id: requestedRunId,
+          conversationId: requestedConversation.id,
+          conversation_id: requestedConversation.id,
+          status: "queued",
+          mode: requestedConversation.mode,
+          model_alias: `${requestedConversation.mode === "chat" ? "general" : requestedConversation.mode}-prod`
+        });
+      }
+    } else if (requestedSection && validSections.has(requestedSection)) {
+      setActiveSection(requestedSection);
+    }
+    setNavigationReady(true);
+  }, [snapshot.conversations]);
 
   const activeMode: Mode = ["projects", "integrations", "settings"].includes(activeSection) ? "chat" : activeSection as Mode;
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
@@ -128,6 +165,13 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
   const manageProject = projects.find((project) => project.id === manageProjectId) ?? null;
   const showChat = ["chat", "code", "lab", "research"].includes(activeSection);
   const runInProgress = Boolean(run && !terminalStatuses.has(run.status));
+
+  useEffect(() => {
+    if (!navigationReady) return;
+    const visibleConversationId = showChat ? selectedConversationId : null;
+    const visibleRunId = showChat && run && run.conversationId === selectedConversationId && !terminalStatuses.has(run.status) ? run.id : null;
+    replaceDashboardLocation(activeSection, visibleConversationId, visibleRunId);
+  }, [navigationReady, activeSection, showChat, selectedConversationId, run?.id, run?.status, run?.conversationId]);
 
   const resourceGroups = useMemo(() => {
     const query = resourceSearch.trim().toLowerCase();
@@ -152,11 +196,19 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
     setLoadingConversation(true); setError(null);
     try {
       const response = await fetch(`/api/conversations/${conversationId}`, { cache: "no-store" });
-      const body = await response.json() as { conversation?: { id?: string }; messages?: Message[]; error?: string };
+      const body = await response.json() as {
+        conversation?: { id?: string };
+        messages?: Message[];
+        activeRun?: Omit<Run, "conversationId"> | null;
+        error?: string;
+      };
       if (!response.ok) throw new Error(body.error ?? "conversation_load_failed");
       if (!body.conversation?.id || body.conversation.id !== conversationId) throw new Error("conversation_identity_mismatch");
       if (selectedConversationIdRef.current !== conversationId) return;
       setMessages(body.messages ?? []);
+      if (body.activeRun && body.activeRun.conversation_id === conversationId && !terminalStatuses.has(body.activeRun.status)) {
+        setRun({ ...body.activeRun, conversationId });
+      }
     } catch {
       if (selectedConversationIdRef.current === conversationId) {
         setMessages([]);
@@ -169,9 +221,10 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
   useEffect(() => { if (!selectedConversationId) { setMessages([]); return; } void loadConversation(selectedConversationId); }, [selectedConversationId]);
   useEffect(() => {
     if (!run || terminalStatuses.has(run.status)) return;
-    const timer = window.setInterval(async () => {
+    let disposed = false;
+    const refreshRun = async () => {
       const response = await fetch(`/api/runs/${run.id}`, { cache: "no-store" });
-      if (!response.ok) return;
+      if (!response.ok || disposed) return;
       const next = await response.json() as Run;
       if (next.conversation_id && next.conversation_id !== run.conversationId) {
         setError("Svarskedjan matchade inte den öppna chatten. Svaret renderades inte i fel chatt.");
@@ -181,9 +234,11 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
       const nextRun = { ...next, conversationId: run.conversationId };
       setRun(nextRun);
       if (terminalStatuses.has(next.status) && selectedConversationIdRef.current === run.conversationId) void loadConversation(run.conversationId);
-    }, 750);
-    return () => window.clearInterval(timer);
-  }, [run]);
+    };
+    void refreshRun();
+    const timer = window.setInterval(() => { void refreshRun(); }, 750);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [run?.id, run?.conversationId, run?.status]);
 
   function resetChatState() { setSelectedConversationId(null); setMessages([]); setSelectedResourceIds([]); setRun(null); setError(null); setPrompt(""); setResourcePickerOpen(false); }
   function switchMode(mode: Mode) {
@@ -286,7 +341,11 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
     const body = await response.json() as { conversation?: Conversation; error?: string };
     if (!response.ok || !body.conversation) throw new Error(body.error ?? "conversation_create_failed");
     const conversation = { ...body.conversation, project_id: selectedProjectId, last_message_at: null, selected_resource_ids: selectedResourceIds };
-    setConversations((current) => [conversation, ...current]); setSelectedConversationId(conversation.id); return conversation.id;
+    setConversations((current) => [conversation, ...current]);
+    setSelectedConversationId(conversation.id);
+    selectedConversationIdRef.current = conversation.id;
+    replaceDashboardLocation(mode, conversation.id, null);
+    return conversation.id;
   }
 
   async function persistConversationResources(next: string[]) {
@@ -316,6 +375,7 @@ export function WorkspaceShellV4({ workspaceId, workspaceName, displayName, emai
       if (!response.ok || !body.runId || !body.conversationId) throw new Error(body.error ?? "run_start_failed");
       if (body.conversationId !== conversationId) throw new Error("conversation_identity_mismatch");
       const title = text.slice(0, 100);
+      replaceDashboardLocation(activeMode, body.conversationId, body.runId);
       setRun({ id: body.runId, conversationId: body.conversationId, conversation_id: body.conversationId, status: "queued", mode: activeMode, model_alias: `${activeMode === "chat" ? "general" : activeMode}-prod` });
       setConversations((current) => current.map((conversation) => conversation.id === conversationId ? { ...conversation, title: conversation.title === "Ny chatt" || !conversation.title ? title : conversation.title, updated_at: new Date().toISOString(), last_message_at: new Date().toISOString(), selected_resource_ids: selectedResourceIds } : conversation));
     } catch (caught) {
