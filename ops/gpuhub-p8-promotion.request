@@ -1,9 +1,11 @@
-requested_at=2026-08-28T14:05:00+02:00
+requested_at=2026-08-28T21:53:00+02:00
 target_parallel=8
 total_context=262144
 context_per_slot=32768
+spec_type=ngram-mod
 post_promotion_eval_cases=8
 post_promotion_min_pass_rate=1
 rollback_parallel=1
 rollback_total_context=32768
-reason=retry-after-eval-oracle-and-emergency-rollback-hardening
+rollback_spec_type=none
+reason=promote-production-tested-ngram-mod-speculative-decoding

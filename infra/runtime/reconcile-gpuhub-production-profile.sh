@@ -20,6 +20,7 @@ VERIFY_POLL_SECONDS="${DIV3RSA_GPUHUB_PROFILE_VERIFY_POLL_SECONDS:-1}"
 ENV_BACKUP=""
 BEFORE_PARALLEL=""
 BEFORE_TOTAL_CONTEXT=""
+BEFORE_SPEC_TYPE=""
 MUTATED=0
 PROFILE_READ_DETAIL="not_checked"
 VERIFY_DETAIL="not_checked"
@@ -36,12 +37,17 @@ source "$PROFILE_FILE"
 TARGET_PARALLEL="${DIV3RSA_GPUHUB_PRODUCTION_PARALLEL:-}"
 TARGET_TOTAL_CONTEXT="${DIV3RSA_GPUHUB_PRODUCTION_TOTAL_CONTEXT:-}"
 TARGET_CONTEXT_PER_SLOT="${DIV3RSA_GPUHUB_PRODUCTION_CONTEXT_PER_SLOT:-}"
+TARGET_SPEC_TYPE="${DIV3RSA_GPUHUB_PRODUCTION_SPEC_TYPE:-none}"
 for name in TARGET_PARALLEL TARGET_TOTAL_CONTEXT TARGET_CONTEXT_PER_SLOT; do
   value="${!name}"
   [[ "$value" =~ ^[0-9]+$ && "$value" -ge 1 ]] || fatal "invalid $name: $value"
 done
 [[ "$TARGET_TOTAL_CONTEXT" -eq $((TARGET_PARALLEL * TARGET_CONTEXT_PER_SLOT)) ]] \
   || fatal "tracked profile does not preserve context per slot"
+case "$TARGET_SPEC_TYPE" in
+  none|ngram-mod) ;;
+  *) fatal "unsupported tracked speculative decoder: ${TARGET_SPEC_TYPE}" ;;
+esac
 
 ensure_env_value() {
   local key="$1" value="$2"
@@ -69,11 +75,13 @@ read_active_profile() {
   cmd="$(tr '\0' ' ' <"/proc/${pids[0]}/cmdline")"
   ACTIVE_PARALLEL="$(sed -nE 's/.*--parallel[= ]+([0-9]+).*/\1/p' <<<"$cmd")"
   ACTIVE_TOTAL_CONTEXT="$(sed -nE 's/.*--ctx-size[= ]+([0-9]+).*/\1/p' <<<"$cmd")"
+  ACTIVE_SPEC_TYPE="$(sed -nE 's/.*--spec-type[= ]+([^ ]+).*/\1/p' <<<"$cmd")"
+  [[ -n "$ACTIVE_SPEC_TYPE" ]] || ACTIVE_SPEC_TYPE=none
   if [[ ! "$ACTIVE_PARALLEL" =~ ^[0-9]+$ || ! "$ACTIVE_TOTAL_CONTEXT" =~ ^[0-9]+$ ]]; then
     PROFILE_READ_DETAIL="llama_profile_flags_unreadable"
     return 1
   fi
-  PROFILE_READ_DETAIL="parallel=${ACTIVE_PARALLEL} total_context=${ACTIVE_TOTAL_CONTEXT}"
+  PROFILE_READ_DETAIL="parallel=${ACTIVE_PARALLEL} total_context=${ACTIVE_TOTAL_CONTEXT} spec_type=${ACTIVE_SPEC_TYPE}"
 }
 
 verify_target_once() {
@@ -82,8 +90,8 @@ verify_target_once() {
     VERIFY_DETAIL="$PROFILE_READ_DETAIL"
     return 1
   fi
-  if [[ "$ACTIVE_PARALLEL" != "$TARGET_PARALLEL" || "$ACTIVE_TOTAL_CONTEXT" != "$TARGET_TOTAL_CONTEXT" ]]; then
-    VERIFY_DETAIL="profile_mismatch active=${ACTIVE_PARALLEL}/${ACTIVE_TOTAL_CONTEXT} target=${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}"
+  if [[ "$ACTIVE_PARALLEL" != "$TARGET_PARALLEL" || "$ACTIVE_TOTAL_CONTEXT" != "$TARGET_TOTAL_CONTEXT" || "$ACTIVE_SPEC_TYPE" != "$TARGET_SPEC_TYPE" ]]; then
+    VERIFY_DETAIL="profile_mismatch active=${ACTIVE_PARALLEL}/${ACTIVE_TOTAL_CONTEXT}/${ACTIVE_SPEC_TYPE} target=${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}/${TARGET_SPEC_TYPE}"
     return 1
   fi
   if ! curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${MODEL_PORT}/health" >/dev/null; then
@@ -108,7 +116,7 @@ verify_target_once() {
     VERIFY_DETAIL="reported_context_too_small reported=${reported:-missing} required=${TARGET_CONTEXT_PER_SLOT}"
     return 1
   fi
-  VERIFY_DETAIL="ok active=${ACTIVE_PARALLEL}/${ACTIVE_TOTAL_CONTEXT} reported_context=${reported}"
+  VERIFY_DETAIL="ok active=${ACTIVE_PARALLEL}/${ACTIVE_TOTAL_CONTEXT}/${ACTIVE_SPEC_TYPE} reported_context=${reported}"
 }
 
 verify_target() {
@@ -129,11 +137,12 @@ rollback_on_exit() {
   trap - EXIT
   if [[ "$status" -eq 0 || "$MUTATED" -ne 1 ]]; then exit "$status"; fi
   set +e
-  log "profile reconciliation failed; restoring previous runtime parallel=${BEFORE_PARALLEL} total_context=${BEFORE_TOTAL_CONTEXT}"
+  log "profile reconciliation failed; restoring previous runtime parallel=${BEFORE_PARALLEL} total_context=${BEFORE_TOTAL_CONTEXT} spec_type=${BEFORE_SPEC_TYPE}"
   [[ -n "$ENV_BACKUP" && -f "$ENV_BACKUP" ]] && cp "$ENV_BACKUP" "$ENV_FILE" && chmod 600 "$ENV_FILE"
   DIV3RSA_FORCE_MODEL_RESTART=1 \
   DIV3RSA_MODEL_PARALLEL="$BEFORE_PARALLEL" \
   DIV3RSA_MODEL_CONTEXT_SIZE="$BEFORE_TOTAL_CONTEXT" \
+  DIV3RSA_MODEL_SPEC_TYPE="$BEFORE_SPEC_TYPE" \
     bash "$RECOVERY_SCRIPT"
   if [[ $? -eq 0 ]]; then log "previous runtime profile restored after failed promotion"; else log "CRITICAL: failed to restore previous runtime profile"; fi
   [[ -n "$ENV_BACKUP" ]] && rm -f "$ENV_BACKUP"
@@ -144,6 +153,7 @@ trap rollback_on_exit EXIT
 read_active_profile || fatal "could not read active llama.cpp profile before reconciliation: ${PROFILE_READ_DETAIL}"
 BEFORE_PARALLEL="$ACTIVE_PARALLEL"
 BEFORE_TOTAL_CONTEXT="$ACTIVE_TOTAL_CONTEXT"
+BEFORE_SPEC_TYPE="$ACTIVE_SPEC_TYPE"
 ENV_BACKUP="$(mktemp /tmp/div3rsa-gpuhub-env.XXXXXX)"
 cp "$ENV_FILE" "$ENV_BACKUP"
 chmod 600 "$ENV_BACKUP"
@@ -155,18 +165,19 @@ ensure_env_value DIV3RSA_MODEL_PARALLEL "$TARGET_PARALLEL"
 ensure_env_value DIV3RSA_MODEL_CONTEXT_SIZE "$TARGET_CONTEXT_PER_SLOT"
 MUTATED=1
 
-if [[ "$BEFORE_PARALLEL" != "$TARGET_PARALLEL" || "$BEFORE_TOTAL_CONTEXT" != "$TARGET_TOTAL_CONTEXT" ]]; then
-  log "reconciling llama.cpp ${BEFORE_PARALLEL}/${BEFORE_TOTAL_CONTEXT} -> ${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}"
+if [[ "$BEFORE_PARALLEL" != "$TARGET_PARALLEL" || "$BEFORE_TOTAL_CONTEXT" != "$TARGET_TOTAL_CONTEXT" || "$BEFORE_SPEC_TYPE" != "$TARGET_SPEC_TYPE" ]]; then
+  log "reconciling llama.cpp ${BEFORE_PARALLEL}/${BEFORE_TOTAL_CONTEXT}/${BEFORE_SPEC_TYPE} -> ${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}/${TARGET_SPEC_TYPE}"
   DIV3RSA_FORCE_MODEL_RESTART=1 \
   DIV3RSA_MODEL_PARALLEL="$TARGET_PARALLEL" \
   DIV3RSA_MODEL_CONTEXT_SIZE="$TARGET_TOTAL_CONTEXT" \
+  DIV3RSA_MODEL_SPEC_TYPE="$TARGET_SPEC_TYPE" \
     bash "$RECOVERY_SCRIPT"
 else
-  log "llama.cpp already matches tracked production profile ${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}"
+  log "llama.cpp already matches tracked production profile ${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}/${TARGET_SPEC_TYPE}"
 fi
 
 verify_target || fatal "tracked production profile verification failed after ${VERIFY_ATTEMPTS} attempts: ${VERIFY_DETAIL}"
 MUTATED=0
 rm -f "$ENV_BACKUP"
 trap - EXIT
-log "production profile active: parallel=${TARGET_PARALLEL} total_context=${TARGET_TOTAL_CONTEXT} context_per_slot=${TARGET_CONTEXT_PER_SLOT}"
+log "production profile active: parallel=${TARGET_PARALLEL} total_context=${TARGET_TOTAL_CONTEXT} context_per_slot=${TARGET_CONTEXT_PER_SLOT} spec_type=${TARGET_SPEC_TYPE}"
