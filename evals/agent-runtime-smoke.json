@@ -19,7 +19,7 @@
       "id": "coding-off-by-one",
       "mode": "code",
       "prompt": "Debug this JavaScript loop without changing its intent: `for (let i = 0; i <= items.length; i++) { console.log(items[i]); }`. Identify the defect and provide the corrected loop. Keep the answer concise.",
-      "requiredPatterns": ["i\\s*<\\s*items\\.length", "off[- ]?by[- ]?one|out[- ]of[- ]bounds|undefined|one extra"],
+      "requiredPatterns": ["i\\s*<\\s*items\\.length", "off[- ]?by[- ]?one|out[- ]of[- ]bounds|undefined|one extra|one iteration too long"],
       "forbiddenTools": ["web_search", "web_fetch", "current_time"]
     },
     {
