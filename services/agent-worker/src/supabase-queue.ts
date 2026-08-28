@@ -6,6 +6,16 @@ import type { AgentQueue, AgentResourceContext, ClaimedRun } from "./processor";
 import { chunk, impactNodePayload, repositoryGraph, verificationResultPayload } from "./observability";
 
 type UntypedRpcClient = { rpc: (name: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { message: string } | null }> };
+type StreamState = {
+  pending: string;
+  tail: Promise<void>;
+  timer: ReturnType<typeof setTimeout> | null;
+  error: Error | null;
+};
+
+const STREAM_COALESCE_MS = 120;
+const STREAM_COALESCE_CHARS = 2_048;
+const CANCELLATION_CACHE_MS = 400;
 
 function parseResourceContext(value: Json | undefined): AgentResourceContext[] {
   if (!Array.isArray(value)) return [];
@@ -29,7 +39,73 @@ function requiredId(value: unknown, errorCode: string): string {
 }
 
 export class SupabaseAgentQueue implements AgentQueue {
+  private readonly streamStates = new Map<string, StreamState>();
+  private readonly cancellationCache = new Map<string, { checkedAt: number; cancelled: boolean }>();
+  private readonly cancellationInFlight = new Map<string, Promise<boolean>>();
+
   constructor(private readonly client: SupabaseClient<Database>) {}
+
+  private streamState(runId: string): StreamState {
+    const existing = this.streamStates.get(runId);
+    if (existing) return existing;
+    const created: StreamState = { pending: "", tail: Promise.resolve(), timer: null, error: null };
+    this.streamStates.set(runId, created);
+    return created;
+  }
+
+  private enqueueStreamWrite(runId: string): void {
+    const state = this.streamStates.get(runId);
+    if (!state || !state.pending || state.error) return;
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+    const delta = state.pending;
+    state.pending = "";
+    state.tail = state.tail.then(async () => {
+      if (state.error) return;
+      const { error } = await (this.client as unknown as UntypedRpcClient).rpc("worker_append_agent_run_stream", {
+        target_run_id: runId,
+        delta,
+        reset_stream: false
+      });
+      if (error) state.error = new Error(error.message);
+    });
+  }
+
+  private scheduleStreamWrite(runId: string): void {
+    const state = this.streamState(runId);
+    if (state.pending.length >= STREAM_COALESCE_CHARS) {
+      this.enqueueStreamWrite(runId);
+      return;
+    }
+    if (state.timer) return;
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      this.enqueueStreamWrite(runId);
+    }, STREAM_COALESCE_MS);
+    state.timer.unref?.();
+  }
+
+  private async drainStream(runId: string): Promise<void> {
+    const state = this.streamStates.get(runId);
+    if (!state) return;
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+    this.enqueueStreamWrite(runId);
+    await state.tail;
+    if (state.error) throw state.error;
+  }
+
+  private clearRunCaches(runId: string): void {
+    const state = this.streamStates.get(runId);
+    if (state?.timer) clearTimeout(state.timer);
+    this.streamStates.delete(runId);
+    this.cancellationCache.delete(runId);
+    this.cancellationInFlight.delete(runId);
+  }
 
   async claim(workerId: string): Promise<ClaimedRun | null> {
     const { data, error } = await this.client.rpc("worker_claim_agent_run", { worker_id: workerId });
@@ -46,12 +122,22 @@ export class SupabaseAgentQueue implements AgentQueue {
   }
 
   async stream(runId: string, delta: string, reset = false): Promise<void> {
-    const { error } = await (this.client as unknown as UntypedRpcClient).rpc("worker_append_agent_run_stream", {
-      target_run_id: runId,
-      delta,
-      reset_stream: reset
-    });
-    if (error) throw new Error(error.message);
+    if (reset) {
+      await this.drainStream(runId);
+      const { error } = await (this.client as unknown as UntypedRpcClient).rpc("worker_append_agent_run_stream", {
+        target_run_id: runId,
+        delta,
+        reset_stream: true
+      });
+      if (error) throw new Error(error.message);
+      this.streamStates.delete(runId);
+      return;
+    }
+    if (!delta) return;
+    const state = this.streamState(runId);
+    if (state.error) throw state.error;
+    state.pending += delta;
+    this.scheduleStreamWrite(runId);
   }
 
   async recordRunIntelligence(runId: string, task: TaskAnalysis, skills: string[]): Promise<void> {
@@ -140,18 +226,41 @@ export class SupabaseAgentQueue implements AgentQueue {
   }
 
   async complete(run: ClaimedRun, output: { content: string; modelVersionId: string; usage: Record<string, number> }): Promise<void> {
+    await this.drainStream(run.runId);
     const { error } = await this.client.rpc("worker_complete_agent_run", { target_run_id: run.runId, target_job_id: run.jobId, output_content: output.content, usage: asJson(output.usage) });
     if (error) throw error;
+    this.clearRunCaches(run.runId);
   }
 
   async fail(run: ClaimedRun, errorCode: string, retryable: boolean): Promise<void> {
+    await this.drainStream(run.runId).catch(() => undefined);
     const { error } = await this.client.rpc("worker_fail_agent_run", { target_run_id: run.runId, target_job_id: run.jobId, error_code: errorCode, retryable });
     if (error) throw error;
+    this.clearRunCaches(run.runId);
   }
 
   async isCancelled(runId: string): Promise<boolean> {
-    const { data, error } = await this.client.rpc("worker_is_agent_run_cancelled", { target_run_id: runId });
-    if (error) throw error;
-    return data;
+    const cached = this.cancellationCache.get(runId);
+    const now = Date.now();
+    if (cached?.cancelled) return true;
+    if (cached && now - cached.checkedAt < CANCELLATION_CACHE_MS) return false;
+    const existing = this.cancellationInFlight.get(runId);
+    if (existing) return existing;
+
+    const check = (async () => {
+      const { data, error } = await this.client.rpc("worker_is_agent_run_cancelled", { target_run_id: runId });
+      if (error) throw error;
+      const cancelled = data === true;
+      this.cancellationCache.set(runId, { checkedAt: Date.now(), cancelled });
+      if (cancelled) {
+        await this.drainStream(runId).catch(() => undefined);
+        this.clearRunCaches(runId);
+      }
+      return cancelled;
+    })().finally(() => {
+      this.cancellationInFlight.delete(runId);
+    });
+    this.cancellationInFlight.set(runId, check);
+    return check;
   }
 }
