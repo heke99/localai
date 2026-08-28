@@ -1,0 +1,52 @@
+name: Temporary Qwen latency probe
+
+on:
+  push:
+    branches:
+      - perf/end-to-end-latency-20260828
+    paths:
+      - scripts/temp_qwen_latency_probe.mjs
+      - .github/workflows/temp-qwen-latency-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-gpuhub
+    env:
+      GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
+      GPUHUB_SSH_PORT: ${{ secrets.GPUHUB_SSH_PORT }}
+      GPUHUB_SSH_USER: ${{ secrets.GPUHUB_SSH_USER }}
+      GPUHUB_SSH_PRIVATE_KEY: ${{ secrets.GPUHUB_SSH_PRIVATE_KEY }}
+      GPUHUB_SSH_KNOWN_HOSTS: ${{ secrets.GPUHUB_SSH_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate probe secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in GPUHUB_SSH_HOST GPUHUB_SSH_PORT GPUHUB_SSH_USER GPUHUB_SSH_PRIVATE_KEY GPUHUB_SSH_KNOWN_HOSTS; do
+            test -n "${!name:-}"
+          done
+      - name: Configure pinned SSH identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+      - name: Probe first visible token latency
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
+          opts=(-i "$HOME/.ssh/id_ed25519" -p "$GPUHUB_SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          ssh "${opts[@]}" "$remote" 'cat > /tmp/div3rsa-qwen-latency-probe.mjs' < scripts/temp_qwen_latency_probe.mjs
+          ssh "${opts[@]}" "$remote" 'set -e; trap "rm -f /tmp/div3rsa-qwen-latency-probe.mjs" EXIT; curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null; /root/autodl-tmp/localai/runtime/node-current/bin/node /tmp/div3rsa-qwen-latency-probe.mjs'
