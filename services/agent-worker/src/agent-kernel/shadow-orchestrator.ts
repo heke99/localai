@@ -39,6 +39,10 @@ function unique<T>(values: readonly T[]): T[] {
   return [...new Set(values)];
 }
 
+function optionalCapability(enabled: boolean, capability: KernelCapability): KernelCapability[] {
+  return enabled ? [capability] : [];
+}
+
 function taskCapabilities(task: TaskAnalysis, toolNames: readonly string[]): KernelCapability[] {
   const capabilities: KernelCapability[] = ["reasoning"];
   if (task.requiresCurrentInformation || task.researchDepth !== "none") capabilities.push("research");
@@ -92,10 +96,15 @@ function buildPlan(input: ShadowKernelInput, config: AgentKernelConfig): KernelP
   const executionStepIds: string[] = [];
 
   if (task.capabilities.includes("research")) {
+    const researcherCapabilities: KernelCapability[] = [
+      "reasoning",
+      "research",
+      ...optionalCapability(task.capabilities.includes("tooling"), "tooling")
+    ];
     const researcher = addAgent(agents, config.maxSubagents, {
       agentId: "researcher",
       role: "researcher",
-      capabilities: unique<KernelCapability>(["reasoning", "research", ...(task.capabilities.includes("tooling") ? ["tooling"] : [])]),
+      capabilities: unique(researcherCapabilities),
       modelAlias: input.modelAlias
     });
     if (researcher) {
@@ -111,12 +120,18 @@ function buildPlan(input: ShadowKernelInput, config: AgentKernelConfig): KernelP
     }
   }
 
-  const executionCapabilities = (["repository", "database", "browser"] as const).filter((capability) => task.capabilities.includes(capability));
+  const executionCapabilities: KernelCapability[] = (["repository", "database", "browser"] as const)
+    .filter((capability) => task.capabilities.includes(capability));
   if (executionCapabilities.length > 0) {
+    const executorCapabilities: KernelCapability[] = [
+      "reasoning",
+      ...executionCapabilities,
+      ...optionalCapability(task.capabilities.includes("tooling"), "tooling")
+    ];
     const executor = addAgent(agents, config.maxSubagents, {
       agentId: "executor",
       role: input.task.requiresRepository ? "coder" : "executor",
-      capabilities: unique<KernelCapability>(["reasoning", ...executionCapabilities, ...(task.capabilities.includes("tooling") ? ["tooling"] : [])]),
+      capabilities: unique(executorCapabilities),
       modelAlias: input.modelAlias
     });
     if (executor) {
@@ -133,10 +148,14 @@ function buildPlan(input: ShadowKernelInput, config: AgentKernelConfig): KernelP
   }
 
   if (executionStepIds.length === 0) {
+    const responderCapabilities: KernelCapability[] = [
+      "reasoning",
+      ...optionalCapability(task.capabilities.includes("tooling"), "tooling")
+    ];
     const responder = addAgent(agents, config.maxSubagents, {
       agentId: "executor",
       role: "executor",
-      capabilities: unique<KernelCapability>(["reasoning", ...(task.capabilities.includes("tooling") ? ["tooling"] : [])]),
+      capabilities: unique(responderCapabilities),
       modelAlias: input.modelAlias
     });
     if (responder) {
