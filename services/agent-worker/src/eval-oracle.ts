@@ -56,7 +56,36 @@ export function observedSemverValues(output: string): string[] {
   return [...values];
 }
 
+export function observedNodeCurrentValues(output: string): string[] {
+  const values = new Set<string>();
+  const patterns = [
+    /\bcurrent(?:\s+latest)?\s+Node\.js\s+(?:release|version)\s*(?:is|:|=)?\s*[*_`~]*v?(\d+\.\d+\.\d+)/gi,
+    /\bNode\.js\s+(?:current|latest)\s+(?:release|version)\s*(?:is|:|=)?\s*[*_`~]*v?(\d+\.\d+\.\d+)/gi,
+    /\bCurrent(?:\s+(?:release|version))?\s*(?:is|:|=)\s*[*_`~]*v?(\d+\.\d+\.\d+)/gi,
+    /\bLatest\s+Release\s*(?:is|:|=)?\s*[*_`~]*v?(\d+\.\d+\.\d+)/gi,
+    /[*_`~]*v?(\d+\.\d+\.\d+)[*_`~]*\s*\(?Current\)?\b/gi
+  ];
+  for (const pattern of patterns) {
+    for (const match of output.matchAll(pattern)) {
+      if (match[1]) values.add(normalizedVersion(match[1]));
+    }
+  }
+  return [...values];
+}
+
 export function validateLiveOracleOutput(output: string, oracle: LiveEvalOracleResult): string[] {
+  if (oracle.kind === "node-current-release") {
+    const claimedCurrent = observedNodeCurrentValues(output);
+    if (claimedCurrent.length === 1) {
+      return claimedCurrent[0] === oracle.expectedValue
+        ? []
+        : [`live_oracle_version_mismatch:expected=${oracle.expectedValue}:observed=${claimedCurrent.join(",")}`];
+    }
+    if (claimedCurrent.length > 1) {
+      return [`live_oracle_current_claim_ambiguous:expected=${oracle.expectedValue}:observed=${claimedCurrent.join(",")}`];
+    }
+  }
+
   const observed = observedSemverValues(output);
   if (observed.length === 0) return [`live_oracle_version_missing:expected=${oracle.expectedValue}`];
   if (observed.length !== 1 || observed[0] !== oracle.expectedValue) {
