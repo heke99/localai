@@ -50,12 +50,12 @@ function task(overrides: Partial<TaskAnalysis> = {}): TaskAnalysis {
   };
 }
 
-function innerQueue(): AgentQueue & Record<string, ReturnType<typeof vi.fn>> {
+function innerQueue() {
   return {
     claim: vi.fn(async () => run),
-    step: vi.fn(async () => undefined),
-    stream: vi.fn(async () => undefined),
-    recordRunIntelligence: vi.fn(async () => undefined),
+    step: vi.fn(async (_runId: string, _kind: string, _status: string, _summary: string, _state?: Record<string, unknown>) => undefined),
+    stream: vi.fn(async (_runId: string, _delta: string, _reset?: boolean) => undefined),
+    recordRunIntelligence: vi.fn(async (_runId: string, _task: TaskAnalysis, _skills: string[]) => undefined),
     recordRepositoryIndex: vi.fn(async () => "index-1"),
     recordImpactAnalysis: vi.fn(async () => "impact-1"),
     recordVerificationRun: vi.fn(async () => "verification-1"),
@@ -65,10 +65,14 @@ function innerQueue(): AgentQueue & Record<string, ReturnType<typeof vi.fn>> {
   };
 }
 
+function wrapped(inner: ReturnType<typeof innerQueue>, kernelConfig = config()) {
+  return new AgentKernelShadowQueue(inner as unknown as AgentQueue, kernelConfig);
+}
+
 describe("AgentKernelShadowQueue", () => {
   it("delegates legacy queue behavior and records one structural shadow step", async () => {
     const inner = innerQueue();
-    const queue = new AgentKernelShadowQueue(inner, config());
+    const queue = wrapped(inner);
     await expect(queue.claim("worker-1")).resolves.toEqual(run);
     await expect(queue.recordRunIntelligence(run.runId, task({ requiresRepository: true }), ["repo-safety"])).resolves.toBeUndefined();
 
@@ -83,7 +87,7 @@ describe("AgentKernelShadowQueue", () => {
 
   it("does not emit shadow telemetry when V2 is disabled", async () => {
     const inner = innerQueue();
-    const queue = new AgentKernelShadowQueue(inner, config({ enabled: false, mode: "legacy" }));
+    const queue = wrapped(inner, config({ enabled: false, mode: "legacy" }));
     await queue.claim("worker-1");
     await queue.recordRunIntelligence(run.runId, task(), []);
     expect(inner.recordRunIntelligence).toHaveBeenCalledOnce();
@@ -93,7 +97,7 @@ describe("AgentKernelShadowQueue", () => {
   it("contains shadow persistence failure and preserves legacy success", async () => {
     const inner = innerQueue();
     inner.step.mockRejectedValueOnce(new Error("shadow_step_write_failed"));
-    const queue = new AgentKernelShadowQueue(inner, config());
+    const queue = wrapped(inner);
     await queue.claim("worker-1");
     await expect(queue.recordRunIntelligence(run.runId, task(), [])).resolves.toBeUndefined();
     expect(inner.recordRunIntelligence).toHaveBeenCalledOnce();
@@ -102,7 +106,7 @@ describe("AgentKernelShadowQueue", () => {
   it("still propagates required legacy intelligence persistence failures", async () => {
     const inner = innerQueue();
     inner.recordRunIntelligence.mockRejectedValueOnce(new Error("legacy_audit_failed"));
-    const queue = new AgentKernelShadowQueue(inner, config());
+    const queue = wrapped(inner);
     await queue.claim("worker-1");
     await expect(queue.recordRunIntelligence(run.runId, task(), [])).rejects.toThrow("legacy_audit_failed");
     expect(inner.step).not.toHaveBeenCalled();
@@ -110,7 +114,7 @@ describe("AgentKernelShadowQueue", () => {
 
   it("forwards completion and clears its claimed-run state", async () => {
     const inner = innerQueue();
-    const queue = new AgentKernelShadowQueue(inner, config());
+    const queue = wrapped(inner);
     await queue.claim("worker-1");
     await queue.complete(run, { content: "done", modelVersionId: "model", usage: {} });
     expect(inner.complete).toHaveBeenCalledOnce();
