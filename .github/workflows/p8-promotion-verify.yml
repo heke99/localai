@@ -1,0 +1,210 @@
+name: P8 GPUHub Promotion Verify
+
+on:
+  workflow_run:
+    workflows: ["Deploy GPUHub"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpuhub-production
+  cancel-in-progress: false
+
+jobs:
+  verify_promotion:
+    name: Verify permanent p8 production promotion
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-gpuhub
+    env:
+      GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
+      GPUHUB_SSH_PORT: ${{ secrets.GPUHUB_SSH_PORT }}
+      GPUHUB_SSH_USER: ${{ secrets.GPUHUB_SSH_USER }}
+      GPUHUB_SSH_PRIVATE_KEY: ${{ secrets.GPUHUB_SSH_PRIVATE_KEY }}
+      GPUHUB_SSH_KNOWN_HOSTS: ${{ secrets.GPUHUB_SSH_KNOWN_HOSTS }}
+    steps:
+      - name: Checkout deployed revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Detect explicit p8 promotion request
+        id: requested
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          run=false
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            if git diff --name-only HEAD^ HEAD -- | grep -Fxq 'ops/gpuhub-p8-promotion.request'; then
+              run=true
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "GPUHub permanent p8 verification requested: $run"
+
+      - name: Validate production secrets
+        if: steps.requested.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in GPUHUB_SSH_HOST GPUHUB_SSH_PORT GPUHUB_SSH_USER GPUHUB_SSH_PRIVATE_KEY GPUHUB_SSH_KNOWN_HOSTS; do
+            [[ -n "${!name:-}" ]] || { echo "Missing required production-gpuhub secret: ${name}" >&2; exit 1; }
+          done
+
+      - name: Configure pinned SSH host identity
+        if: steps.requested.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Verify p8 runtime and run full production eval
+        if: steps.requested.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          expected_sha='${{ github.event.workflow_run.head_sha }}'
+          remote="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
+          ssh_opts=(
+            -i "$HOME/.ssh/id_ed25519"
+            -p "$GPUHUB_SSH_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=4
+          )
+
+          ssh "${ssh_opts[@]}" "$remote" "bash -s -- '$expected_sha'" <<'REMOTE'
+          set -Eeuo pipefail
+          expected_sha="$1"
+          root_dir="/root/autodl-tmp/localai"
+          app_dir="$root_dir/app"
+          env_file="$root_dir/secrets/gpuhub-worker.env"
+          node_bin="$root_dir/runtime/node-current/bin/node"
+          profile_file="$app_dir/infra/runtime/gpuhub-production-profile.env"
+          rollback_script="$app_dir/infra/runtime/rollback-legacy-gpuhub-p1.sh"
+          search_check="$app_dir/infra/runtime/check-search-capability.sh"
+          run_id="$(date -u +'%Y%m%dT%H%M%SZ')"
+          eval_dir="$root_dir/logs/evals/p8-promotion-$run_id"
+          model_port=6006
+
+          [[ -x "$node_bin" && -f "$env_file" && -f "$profile_file" && -f "$rollback_script" && -f "$search_check" ]] || {
+            echo "p8 promotion verification prerequisites missing" >&2
+            exit 1
+          }
+
+          rollback_on_failure() {
+            status=$?
+            trap - EXIT
+            if [[ "$status" -eq 0 ]]; then exit 0; fi
+            set +e
+            echo "Permanent p8 post-deploy verification failed; activating emergency p1/32768 rollback" >&2
+            DIV3RSA_P1_ROLLBACK_CONFIRM=YES bash "$rollback_script"
+            rollback_status=$?
+            if [[ "$rollback_status" -ne 0 ]]; then
+              echo "CRITICAL: automatic p1 rollback also failed" >&2
+            else
+              echo "Emergency p1/32768 rollback verified healthy" >&2
+            fi
+            exit "$status"
+          }
+          trap rollback_on_failure EXIT
+
+          cd "$app_dir"
+          current_sha="$(git rev-parse HEAD)"
+          [[ "$current_sha" == "$expected_sha" ]] || {
+            echo "refusing p8 verification on wrong revision: expected=$expected_sha current=$current_sha" >&2
+            exit 1
+          }
+
+          # shellcheck disable=SC1090
+          source "$profile_file"
+          target_parallel="$DIV3RSA_GPUHUB_PRODUCTION_PARALLEL"
+          target_total_context="$DIV3RSA_GPUHUB_PRODUCTION_TOTAL_CONTEXT"
+          target_context_per_slot="$DIV3RSA_GPUHUB_PRODUCTION_CONTEXT_PER_SLOT"
+          [[ "$target_parallel" == "8" && "$target_total_context" == "262144" && "$target_context_per_slot" == "32768" ]] || {
+            echo "unexpected tracked promotion target" >&2
+            exit 1
+          }
+
+          process="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
+          [[ "$process" =~ --parallel[=\ ]+8 ]] || { echo "production is not parallel=8: $process" >&2; exit 1; }
+          [[ "$process" =~ --ctx-size[=\ ]+262144 ]] || { echo "production is not ctx=262144: $process" >&2; exit 1; }
+          curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${model_port}/health" >/dev/null
+          bash "$search_check" http://127.0.0.1:8890
+          screen -list | grep -F '.localai-agent' >/dev/null
+
+          api_key="$(head -n1 "$root_dir/secrets/inference-api-key")"
+          reported_ctx="$(curl --fail --silent --show-error --max-time 5 \
+            -H "Authorization: Bearer ${api_key}" \
+            "http://127.0.0.1:${model_port}/props" | "$node_bin" --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              const body=JSON.parse(readFileSync(0,"utf8"));
+              const value=body?.default_generation_settings?.n_ctx;
+              if(Number.isInteger(value)) process.stdout.write(String(value));
+            ')"
+          [[ "$reported_ctx" =~ ^[0-9]+$ && "$reported_ctx" -ge "$target_context_per_slot" ]] || {
+            echo "p8 runtime does not preserve 32768 context per slot; reported=$reported_ctx" >&2
+            exit 1
+          }
+
+          mkdir -p "$eval_dir"
+          set -a
+          # shellcheck disable=SC1090
+          source "$env_file"
+          set +a
+          export DIV3RSA_REPOSITORY_ROOT="$app_dir"
+          export DIV3RSA_EVAL_COMMIT_SHA="$expected_sha"
+          export DIV3RSA_EVAL_OUTPUT="$eval_dir/result.json"
+          export DIV3RSA_EVAL_MIN_PASS_RATE=1
+          export DIV3RSA_MODEL_PARALLEL="$target_parallel"
+          export DIV3RSA_MODEL_CONTEXT_SIZE="$target_context_per_slot"
+
+          echo "=== P8 POST-PROMOTION AGENT EVAL START ==="
+          set +e
+          "$node_bin" --experimental-transform-types --import ./infra/runpod/native-typescript-register.mjs scripts/eval_agent_runtime.ts \
+            >"$eval_dir/stdout.json" 2>"$eval_dir/stderr.log"
+          eval_status=$?
+          set -e
+          cat "$eval_dir/stderr.log"
+          cat "$eval_dir/stdout.json"
+          echo "=== P8 POST-PROMOTION AGENT EVAL STATUS: $eval_status ==="
+          [[ "$eval_status" -eq 0 ]] || exit "$eval_status"
+
+          python3 - "$eval_dir/result.json" "$target_parallel" <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as f:
+              result=json.load(f)
+          expected_parallel=int(sys.argv[2])
+          failures=[]
+          if result.get("cases") != 8: failures.append(f"cases={result.get('cases')}")
+          if result.get("passed") != 8: failures.append(f"passed={result.get('passed')}")
+          if result.get("failed") != 0: failures.append(f"failed={result.get('failed')}")
+          if result.get("passRate") != 1: failures.append(f"passRate={result.get('passRate')}")
+          if result.get("allowed") is not True: failures.append(f"allowed={result.get('allowed')}")
+          if result.get("modelParallel") != expected_parallel: failures.append(f"modelParallel={result.get('modelParallel')}")
+          if result.get("liveOracleFailures") != []: failures.append(f"liveOracleFailures={result.get('liveOracleFailures')}")
+          if failures:
+              raise SystemExit("post-promotion eval gate failed: " + ", ".join(failures))
+          print("[p8-promotion] eval gate passed: 8/8, liveOracleFailures=[], modelParallel=8")
+          PY
+
+          process="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
+          [[ "$process" =~ --parallel[=\ ]+8 && "$process" =~ --ctx-size[=\ ]+262144 ]] || exit 1
+          curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${model_port}/health" >/dev/null
+          bash "$search_check" http://127.0.0.1:8890
+          screen -list | grep -F '.localai-agent' >/dev/null
+          trap - EXIT
+          echo "Permanent p8 promotion verified: p8/262144 active, 32768 context per slot, agent eval 8/8."
+          echo "Evidence: $eval_dir"
+          REMOTE
