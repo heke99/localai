@@ -132,7 +132,8 @@ jobs:
           target_parallel="$DIV3RSA_GPUHUB_PRODUCTION_PARALLEL"
           target_total_context="$DIV3RSA_GPUHUB_PRODUCTION_TOTAL_CONTEXT"
           target_context_per_slot="$DIV3RSA_GPUHUB_PRODUCTION_CONTEXT_PER_SLOT"
-          [[ "$target_parallel" == "8" && "$target_total_context" == "262144" && "$target_context_per_slot" == "32768" ]] || {
+          target_spec_type="${DIV3RSA_GPUHUB_PRODUCTION_SPEC_TYPE:-none}"
+          [[ "$target_parallel" == "8" && "$target_total_context" == "262144" && "$target_context_per_slot" == "32768" && "$target_spec_type" == "ngram-mod" ]] || {
             echo "unexpected tracked promotion target" >&2
             exit 1
           }
@@ -140,6 +141,7 @@ jobs:
           process="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
           [[ "$process" =~ --parallel[=\ ]+8 ]] || { echo "production is not parallel=8: $process" >&2; exit 1; }
           [[ "$process" =~ --ctx-size[=\ ]+262144 ]] || { echo "production is not ctx=262144: $process" >&2; exit 1; }
+          [[ "$process" == *"--spec-type ${target_spec_type}"* ]] || { echo "production speculative decoder mismatch: $process" >&2; exit 1; }
           curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${model_port}/health" >/dev/null
           bash "$search_check" http://127.0.0.1:8890
           screen -list | grep -F '.localai-agent' >/dev/null
@@ -201,10 +203,11 @@ jobs:
 
           process="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
           [[ "$process" =~ --parallel[=\ ]+8 && "$process" =~ --ctx-size[=\ ]+262144 ]] || exit 1
+          [[ "$process" == *"--spec-type ${target_spec_type}"* ]] || exit 1
           curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${model_port}/health" >/dev/null
           bash "$search_check" http://127.0.0.1:8890
           screen -list | grep -F '.localai-agent' >/dev/null
           trap - EXIT
-          echo "Permanent p8 promotion verified: p8/262144 active, 32768 context per slot, agent eval 8/8."
+          echo "Permanent p8 promotion verified: p8/262144 active, 32768 context per slot, spec_type=${target_spec_type}, agent eval 8/8."
           echo "Evidence: $eval_dir"
           REMOTE
