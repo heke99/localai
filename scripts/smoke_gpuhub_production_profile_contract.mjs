@@ -33,6 +33,7 @@ const checks = [
   [reconcile.includes("TARGET_PARALLEL") && reconcile.includes("TARGET_TOTAL_CONTEXT"), "profile reconciler target validation missing"],
   [reconcile.includes("verify_target"), "profile reconciler post-restart verification missing"],
   [rollback.includes("DIV3RSA_GPUHUB_OVERRIDE_PARALLEL=1"), "explicit p1 emergency rollback missing"],
+  [rollback.includes("DIV3RSA_FORCE_MODEL_RESTART=1 \\") && rollback.includes("DIV3RSA_MODEL_PARALLEL=1 \\") && rollback.includes("DIV3RSA_MODEL_CONTEXT_SIZE=32768"), "p1 rollback does not override inherited p8 recovery values"],
   [workflow.includes('result.get("passed") != 8') && workflow.includes('result.get("liveOracleFailures") != []') && workflow.includes('result.get("modelParallel") != expected_parallel'), "post-promotion 8/8 agent gate missing"],
   [workflow.includes("rollback-legacy-gpuhub-p1.sh"), "post-promotion failure rollback missing"],
 ];
