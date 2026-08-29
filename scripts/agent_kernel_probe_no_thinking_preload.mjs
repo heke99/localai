@@ -3,6 +3,7 @@ if (typeof originalFetch !== "function") throw new Error("global_fetch_unavailab
 
 const foregroundCompletion = new Map();
 const VERIFIER_MAX_TOKENS = 64;
+const LOADED_PROBE_TIMEOUT_MS = 4_000;
 const VERIFIER_RESPONSE_FORMAT = {
   type: "json_schema",
   json_schema: {
@@ -156,9 +157,11 @@ globalThis.fetch = async function agentKernelProbeFetch(input, init) {
   }
 
   const started = performance.now();
+  const signal = probeIndex != null ? AbortSignal.timeout(LOADED_PROBE_TIMEOUT_MS) : init?.signal;
   try {
     const response = await originalFetch(input, {
       ...init,
+      signal,
       body: withVerifierConstraints(body)
     });
     if (probeIndex != null) {
