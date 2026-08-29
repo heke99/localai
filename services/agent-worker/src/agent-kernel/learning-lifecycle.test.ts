@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { TaskAnalysis, VerificationReport } from "@div3rsa/agent-runtime";
 import type { AgentQueue, ClaimedRun } from "../processor";
 import { VerifiedLearningAgentQueue } from "./learning-lifecycle";
 import type { SupabaseAgentKernelStore } from "./store";
@@ -32,13 +33,28 @@ function store() {
   } as unknown as SupabaseAgentKernelStore;
 }
 
-const task = {
-  categories: ["bugfix"], risk: "medium", reasoningLevel: "standard", verificationRequirements: ["tests"], requiresCurrentInformation: false,
-  requiresLiveData: false, liveDataKind: "none", researchDepth: "none", informationFreshness: "stable", requiresRepository: true, requiresDatabase: false, requiresDeployment: false, requiresBrowser: false, requiresSecurityReview: false,
+const task: TaskAnalysis = {
+  primaryCategory: "bugfix",
+  categories: ["bugfix"],
+  risk: "medium",
+  complexity: "medium",
+  reasoningLevel: "standard",
+  verificationRequirements: ["tests"],
+  requiresCurrentInformation: false,
+  requiresLiveData: false,
+  liveDataKind: null,
+  researchDepth: "none",
+  informationFreshness: "stable",
+  affectedDomains: ["repository"],
+  requiresRepository: true,
+  requiresDatabase: false,
+  requiresDeployment: false,
+  requiresBrowser: false,
+  requiresSecurityReview: false,
   project: { languages: ["typescript"], frameworks: [], database: [], services: [], hosting: [] }
-} as never;
+};
 
-const report = {
+const report: VerificationReport = {
   plan: { checks: [{ kind: "unit-tests", required: true, reason: "test" }, { kind: "completion-proof", required: true, reason: "proof" }] },
   results: [
     { kind: "unit-tests", status: "passed", summary: "green", evidence: ["ci:123"], durationMs: 10 },
@@ -46,7 +62,7 @@ const report = {
   ],
   passed: true,
   unresolvedBlockers: []
-} as never;
+};
 
 describe("VerifiedLearningAgentQueue", () => {
   it("persists only structural verified learning after successful completion", async () => {
@@ -71,8 +87,9 @@ describe("VerifiedLearningAgentQueue", () => {
   it("does not learn from failed verification", async () => {
     const kernelStore = store();
     const queue = new VerifiedLearningAgentQueue(baseQueue(), kernelStore, true, true, { warn: vi.fn() });
+    const failedReport: VerificationReport = { ...report, passed: false, unresolvedBlockers: ["unit-tests:failed"] };
     await queue.recordRunIntelligence(run.runId, task, ["debugger"]);
-    await queue.recordVerificationRun(run.runId, 0, null, null, report.plan, { ...report, passed: false, unresolvedBlockers: ["unit-tests:failed"] } as never, { passed: false, reason: "red" });
+    await queue.recordVerificationRun(run.runId, 0, null, null, failedReport.plan, failedReport, { passed: false, reason: "red" });
     await queue.complete(run, { content: "bad", modelVersionId: "qwen", usage: {} });
     expect(kernelStore.upsertMemory).not.toHaveBeenCalled();
     expect(kernelStore.recordTrajectory).not.toHaveBeenCalled();
