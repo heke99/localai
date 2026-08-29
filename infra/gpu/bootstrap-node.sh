@@ -7,7 +7,6 @@ PROFILE="${DIV3RSA_GPU_HARDWARE_PROFILE:-pro6000-96g}"
 RUNTIME_ROOT="${DIV3RSA_RUNTIME_ROOT_DIR:-/opt/div3rsa}"
 RUNTIME_REPO="${DIV3RSA_REPO_DIR:-${RUNTIME_ROOT}/localai}"
 RUNTIME_ENV="${DIV3RSA_RUNTIME_STATE_DIR:-/etc/div3rsa}/runtime.env"
-SYSTEMD_DROPIN="/etc/systemd/system/div3rsa-runtime.service.d/20-inference-only.conf"
 
 die() { printf '[gpu-node-bootstrap] %s\n' "$*" >&2; exit 1; }
 log() { printf '[gpu-node-bootstrap] %s\n' "$*"; }
@@ -31,32 +30,27 @@ PY
 export DIV3RSA_LLAMA_CPP_REVISION="${manifest_values[0]}"
 export DIV3RSA_NODE_VERSION="${manifest_values[1]}"
 export DIV3RSA_RUNTIME_PROFILE="$PROFILE"
+export DIV3RSA_RUNTIME_ROLE=inference
 export DIV3RSA_GPUHUB_PRODUCTION_PARALLEL="${manifest_values[2]}"
 export DIV3RSA_GPUHUB_PRODUCTION_TOTAL_CONTEXT="${manifest_values[3]}"
 export DIV3RSA_GPUHUB_PRODUCTION_CONTEXT_PER_SLOT="${manifest_values[4]}"
 export DIV3RSA_GPUHUB_PRODUCTION_SPEC_TYPE="${manifest_values[5]}"
 
 command -v nvidia-smi >/dev/null 2>&1 || die "nvidia_smi_required_before_bootstrap"
-log "preflight profile=${PROFILE} git=${DIV3RSA_RUNTIME_GIT_REF} llama=${DIV3RSA_LLAMA_CPP_REVISION}"
+log "preflight profile=${PROFILE} role=inference git=${DIV3RSA_RUNTIME_GIT_REF} llama=${DIV3RSA_LLAMA_CPP_REVISION}"
 
-# Reuse the provider-neutral installer for packages, exact source revision,
-# pinned Node/llama.cpp/model artifact, TLS ingress and base systemd service.
+# The provider-neutral installer now sees role=inference before it creates or
+# starts systemd. A blank GPU therefore never starts the queue/conversation
+# worker, even briefly: its first service process is llama.cpp + registrar.
 bash "${ROOT}/infra/runtime/bootstrap-host.sh"
 
-# Convert the GPU service into inference-only mode. The queue worker and all
-# conversational/memory/run state live outside the GPU; only llama.cpp plus a
-# tiny route registrar/heartbeat remain here.
 [[ -f "$RUNTIME_ENV" ]] || die "runtime_environment_missing:${RUNTIME_ENV}"
-[[ -x "$RUNTIME_REPO/infra/gpu/start-inference-node.sh" || -f "$RUNTIME_REPO/infra/gpu/start-inference-node.sh" ]] || die "inference_start_script_missing"
-mkdir -p "$(dirname "$SYSTEMD_DROPIN")"
-cat > "$SYSTEMD_DROPIN" <<EOF
-[Service]
-Environment=DIV3RSA_RUNTIME_ROLE=inference
-ExecStart=
-ExecStart=/bin/bash -lc 'set -a; source ${RUNTIME_ENV}; set +a; export DIV3RSA_RUNTIME_ROLE=inference; exec bash ${RUNTIME_REPO}/infra/gpu/start-inference-node.sh'
-EOF
-systemctl daemon-reload
-systemctl restart div3rsa-runtime
+[[ -f "$RUNTIME_REPO/infra/gpu/start-inference-node.sh" ]] || die "inference_start_script_missing"
+systemctl cat div3rsa-runtime | grep -F 'start-inference-node.sh' >/dev/null || die "runtime_service_not_inference_only"
+systemctl cat div3rsa-runtime | grep -F 'DIV3RSA_RUNTIME_ROLE=inference' >/dev/null || die "runtime_service_role_not_inference"
+if systemctl cat div3rsa-runtime | grep -F 'infra/runtime/start-production.sh' >/dev/null; then
+  die "combined_runtime_start_path_present"
+fi
 
 # A machine that merely started is not equivalent to production. It must prove
 # hardware, model digest, llama.cpp revision and the tracked p8 runtime profile.
@@ -67,20 +61,33 @@ until bash "$RUNTIME_REPO/infra/gpu/verify-node.sh"; do
 done
 
 if [[ "${DIV3RSA_GPU_SKIP_PRODUCTION_EVAL:-0}" != "1" ]]; then
-  [[ -f "${RUNTIME_REPO}/scripts/eval_agent_production.mjs" ]] || die "production_eval_script_missing"
-  log "running production agent eval before READY promotion"
-  eval_json="$(cd "$RUNTIME_REPO" && node scripts/eval_agent_production.mjs --json)" || die "production_eval_failed"
-  GPU_BOOTSTRAP_EVAL="$eval_json" python3 - <<'PY' || die "production_eval_gate_blocked"
+  [[ -f "${RUNTIME_REPO}/scripts/eval_agent_runtime.ts" ]] || die "production_eval_script_missing"
+  log "running authoritative 8/8 agent eval before READY promotion"
+  set -a
+  # shellcheck disable=SC1090
+  source "$RUNTIME_ENV"
+  set +a
+  export DIV3RSA_REPOSITORY_ROOT="$RUNTIME_REPO"
+  export DIV3RSA_EVAL_MIN_PASS_RATE=1
+  eval_output="$(mktemp)"
+  trap 'rm -f "$eval_output"' EXIT
+  (cd "$RUNTIME_REPO" && node --experimental-transform-types \
+    --import ./infra/runpod/native-typescript-register.mjs \
+    scripts/eval_agent_runtime.ts >"$eval_output") || die "production_eval_failed"
+  GPU_BOOTSTRAP_EVAL="$(cat "$eval_output")" python3 - <<'PY' || die "production_eval_gate_blocked"
 import json, os
 raw=os.environ['GPU_BOOTSTRAP_EVAL']
 start=raw.find('{')
 if start < 0: raise SystemExit(1)
 data=json.loads(raw[start:])
+if data.get('cases') != 8: raise SystemExit(1)
 if data.get('passed') != 8: raise SystemExit(1)
 if data.get('passRate') != 1: raise SystemExit(1)
 if data.get('allowed') is not True: raise SystemExit(1)
 if data.get('liveOracleFailures') != []: raise SystemExit(1)
 PY
+  rm -f "$eval_output"
+  trap - EXIT
 fi
 
 log "BOOTSTRAP_VERIFIED inference-only node satisfies div3rsa-gpu-node-v2"
