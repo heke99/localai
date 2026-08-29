@@ -17,7 +17,7 @@ const config: AgentKernelConfig = {
 function inner() {
   const generate = vi.fn(async (request: GenerateRequest) => {
     if (request.requestId.includes("agent-kernel-active:planner")) return { modelVersionId: "m", content: "PLAN_SAFE", finishReason: "stop" as const, usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
-    if (request.requestId.includes("agent-kernel-active:analyst")) return { modelVersionId: "m", content: "RISKS_SAFE", finishReason: "stop" as const, usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
+    if (request.requestId.includes("agent-kernel-active:verifier")) return { modelVersionId: "m", content: "VERIFY_SAFE", finishReason: "stop" as const, usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
     return { modelVersionId: "m", content: request.messages[0]?.content ?? "", finishReason: "stop" as const, usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
   });
   const adapter: ModelAdapter = {
@@ -42,17 +42,17 @@ function primaryRequest(): GenerateRequest {
 }
 
 describe("AgentKernelActiveCanaryAdapter", () => {
-  it("injects bounded subagent conclusions into sampled primary execution only", async () => {
+  it("injects bounded specialist conclusions into sampled primary execution only", async () => {
     const { adapter, generate } = inner();
     const wrapped = new AgentKernelActiveCanaryAdapter(adapter, config);
     const result = await wrapped.generate(primaryRequest());
     expect(result.content).toContain("PLAN_SAFE");
-    expect(result.content).toContain("RISKS_SAFE");
+    expect(result.content).toContain("VERIFY_SAFE");
     expect(result.content).toContain("actual tool evidence and independent verification remain authoritative");
     expect(generate).toHaveBeenCalledTimes(3);
   });
 
-  it("caches one canary plan across the same run instead of multiplying subagent calls", async () => {
+  it("caches one specialist plan across the same run instead of multiplying subagent calls", async () => {
     const { adapter, generate } = inner();
     const wrapped = new AgentKernelActiveCanaryAdapter(adapter, config);
     await wrapped.generate(primaryRequest());
