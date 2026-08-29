@@ -63,20 +63,40 @@ export function deterministicProbeSample(runId: string, basisPoints: number): bo
   return digest.readUInt32BE(0) % 10_000 < basisPoints;
 }
 
-function parseQuality(content: string): ShadowProbeObservation["quality"] {
-  try {
-    const parsed = JSON.parse(content) as { score?: unknown; passed?: unknown; reasonCode?: unknown };
-    const score = typeof parsed.score === "number" && Number.isFinite(parsed.score)
-      ? Math.max(0, Math.min(100, Math.round(parsed.score)))
-      : null;
-    const passed = typeof parsed.passed === "boolean" ? parsed.passed : null;
-    const reasonCode = typeof parsed.reasonCode === "string" && /^[a-z0-9_-]{1,80}$/i.test(parsed.reasonCode)
-      ? parsed.reasonCode
-      : "verifier_output_unparsed";
-    return { score, passed, reasonCode };
-  } catch {
+function parseJsonObject(content: string): Record<string, unknown> | null {
+  const trimmed = content.trim();
+  const candidates = [trimmed];
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenceMatch?.[1]) candidates.push(fenceMatch[1].trim());
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch {
+      // Try the next bounded candidate. Never infer missing fields.
+    }
+  }
+  return null;
+}
+
+export function parseShadowProbeQuality(content: string): ShadowProbeObservation["quality"] {
+  const parsed = parseJsonObject(content);
+  if (!parsed) return { score: null, passed: null, reasonCode: "verifier_output_unparsed" };
+  const score = typeof parsed.score === "number" && Number.isFinite(parsed.score)
+    ? Math.max(0, Math.min(100, Math.round(parsed.score)))
+    : null;
+  const passed = typeof parsed.passed === "boolean" ? parsed.passed : null;
+  const reasonCode = typeof parsed.reasonCode === "string" && /^[a-z0-9_-]{1,80}$/i.test(parsed.reasonCode)
+    ? parsed.reasonCode
+    : "verifier_output_unparsed";
+  if (score == null || passed == null || reasonCode === "verifier_output_unparsed") {
     return { score: null, passed: null, reasonCode: "verifier_output_unparsed" };
   }
+  return { score, passed, reasonCode };
 }
 
 function compactTask(task: TaskAnalysis) {
@@ -97,6 +117,16 @@ function compactTask(task: TaskAnalysis) {
     verificationRequirements: task.verificationRequirements
   };
 }
+
+const VERIFIER_SYSTEM_PROMPT = [
+  "You are an independent shadow quality verifier. Judge only the existing baseline answer; never give credit for work that is merely implied.",
+  "Return exactly one JSON object and nothing else: {\"score\":0-100,\"passed\":boolean,\"reasonCode\":\"short_machine_code\"}.",
+  "Decision rule: passed=true only when the baseline explicitly satisfies every material request constraint and required verification/evidence item.",
+  "Missing requested tests, caller-impact checks, rollback/canary controls, tenant isolation, current/live evidence, citations, measurements, authorization checks, or other required proof must make passed=false.",
+  "Unsupported claims of safety, correctness, freshness, successful execution, or completion must make passed=false.",
+  "For current/live requests, an answer based on memory, probability, or an uncited generic value fails even if the value could be correct.",
+  "Use score >=70 only for passed=true; use score <70 for passed=false. Prefer one precise reasonCode for the most important deficiency."
+].join(" ");
 
 export class AgentKernelShadowProbeRunner {
   private active = 0;
@@ -164,10 +194,10 @@ export class AgentKernelShadowProbeRunner {
       let quality: ShadowProbeObservation["quality"] = { score: null, passed: null, reasonCode: "verifier_not_run" };
       if (callCount < this.config.maxCallsPerRun) {
         const verifier = await invoke("verifier", "verifier-prod", [
-          { role: "system", content: "You are an independent shadow quality verifier. Judge the existing baseline answer against the supplied task and shadow planning evidence. Do not use tools. Return JSON only: {\"score\":0-100,\"passed\":boolean,\"reasonCode\":\"short_machine_code\"}. Score factual support, completeness, constraint adherence and whether required evidence is missing." },
+          { role: "system", content: VERIFIER_SYSTEM_PROMPT },
           { role: "user", content: JSON.stringify({ task, planner: planner.slice(0, 6_000), researcher: researcher.slice(0, 6_000), baselineAnswer: input.baselineAnswer.slice(0, 16_000) }) }
         ]);
-        quality = parseQuality(verifier);
+        quality = parseShadowProbeQuality(verifier);
       }
 
       return {
