@@ -14,12 +14,19 @@ const required = [
   ["--ctx-size[=\\ ]+262144", "p8 context verification missing"],
   ["--spec-type ngram-mod", "speculative profile verification missing"],
   ["unset DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED", "production probe enablement must be explicitly absent"],
+  ["set +e", "gate exit must be captured without losing evidence"],
+  ["__EVIDENCE_PATH__=", "remote evidence path marker missing"],
+  ["__GATE_STATUS__=", "gate status marker missing"],
   ["actions/upload-artifact@v4", "evidence artifact upload missing"],
+  ["Enforce promotion gate result", "promotion gate must still be enforced after artifact upload"],
 ];
 for (const [needle, message] of required) {
   if (!workflow.includes(needle)) throw new Error(message);
 }
 
+if (workflow.indexOf("actions/upload-artifact@v4") > workflow.indexOf("Enforce promotion gate result")) {
+  throw new Error("blocked evidence must be uploaded before promotion gate enforcement");
+}
 if (workflow.includes('workflows: ["Deploy GPUHub"]')) throw new Error("evidence must not race P8 soak after Deploy GPUHub");
 
 const forbidden = [
@@ -38,4 +45,4 @@ for (const needle of forbidden) {
 }
 
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] runs after P8 soak with pinned SSH, explicit request, p8 pre/post checks, observational-only evidence and artifact upload present");
+console.log("[agent-kernel-gpuhub-evidence-workflow] blocked evidence is preserved before fail-closed gate enforcement; runtime remains observational-only");
