@@ -197,6 +197,18 @@ async function githubApi<T>(token: string, path: string, init: RequestInit = {})
   return fetchJson<T>(`https://api.github.com${path}`, { ...init, headers: { ...githubHeaders(token), ...(init.headers ?? {}) } });
 }
 
+function normalizedBranch(value: unknown) {
+  return String(value ?? "").trim().replace(/^refs\/heads\//, "");
+}
+
+function assertInternalAgentBranch(branch: string, metadata: Record<string, unknown>) {
+  const defaultBranch = typeof metadata.defaultBranch === "string" ? metadata.defaultBranch : "main";
+  if (!branch.startsWith("div3rsa-agent/") || branch.length > 240 || branch.includes("..") || branch.includes("//") || branch.endsWith("/")) {
+    throw new Error("github_agent_branch_restore_forbidden");
+  }
+  if (branch === defaultBranch) throw new Error("github_default_branch_restore_forbidden");
+}
+
 export async function executeGithubTool(toolName: string, args: Record<string,unknown>, metadata: Record<string,unknown>) {
   const { fullName, installationId } = repositoryCoordinates(metadata);
   const token = await installationToken(installationId);
@@ -220,6 +232,32 @@ export async function executeGithubTool(toolName: string, args: Record<string,un
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: String(args.message ?? "Update via DIV3RSA"), content: Buffer.from(String(args.content ?? ""), "utf8").toString("base64"), branch, ...(sha ? { sha } : {}) })
+    });
+  }
+  if (toolName === "github_read_branch_ref") {
+    const branch = normalizedBranch(args.branch);
+    if (!branch) throw new Error("github_branch_required");
+    const ref = await githubApi<{ object?: { sha?: string } }>(token, `${repoPath}/git/ref/heads/${encodeURIComponent(branch)}`);
+    const sha = ref.object?.sha;
+    if (!sha || !/^[0-9a-f]{40}$/i.test(sha)) throw new Error("github_branch_ref_invalid");
+    return { branch, sha };
+  }
+  if (toolName === "github_restore_agent_branch") {
+    const branch = normalizedBranch(args.branch);
+    const targetSha = String(args.targetSha ?? "").trim();
+    assertInternalAgentBranch(branch, metadata);
+    if (!/^[0-9a-f]{40}$/i.test(targetSha)) throw new Error("github_restore_target_sha_invalid");
+    const current = await githubApi<{ object?: { sha?: string } }>(token, `${repoPath}/git/ref/heads/${encodeURIComponent(branch)}`);
+    const currentSha = current.object?.sha;
+    if (!currentSha || !/^[0-9a-f]{40}$/i.test(currentSha)) throw new Error("github_restore_current_sha_invalid");
+    const comparison = await githubApi<{ status?: string; base_commit?: { sha?: string }; merge_base_commit?: { sha?: string } }>(token, `${repoPath}/compare/${targetSha}...${currentSha}`);
+    if (!['ahead','identical'].includes(comparison.status ?? "")) throw new Error("github_restore_target_not_ancestor");
+    const mergeBase = comparison.merge_base_commit?.sha ?? comparison.base_commit?.sha;
+    if (comparison.status !== "identical" && mergeBase !== targetSha) throw new Error("github_restore_target_not_exact_ancestor");
+    return githubApi(token, `${repoPath}/git/refs/heads/${encodeURIComponent(branch)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sha: targetSha, force: true })
     });
   }
   if (toolName === "github_create_branch") {
