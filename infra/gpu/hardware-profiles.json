@@ -1,0 +1,41 @@
+{
+  "contract": "div3rsa-gpu-hardware-profiles-v1",
+  "profiles": {
+    "pro6000-96g": {
+      "status": "production-verified",
+      "minVramGb": 90,
+      "allowedGpuNamePatterns": ["RTX PRO 6000", "PRO 6000 Blackwell"],
+      "modelQuantization": "Q8_0",
+      "parallel": 8,
+      "totalContext": 262144,
+      "contextPerSlot": 32768,
+      "specType": "ngram-mod"
+    },
+    "a100-80g": {
+      "status": "benchmark-required",
+      "minVramGb": 76,
+      "allowedGpuNamePatterns": ["A100"],
+      "modelQuantization": "Q8_0",
+      "parallel": null,
+      "totalContext": null,
+      "contextPerSlot": 32768,
+      "specType": null
+    },
+    "l40s-48g": {
+      "status": "alternate-quant-required",
+      "minVramGb": 45,
+      "allowedGpuNamePatterns": ["L40S"],
+      "modelQuantization": null,
+      "parallel": null,
+      "totalContext": null,
+      "contextPerSlot": null,
+      "specType": null
+    }
+  },
+  "policy": {
+    "unknownHardware": "deny",
+    "unverifiedProfile": "deny-production",
+    "profileDowngrade": "deny",
+    "requireBenchmarkBeforePromotion": true
+  }
+}
