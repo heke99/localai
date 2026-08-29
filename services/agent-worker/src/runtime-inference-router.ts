@@ -19,6 +19,11 @@ export type InferenceRoute = {
 type AdapterFactory = (endpoint: string) => ModelAdapter;
 type Fetch = typeof fetch;
 
+export type RuntimeInferenceRouterOptions = {
+  staleSeconds?: number;
+  reapIntervalMs?: number;
+};
+
 function numberValue(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -41,20 +46,34 @@ function safeCode(error: unknown) {
 
 export class RuntimeInferenceRouter implements ModelAdapter {
   private readonly localCapabilities: ReadonlySet<ModelCapability>;
+  private readonly staleSeconds: number;
+  private readonly reapIntervalMs: number;
+  private lastReapAt = 0;
 
   constructor(
     private readonly client: RuntimeInferenceRpcClient,
     private readonly apiKey: string,
     private readonly fetcher: Fetch = fetch,
-    private readonly adapterFactory: AdapterFactory = (endpoint) => new OpenAiCompatibleAdapter(endpoint, apiKey, fetcher)
+    private readonly adapterFactory: AdapterFactory = (endpoint) => new OpenAiCompatibleAdapter(endpoint, apiKey, fetcher),
+    options: RuntimeInferenceRouterOptions = {}
   ) {
     this.localCapabilities = new OpenAiCompatibleAdapter("http://127.0.0.1", apiKey, fetcher).getCapabilities();
+    this.staleSeconds = Math.min(900, Math.max(30, Math.trunc(options.staleSeconds ?? 90)));
+    this.reapIntervalMs = Math.max(5_000, Math.trunc(options.reapIntervalMs ?? 30_000));
   }
 
   getCapabilities(): ReadonlySet<ModelCapability> { return this.localCapabilities; }
   async estimateTokens(text: string): Promise<number> { return Math.max(1, Math.ceil(text.length / 3.5)); }
 
+  private async maybeReapStaleWorkers() {
+    const now = Date.now();
+    if (now - this.lastReapAt < this.reapIntervalMs) return;
+    this.lastReapAt = now;
+    await this.client.rpc<number>("runtime_reap_stale_workers", { target_stale_seconds: this.staleSeconds }).catch(() => undefined);
+  }
+
   private async routes(alias: string): Promise<InferenceRoute[]> {
+    await this.maybeReapStaleWorkers();
     const { data, error } = await this.client.rpc<RouteRow[]>("runtime_resolve_model_routes", { target_alias: alias });
     if (error) throw new Error(`runtime_inference_resolve_failed:${error.code ?? "unknown"}`);
     return (data ?? []).flatMap((row) => {
@@ -155,12 +174,14 @@ export class RuntimeInferenceRouter implements ModelAdapter {
           if (route.healthUrl) {
             const response = await this.fetcher(route.healthUrl, { cache: "no-store", signal: AbortSignal.timeout(3_000) });
             if (response.ok) return { ok: true, latencyMs: performance.now() - startedAt, detail: `${route.providerKey}:${route.externalId}` };
+            await this.markFailed(route, new Error(`health_http_${response.status}`));
           } else {
             const health = await this.adapterFactory(route.endpoint).healthCheck();
             if (health.ok) return health;
+            await this.markFailed(route, new Error(health.detail || "health_check_failed"));
           }
-        } catch {
-          // Continue to the next registered node.
+        } catch (error) {
+          await this.markFailed(route, error);
         }
       }
     }
