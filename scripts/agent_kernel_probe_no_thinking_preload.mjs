@@ -111,6 +111,28 @@ async function loadedProbePressure(input, init) {
   }
 }
 
+function traceProbeStream(response, requestId, started) {
+  if (!response.body) return response;
+  let firstChunk = true;
+  let chunks = 0;
+  let bytes = 0;
+  const traced = response.body.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      chunks += 1;
+      bytes += chunk?.byteLength ?? 0;
+      if (firstChunk) {
+        firstChunk = false;
+        console.error(`[agent-kernel-probe-diag] phase=first_chunk requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} bytes=${chunk?.byteLength ?? 0}`);
+      }
+      controller.enqueue(chunk);
+    },
+    flush() {
+      console.error(`[agent-kernel-probe-diag] phase=stream_end requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} chunks=${chunks} bytes=${bytes}`);
+    }
+  }));
+  return new Response(traced, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
 globalThis.fetch = async function agentKernelProbeFetch(input, init) {
   const headers = new Headers(init?.headers);
   const requestId = headers.get("x-request-id") || "";
@@ -122,11 +144,8 @@ globalThis.fetch = async function agentKernelProbeFetch(input, init) {
     const deferred = deferredFor(foregroundIndex);
     try {
       const response = await originalFetch(input, init);
-      if (!response.body) {
-        deferred.resolve();
-      } else {
-        void response.clone().arrayBuffer().catch(() => undefined).finally(() => deferred.resolve());
-      }
+      if (!response.body) deferred.resolve();
+      else void response.clone().arrayBuffer().catch(() => undefined).finally(() => deferred.resolve());
       return response;
     } catch (error) {
       deferred.resolve();
@@ -144,11 +163,7 @@ globalThis.fetch = async function agentKernelProbeFetch(input, init) {
   if (!verifierCall || typeof init?.body !== "string") return originalFetch(input, init);
 
   let body;
-  try {
-    body = JSON.parse(init.body);
-  } catch {
-    return originalFetch(input, init);
-  }
+  try { body = JSON.parse(init.body); } catch { return originalFetch(input, init); }
   if (!body || typeof body !== "object" || Array.isArray(body)) return originalFetch(input, init);
 
   if (probeIndex != null) {
@@ -159,13 +174,10 @@ globalThis.fetch = async function agentKernelProbeFetch(input, init) {
   const started = performance.now();
   const signal = probeIndex != null ? AbortSignal.timeout(LOADED_PROBE_TIMEOUT_MS) : init?.signal;
   try {
-    const response = await originalFetch(input, {
-      ...init,
-      signal,
-      body: withVerifierConstraints(body)
-    });
+    const response = await originalFetch(input, { ...init, signal, body: withVerifierConstraints(body) });
     if (probeIndex != null) {
       console.error(`[agent-kernel-probe-diag] phase=headers requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} status=${response.status}`);
+      return traceProbeStream(response, requestId, started);
     }
     return response;
   } catch (error) {
