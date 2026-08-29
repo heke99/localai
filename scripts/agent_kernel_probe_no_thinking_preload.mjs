@@ -42,15 +42,20 @@ function loadedProbeIndex(requestId) {
   return match?.[1] ?? null;
 }
 
-function withVerifierConstraints(body) {
+function withVerifierConstraints(body, nonStreaming = false) {
   const requestedMax = Number.isFinite(body.max_tokens) ? Number(body.max_tokens) : VERIFIER_MAX_TOKENS;
-  return JSON.stringify({
+  const constrained = {
     ...body,
     max_tokens: Math.min(requestedMax, VERIFIER_MAX_TOKENS),
     reasoning_effort: "none",
     chat_template_kwargs: { ...(body.chat_template_kwargs || {}), enable_thinking: false },
     response_format: VERIFIER_RESPONSE_FORMAT
-  });
+  };
+  if (nonStreaming) {
+    constrained.stream = false;
+    delete constrained.stream_options;
+  }
+  return JSON.stringify(constrained);
 }
 
 function metricSum(text, name) {
@@ -129,52 +134,30 @@ function validVerifierObject(content) {
   }
 }
 
-function traceProbeStream(response, requestId, started) {
-  if (!response.body) return response;
-  let firstChunk = true;
-  let chunks = 0;
-  let bytes = 0;
-  let sseBuffer = "";
-  let verifierContent = "";
-  let completedEarly = false;
-  const decoder = new TextDecoder();
-  const traced = response.body.pipeThrough(new TransformStream({
-    transform(chunk, controller) {
-      chunks += 1;
-      bytes += chunk?.byteLength ?? 0;
-      if (firstChunk) {
-        firstChunk = false;
-        console.error(`[agent-kernel-probe-diag] phase=first_chunk requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} bytes=${chunk?.byteLength ?? 0}`);
-      }
-      controller.enqueue(chunk);
-      sseBuffer += decoder.decode(chunk, { stream: true });
-      const events = sseBuffer.split("\n\n");
-      sseBuffer = events.pop() || "";
-      for (const event of events) {
-        for (const line of event.split("\n")) {
-          if (!line.startsWith("data:")) continue;
-          const data = line.slice(5).trim();
-          if (!data || data === "[DONE]") continue;
-          try {
-            const parsed = JSON.parse(data);
-            const delta = parsed.choices?.[0]?.delta?.content;
-            if (typeof delta === "string") verifierContent += delta;
-          } catch {
-            // Keep streaming; malformed transport is handled fail-closed by the caller.
-          }
-        }
-      }
-      if (validVerifierObject(verifierContent)) {
-        completedEarly = true;
-        console.error(`[agent-kernel-probe-diag] phase=json_complete requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} chunks=${chunks} bytes=${bytes}`);
-        controller.terminate();
-      }
-    },
-    flush() {
-      console.error(`[agent-kernel-probe-diag] phase=stream_end requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} chunks=${chunks} bytes=${bytes} early=${completedEarly}`);
+async function nonStreamingProbeToSse(response, requestId, started) {
+  const payload = await response.json();
+  const content = payload?.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || !validVerifierObject(content)) {
+    throw new Error("loaded_probe_nonstream_invalid_verifier_json");
+  }
+  const usage = payload?.usage && typeof payload.usage === "object" ? payload.usage : undefined;
+  const completion = {
+    choices: [{ delta: { content }, finish_reason: "stop", index: 0 }],
+    ...(usage ? { usage } : {})
+  };
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(`data: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`);
+  console.error(`[agent-kernel-probe-diag] phase=nonstream_complete requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} bytes=${bytes.byteLength}`);
+  return new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
     }
-  }));
-  return new Response(traced, { status: response.status, statusText: response.statusText, headers: response.headers });
+  }), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: { "content-type": "text/event-stream" }
+  });
 }
 
 globalThis.fetch = async function agentKernelProbeFetch(input, init) {
@@ -218,10 +201,15 @@ globalThis.fetch = async function agentKernelProbeFetch(input, init) {
   const started = performance.now();
   const signal = probeIndex != null ? AbortSignal.timeout(LOADED_PROBE_TIMEOUT_MS) : init?.signal;
   try {
-    const response = await originalFetch(input, { ...init, signal, body: withVerifierConstraints(body) });
+    const response = await originalFetch(input, {
+      ...init,
+      signal,
+      body: withVerifierConstraints(body, probeIndex != null)
+    });
     if (probeIndex != null) {
-      console.error(`[agent-kernel-probe-diag] phase=headers requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} status=${response.status}`);
-      return traceProbeStream(response, requestId, started);
+      console.error(`[agent-kernel-probe-diag] phase=headers requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} status=${response.status} transport=nonstream`);
+      if (!response.ok) return response;
+      return await nonStreamingProbeToSse(response, requestId, started);
     }
     return response;
   } catch (error) {
