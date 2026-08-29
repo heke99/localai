@@ -5,9 +5,6 @@ const tools: GatewayTool[] = [
   { name: "github_read_file", provider: "github", capability: "github.contents.read" },
   { name: "github_read_repository_snapshot", provider: "github", capability: "github.contents.read" },
   { name: "github_write_file", provider: "github", capability: "github.contents.write" },
-  // Internal rollback primitive. Deliberately omitted from @div3rsa/integrations so
-  // the model can never discover or invoke branch ref restoration directly.
-  { name: "github_restore_checkpoint_ref", provider: "github", capability: "github.contents.write" },
   { name: "github_create_branch", provider: "github", capability: "github.branch.create" },
   { name: "github_read_pull_requests", provider: "github", capability: "github.pull_request.read" },
   { name: "github_create_pull_request", provider: "github", capability: "github.pull_request.create" },
