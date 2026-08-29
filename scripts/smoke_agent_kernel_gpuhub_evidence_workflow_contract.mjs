@@ -19,7 +19,7 @@ const required = [
   ["--spec-type ngram-mod", "speculative profile verification missing"],
   ["DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER=16", "evidence load must provide 128 foreground requests"],
   ["DIV3RSA_PROBE_LOAD_MAX_TOKENS=128", "foreground token budget must stay bounded"],
-  ["DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS=128", "configured probe budget must stay bounded before verifier clamp"],
+  ["DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS=32", "loaded verifier evidence must use the 32-token budget"],
   ["DIV3RSA_PROBE_EVIDENCE_SAMPLE_BPS=100", "evidence must model one-percent sampling"],
   ["DIV3RSA_PROBE_TIMEOUT_MS=4000", "workflow must retain the four-second probe gate"],
   ["unset DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED", "production probe enablement must be explicitly absent"],
@@ -50,4 +50,4 @@ if (workflow.includes('workflows: ["Deploy GPUHub"]')) throw new Error("evidence
 const forbidden = ["rollback-legacy-gpuhub-p1.sh", "recover-legacy-gpuhub", "reconcile-gpuhub-production-profile.sh", "DIV3RSA_FORCE_MODEL_RESTART", "DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED=1", "DIV3RSA_AGENT_KERNEL_V2_PROBE_SAMPLE_BPS=", "systemctl restart", "pkill", "killall"];
 for (const needle of forbidden) if (workflow.includes(needle)) throw new Error(`observational evidence workflow contains forbidden mutation: ${needle}`);
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] loaded verifier uses non-stream generate semantics; four-second gate and production sampling state unchanged");
+console.log("[agent-kernel-gpuhub-evidence-workflow] loaded verifier uses non-stream generate semantics with a 32-token evidence budget; four-second gate and production sampling state unchanged");
