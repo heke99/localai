@@ -112,7 +112,6 @@ jobs:
           }
 
           verify_p8() {
-            # shellcheck disable=SC1090
             source "$profile_file"
             [[ "$DIV3RSA_GPUHUB_PRODUCTION_PARALLEL" == "8" ]]
             [[ "$DIV3RSA_GPUHUB_PRODUCTION_TOTAL_CONTEXT" == "262144" ]]
@@ -149,11 +148,8 @@ jobs:
           verify_p8
           screen -list | grep -F ".${screen_name}" >/dev/null
 
-          # Exercise the active path deterministically before touching the production worker.
           set -a
-          # shellcheck disable=SC1090
           source "$env_file"
-          # shellcheck disable=SC1090
           source "$canary_file"
           set +a
           export DIV3RSA_AGENT_KERNEL_V2_ACTIVE_CANARY_BPS=10000
@@ -161,11 +157,20 @@ jobs:
           export DIV3RSA_VERIFIED_LEARNING_ENABLED=0
           export DIV3RSA_CHECKPOINT_REWIND_ENABLED=0
           export DIV3RSA_REPOSITORY_ROOT="$app_dir"
+          export DIV3RSA_EVAL_COMMIT_SHA="$expected_sha"
+          preflight_json="$(mktemp "$root_dir/logs/agent-kernel-active-preflight.XXXXXX.json")"
+          export DIV3RSA_EVAL_OUTPUT="$preflight_json"
           echo "=== ISOLATED 100% ACTIVE KERNEL EVAL ==="
           "$node_bin" --experimental-transform-types --import ./infra/runpod/native-typescript-register.mjs scripts/eval_agent_runtime.ts
+          python3 - "$preflight_json" <<'PY'
+          import json,sys
+          data=json.load(open(sys.argv[1],encoding='utf-8'))
+          if data.get('cases') != 8 or data.get('passed') != 8 or data.get('passRate') != 1 or data.get('allowed') is not True or data.get('liveOracleFailures') != []:
+              raise SystemExit(1)
+          PY
+          rm -f "$preflight_json"
           verify_p8
 
-          # Apply the source-controlled tiny canary profile without copying secrets.
           python3 - "$env_file" "$canary_file" <<'PY'
           from pathlib import Path
           import re, shlex, sys
@@ -187,7 +192,6 @@ jobs:
           screen -list | grep -F ".${screen_name}" >/dev/null
           verify_p8
 
-          # Startup log must prove the exact tiny canary and auxiliary gates loaded.
           tail -n 160 "$root_dir/logs/agent-worker.log" | grep -F 'agentKernel=active-25bps' >/dev/null
           tail -n 160 "$root_dir/logs/agent-worker.log" | grep -F 'dynamicToolDiscovery=enabled' >/dev/null
           tail -n 160 "$root_dir/logs/agent-worker.log" | grep -F 'checkpointRewind=enabled' >/dev/null
@@ -195,20 +199,21 @@ jobs:
           tail -n 160 "$root_dir/logs/agent-worker.log" | grep -F 'verifiedLearning=enabled' >/dev/null
           tail -n 160 "$root_dir/logs/agent-worker.log" | grep -F 'trainingEligibility=disabled' >/dev/null
 
-          # Production-facing 8/8 gate remains authoritative after restart.
           set -a
-          # shellcheck disable=SC1090
           source "$env_file"
           set +a
-          eval_json="$("$node_bin" scripts/eval_agent_production.mjs --json)"
-          CANARY_EVAL="$eval_json" python3 - <<'PY'
-          import json,os
-          raw=os.environ['CANARY_EVAL']; start=raw.find('{')
-          if start < 0: raise SystemExit(1)
-          data=json.loads(raw[start:])
-          if data.get('passed') != 8 or data.get('passRate') != 1 or data.get('allowed') is not True or data.get('liveOracleFailures') != []:
+          export DIV3RSA_REPOSITORY_ROOT="$app_dir"
+          export DIV3RSA_EVAL_COMMIT_SHA="$expected_sha"
+          production_json="$(mktemp "$root_dir/logs/agent-kernel-production-eval.XXXXXX.json")"
+          export DIV3RSA_EVAL_OUTPUT="$production_json"
+          "$node_bin" --experimental-transform-types --import ./infra/runpod/native-typescript-register.mjs scripts/eval_agent_runtime.ts
+          python3 - "$production_json" <<'PY'
+          import json,sys
+          data=json.load(open(sys.argv[1],encoding='utf-8'))
+          if data.get('cases') != 8 or data.get('passed') != 8 or data.get('passRate') != 1 or data.get('allowed') is not True or data.get('liveOracleFailures') != []:
               raise SystemExit(1)
           PY
+          rm -f "$production_json"
           verify_p8
 
           promoted=0
