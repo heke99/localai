@@ -76,7 +76,7 @@ describe("runtime registration", () => {
     process.env.DIV3RSA_RUNTIME_ALIASES = "general-prod";
     process.env.DIV3RSA_RUNTIME_ROLE = "inference";
     const config = runtimeRegistrationConfigFromEnvironment(8080)!;
-    const rpc = vi.fn(async (name: string) => ({ data: name === "runtime_worker_heartbeat" || name === "runtime_mark_worker_health" ? true : "worker-db-id", error: null }));
+    const rpc = vi.fn(async (name: string, _args: Record<string, unknown>) => ({ data: name === "runtime_worker_heartbeat" || name === "runtime_mark_worker_health" ? true : "worker-db-id", error: null }));
     const registration = new RuntimeRegistration({ rpc } as unknown as RuntimeRpcClient, config, "registrar-1");
 
     expect(config.runtimeRole).toBe("inference");
