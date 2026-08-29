@@ -1,19 +1,39 @@
 import { describe, expect, it } from "vitest";
 import { evaluateOptimizationCandidate } from "./optimizer";
-import type { VerifiedLearningDatasetManifest } from "./learning-export";
+import { buildVerifiedLearningDatasetManifest } from "./learning-export";
 
-const dataset: VerifiedLearningDatasetManifest = {
+const digestA = "a".repeat(64);
+const digestB = "b".repeat(64);
+const records = Array.from({ length: 25 }, (_, index) => ({
+  trajectoryId: index.toString(16).padStart(64, "0"),
+  modelVersion: "qwen38-v3-q8",
+  promptVersion: "kernel-v2",
+  steps: [{
+    step: 0,
+    reasoningMode: "code",
+    tool: "github_read_file",
+    argumentsDigest: digestA,
+    resultDigest: digestB,
+    latencyMs: 10 + index,
+    tokens: 20,
+    cachedTokens: 5,
+    sourceQuality: 1,
+    testsBefore: 1,
+    testsAfter: 2,
+    verificationResult: "passed" as const
+  }],
+  userFeedback: "accepted" as const,
+  reward: 10,
+  createdAt: new Date(Date.UTC(2026, 7, 29, 20, 0, index)).toISOString()
+}));
+
+const dataset = buildVerifiedLearningDatasetManifest({
   schemaVersion: 1,
   queryVersion: "verified-learning-v1",
-  generatedAt: "2026-08-29T22:00:00.000Z",
   createdBefore: "2026-08-29T21:00:00.000Z",
   minReward: 1,
-  minimumSamples: 25,
-  recordCount: 25,
-  readyForOptimization: true,
-  datasetDigest: "a".repeat(64),
-  records: []
-};
+  records
+}, { minimumSamples: 25, generatedAt: "2026-08-29T22:00:00.000Z" });
 
 const baseline = {
   candidateId: "baseline",
@@ -69,7 +89,14 @@ describe("offline optimization promotion gate", () => {
   });
 
   it("fails closed when the verified learning sample is too small", () => {
-    const decision = evaluateOptimizationCandidate({ dataset: { ...dataset, readyForOptimization: false, recordCount: 12 }, baseline, candidate, definition });
+    const small = buildVerifiedLearningDatasetManifest({
+      schemaVersion: 1,
+      queryVersion: "verified-learning-v1",
+      createdBefore: "2026-08-29T21:00:00.000Z",
+      minReward: 1,
+      records: records.slice(0, 12)
+    }, { minimumSamples: 25 });
+    const decision = evaluateOptimizationCandidate({ dataset: small, baseline, candidate, definition });
     expect(decision.allowed).toBe(false);
     expect(decision.reasons).toContain("insufficient_verified_learning_samples");
   });
@@ -81,9 +108,13 @@ describe("offline optimization promotion gate", () => {
     expect(decision.reasons).toContain("total_latency_regression");
   });
 
-  it("ties the decision to an exact dataset digest", () => {
-    const first = evaluateOptimizationCandidate({ dataset, baseline, candidate, definition });
-    const second = evaluateOptimizationCandidate({ dataset: { ...dataset, datasetDigest: "b".repeat(64) }, baseline, candidate, definition });
-    expect(first.decisionDigest).not.toBe(second.decisionDigest);
+  it("rejects a tampered dataset digest instead of evaluating it", () => {
+    expect(() => evaluateOptimizationCandidate({ dataset: { ...dataset, datasetDigest: "b".repeat(64) }, baseline, candidate, definition }))
+      .toThrow("learning_manifest_digest_mismatch");
+  });
+
+  it("rejects manipulated sample counts/readiness", () => {
+    expect(() => evaluateOptimizationCandidate({ dataset: { ...dataset, recordCount: 999 }, baseline, candidate, definition }))
+      .toThrow("learning_manifest_record_count_mismatch");
   });
 });
