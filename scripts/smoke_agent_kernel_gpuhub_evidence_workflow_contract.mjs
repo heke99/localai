@@ -20,7 +20,7 @@ const required = [
   ["DIV3RSA_PROBE_LOAD_CONCURRENCY=7", "evidence must leave one p8 slot available to low-priority shadow work"],
   ["DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER=286", "evidence must provide roughly twenty samples at one-percent sampling"],
   ["DIV3RSA_PROBE_LOAD_MAX_TOKENS=128", "foreground token budget must stay bounded"],
-  ["DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS=32", "loaded verifier evidence must use the 32-token budget"],
+  ["DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS=32", "runner request budget must remain bounded before the preload applies the fast-verdict cap"],
   ["DIV3RSA_PROBE_EVIDENCE_SAMPLE_BPS=100", "evidence must model one-percent sampling"],
   ["DIV3RSA_PROBE_RUNTIME_PARALLEL=8", "capacity scheduler must know the p8 runtime width"],
   ["DIV3RSA_PROBE_CAPACITY_WAIT_MS=30000", "shadow capacity queue must have a bounded wait"],
@@ -47,11 +47,11 @@ if (runner.includes("probeActive")) throw new Error("single active flag must not
 
 for (const needle of [
   "agent-kernel-quality-", "agent-kernel-evidence-probe-", 'reasoning_effort: "none"', "enable_thinking: false",
-  "VERIFIER_MAX_TOKENS = 64", "LOADED_PROBE_TIMEOUT_MS = 4_000", 'type: "json_schema"', 'name: "shadow_verifier_result"',
+  "VERIFIER_MAX_TOKENS = 64", "LOADED_PROBE_MAX_TOKENS = 2", "LOADED_PROBE_TIMEOUT_MS = 4_000", 'type: "json_schema"', 'name: "shadow_verifier_result"',
   'additionalProperties: false', 'required: ["score", "passed", "reasonCode"]', "response_format: VERIFIER_RESPONSE_FORMAT",
-  "nonStreamingProbeToSse", "constrained.stream = false", "delete constrained.stream_options", "loaded_probe_nonstream_invalid_verifier_json",
-  "phase=nonstream_complete", "transport=nonstream", "validVerifierObject"
-]) if (!preload.includes(needle)) throw new Error(`non-stream verifier evidence contract missing: ${needle}`);
+  "withLoadedFastVerdictConstraints", "canonicalFastVerdict", 'normalized === "W"', 'normalized === "H"',
+  "nonStreamingFastVerdictToSse", "loaded_probe_invalid_fast_verdict", "phase=fast_verdict_complete", "transport=nonstream-fast-verdict", "validVerifierObject"
+]) if (!preload.includes(needle)) throw new Error(`fast-verdict verifier evidence contract missing: ${needle}`);
 
 if (preload.includes("agent-kernel-evidence-baseline-")) throw new Error("baseline foreground benchmark requests must not be intercepted");
 for (const needle of ["loadedForegroundIndex", "loadedProbeIndex", "response.clone().arrayBuffer()", "await deferred.promise", "const verifierCall = qualityVerifier || probeIndex != null;", "const signal = probeIndex != null ? AbortSignal.timeout(LOADED_PROBE_TIMEOUT_MS) : init?.signal;"]) {
@@ -64,4 +64,4 @@ if (workflow.includes('workflows: ["Deploy GPUHub"]')) throw new Error("evidence
 const forbidden = ["rollback-legacy-gpuhub-p1.sh", "recover-legacy-gpuhub", "reconcile-gpuhub-production-profile.sh", "DIV3RSA_FORCE_MODEL_RESTART", "DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED=1", "DIV3RSA_AGENT_KERNEL_V2_PROBE_SAMPLE_BPS=", "systemctl restart", "pkill", "killall"];
 for (const needle of forbidden) if (workflow.includes(needle)) throw new Error(`observational evidence workflow contains forbidden mutation: ${needle}`);
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] capacity-aware low-priority shadow scheduling + statistically meaningful 1% evidence volume present; all promotion gates unchanged");
+console.log("[agent-kernel-gpuhub-evidence-workflow] capacity-aware low-priority fast-verdict shadow scheduling + statistically meaningful 1% evidence volume present; all promotion gates unchanged");
