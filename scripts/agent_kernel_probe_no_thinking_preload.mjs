@@ -3,6 +3,7 @@ if (typeof originalFetch !== "function") throw new Error("global_fetch_unavailab
 
 const foregroundCompletion = new Map();
 const VERIFIER_MAX_TOKENS = 64;
+const LOADED_PROBE_MAX_TOKENS = 2;
 const LOADED_PROBE_TIMEOUT_MS = 4_000;
 const VERIFIER_RESPONSE_FORMAT = {
   type: "json_schema",
@@ -42,20 +43,35 @@ function loadedProbeIndex(requestId) {
   return match?.[1] ?? null;
 }
 
-function withVerifierConstraints(body, nonStreaming = false) {
+function withVerifierConstraints(body) {
   const requestedMax = Number.isFinite(body.max_tokens) ? Number(body.max_tokens) : VERIFIER_MAX_TOKENS;
-  const constrained = {
+  return JSON.stringify({
     ...body,
     max_tokens: Math.min(requestedMax, VERIFIER_MAX_TOKENS),
     reasoning_effort: "none",
     chat_template_kwargs: { ...(body.chat_template_kwargs || {}), enable_thinking: false },
     response_format: VERIFIER_RESPONSE_FORMAT
-  };
-  if (nonStreaming) {
-    constrained.stream = false;
-    delete constrained.stream_options;
-  }
-  return JSON.stringify(constrained);
+  });
+}
+
+function withLoadedFastVerdictConstraints(body) {
+  const originalMessages = Array.isArray(body.messages) ? body.messages : [];
+  const nonSystemMessages = originalMessages.filter((message) => message?.role !== "system");
+  return JSON.stringify({
+    ...body,
+    messages: [
+      {
+        role: "system",
+        content: "You are a low-priority shadow verifier. Reply with exactly one uppercase ASCII letter and nothing else: W if the supplied answer is materially weak or incomplete, H if it is sufficiently complete."
+      },
+      ...nonSystemMessages
+    ],
+    max_tokens: LOADED_PROBE_MAX_TOKENS,
+    temperature: 0,
+    stream: false,
+    reasoning_effort: "none",
+    chat_template_kwargs: { ...(body.chat_template_kwargs || {}), enable_thinking: false }
+  });
 }
 
 function metricSum(text, name) {
@@ -134,12 +150,19 @@ function validVerifierObject(content) {
   }
 }
 
-async function nonStreamingProbeToSse(response, requestId, started) {
+function canonicalFastVerdict(content) {
+  const normalized = String(content || "").trim().toUpperCase();
+  if (normalized === "W") return { score: 0, passed: false, reasonCode: "fast_weak" };
+  if (normalized === "H") return { score: 100, passed: true, reasonCode: "fast_healthy" };
+  throw new Error("loaded_probe_invalid_fast_verdict");
+}
+
+async function nonStreamingFastVerdictToSse(response, requestId, started) {
   const payload = await response.json();
-  const content = payload?.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || !validVerifierObject(content)) {
-    throw new Error("loaded_probe_nonstream_invalid_verifier_json");
-  }
+  const rawContent = payload?.choices?.[0]?.message?.content;
+  const verdict = canonicalFastVerdict(rawContent);
+  const content = JSON.stringify(verdict);
+  if (!validVerifierObject(content)) throw new Error("loaded_probe_fast_verdict_canonicalization_failed");
   const usage = payload?.usage && typeof payload.usage === "object" ? payload.usage : undefined;
   const completion = {
     choices: [{ delta: { content }, finish_reason: "stop", index: 0 }],
@@ -147,7 +170,7 @@ async function nonStreamingProbeToSse(response, requestId, started) {
   };
   const encoder = new TextEncoder();
   const bytes = encoder.encode(`data: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`);
-  console.error(`[agent-kernel-probe-diag] phase=nonstream_complete requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} bytes=${bytes.byteLength}`);
+  console.error(`[agent-kernel-probe-diag] phase=fast_verdict_complete requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} verdict=${verdict.passed ? "H" : "W"} bytes=${bytes.byteLength}`);
   return new Response(new ReadableStream({
     start(controller) {
       controller.enqueue(bytes);
@@ -204,12 +227,12 @@ globalThis.fetch = async function agentKernelProbeFetch(input, init) {
     const response = await originalFetch(input, {
       ...init,
       signal,
-      body: withVerifierConstraints(body, probeIndex != null)
+      body: probeIndex != null ? withLoadedFastVerdictConstraints(body) : withVerifierConstraints(body)
     });
     if (probeIndex != null) {
-      console.error(`[agent-kernel-probe-diag] phase=headers requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} status=${response.status} transport=nonstream`);
+      console.error(`[agent-kernel-probe-diag] phase=headers requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} status=${response.status} transport=nonstream-fast-verdict`);
       if (!response.ok) return response;
-      return await nonStreamingProbeToSse(response, requestId, started);
+      return await nonStreamingFastVerdictToSse(response, requestId, started);
     }
     return response;
   } catch (error) {
