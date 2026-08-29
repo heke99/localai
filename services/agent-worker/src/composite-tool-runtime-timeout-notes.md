@@ -1,1 +1,0 @@
-This batch prevents indefinite worker blocking when any composed provider runtime hangs during tool discovery or execution. It complements the stale-run reaper by preventing the run from becoming stale in the first place.
