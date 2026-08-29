@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       revision:
-        description: "Exact main commit SHA to deploy"
+        description: "Exact current main commit SHA to deploy"
         required: true
         type: string
       disable_legacy_gpu_worker:
@@ -80,11 +80,12 @@ jobs:
           revision='${{ inputs.revision }}'
           cp_opts=(-i "$HOME/.ssh/control_plane" -p "$CONTROL_PLANE_SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/control_plane_known_hosts")
           remote="${CONTROL_PLANE_SSH_USER}@${CONTROL_PLANE_SSH_HOST}"
-          ssh "${cp_opts[@]}" "$remote" "bash -s -- '$revision'" <<'REMOTE'
+          remote_command="if [ \"\$(id -u)\" -eq 0 ]; then exec bash -s -- '$revision'; else exec sudo -n -E bash -s -- '$revision'; fi"
+          ssh "${cp_opts[@]}" "$remote" "$remote_command" <<'REMOTE'
           set -Eeuo pipefail
           revision="$1"
           export DIV3RSA_RUNTIME_GIT_REF="$revision"
-          export DIV3RSA_CONTROL_PLANE_ROOT="${DIV3RSA_CONTROL_PLANE_ROOT:-/opt/div3rsa/localai}"
+          export DIV3RSA_CONTROL_PLANE_ROOT=/opt/div3rsa/localai
           env_file="$DIV3RSA_CONTROL_PLANE_ROOT/secrets/control-plane.env"
           [[ -f "$env_file" ]] || { echo "Pre-provisioned control-plane env is missing: $env_file" >&2; exit 1; }
           repo="$DIV3RSA_CONTROL_PLANE_ROOT/app"
@@ -94,7 +95,9 @@ jobs:
           fi
           git -C "$repo" fetch --prune origin main
           git -C "$repo" cat-file -e "${revision}^{commit}"
+          git -C "$repo" merge-base --is-ancestor "$revision" origin/main
           git -C "$repo" reset --hard "$revision"
+          git -C "$repo" clean -fd
           [[ "$(git -C "$repo" rev-parse HEAD)" == "$revision" ]]
           chmod +x "$repo/infra/control-plane/bootstrap-worker.sh" "$repo/infra/control-plane/preflight-worker.sh"
           bash "$repo/infra/control-plane/bootstrap-worker.sh"
@@ -145,8 +148,9 @@ jobs:
           REMOTE
           legacy_stopped=1
 
-          # Re-prove the CPU worker and registry route after legacy queue processing is gone.
-          ssh "${cp_opts[@]}" "$cpu" 'bash /opt/div3rsa/localai/app/infra/control-plane/preflight-worker.sh'
+          # Re-prove CPU queue processing readiness and the remote inference route
+          # after the GPU-host queue worker is gone. Any failure restores legacy.
+          ssh "${cp_opts[@]}" "$cpu" "if [ \"\$(id -u)\" -eq 0 ]; then exec bash /opt/div3rsa/localai/app/infra/control-plane/preflight-worker.sh; else exec sudo -n -E bash /opt/div3rsa/localai/app/infra/control-plane/preflight-worker.sh; fi"
           legacy_stopped=0
           trap - EXIT
           echo "CONTROL_PLANE_CUTOVER_COMPLETE revision=${{ inputs.revision }} legacyGpuWorker=stopped inferenceNode=healthy"
