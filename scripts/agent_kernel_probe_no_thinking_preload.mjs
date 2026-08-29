@@ -52,6 +52,64 @@ function withVerifierConstraints(body) {
   });
 }
 
+function metricSum(text, name) {
+  let total = 0;
+  let found = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const space = line.search(/\s/);
+    if (space <= 0) continue;
+    const metric = line.slice(0, space).replace(/\{.*$/, "");
+    if (metric !== name) continue;
+    const value = Number(line.slice(space).trim().split(/\s+/)[0]);
+    if (!Number.isFinite(value)) continue;
+    total += value;
+    found = true;
+  }
+  return found ? total : null;
+}
+
+function metricMax(text, name) {
+  let result = null;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const space = line.search(/\s/);
+    if (space <= 0) continue;
+    const metric = line.slice(0, space).replace(/\{.*$/, "");
+    if (metric !== name) continue;
+    const value = Number(line.slice(space).trim().split(/\s+/)[0]);
+    if (!Number.isFinite(value)) continue;
+    result = result == null ? value : Math.max(result, value);
+  }
+  return result;
+}
+
+async function loadedProbePressure(input, init) {
+  try {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    url.pathname = "/metrics";
+    url.search = "";
+    const headers = new Headers();
+    const auth = new Headers(init?.headers).get("authorization");
+    if (auth) headers.set("authorization", auth);
+    headers.set("accept", "text/plain");
+    const response = await originalFetch(url, { headers, signal: AbortSignal.timeout(750) });
+    if (!response.ok) return { available: false, status: response.status };
+    const text = await response.text();
+    return {
+      available: true,
+      activeSequences: metricSum(text, "llamacpp:requests_processing"),
+      queueDepth: metricSum(text, "llamacpp:requests_deferred"),
+      kvCacheUsageRatio: metricMax(text, "llamacpp:kv_cache_usage_ratio"),
+      contextHighWatermarkTokens: metricMax(text, "llamacpp:n_tokens_max")
+    };
+  } catch (error) {
+    return { available: false, error: error instanceof Error ? error.name : "metrics_error" };
+  }
+}
+
 globalThis.fetch = async function agentKernelProbeFetch(input, init) {
   const headers = new Headers(init?.headers);
   const requestId = headers.get("x-request-id") || "";
@@ -92,8 +150,27 @@ globalThis.fetch = async function agentKernelProbeFetch(input, init) {
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) return originalFetch(input, init);
 
-  return originalFetch(input, {
-    ...init,
-    body: withVerifierConstraints(body)
-  });
+  if (probeIndex != null) {
+    const pressure = await loadedProbePressure(input, init);
+    console.error(`[agent-kernel-probe-diag] phase=before_fetch requestId=${requestId} pressure=${JSON.stringify(pressure)}`);
+  }
+
+  const started = performance.now();
+  try {
+    const response = await originalFetch(input, {
+      ...init,
+      body: withVerifierConstraints(body)
+    });
+    if (probeIndex != null) {
+      console.error(`[agent-kernel-probe-diag] phase=headers requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} status=${response.status}`);
+    }
+    return response;
+  } catch (error) {
+    if (probeIndex != null) {
+      const name = error instanceof Error ? error.name : "unknown_error";
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[agent-kernel-probe-diag] phase=fetch_error requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} errorName=${name} error=${JSON.stringify(message.slice(0, 160))}`);
+    }
+    throw error;
+  }
 };
