@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { VerifiedLearningDatasetManifest } from "./learning-export";
+import { assertVerifiedLearningDatasetManifest, type VerifiedLearningDatasetManifest } from "./learning-export";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 
@@ -79,9 +79,9 @@ export function evaluateOptimizationCandidate(input: {
   policy?: Partial<OptimizationPolicy>;
 }): OptimizationDecision {
   const policy: OptimizationPolicy = { ...DEFAULT_OPTIMIZATION_POLICY, ...input.policy };
+  assertVerifiedLearningDatasetManifest(input.dataset);
   validateSnapshot(input.baseline);
   validateSnapshot(input.candidate);
-  if (!SHA256.test(input.dataset.datasetDigest)) throw new Error("invalid_learning_dataset_digest");
   if (input.definition.candidateId !== input.candidate.candidateId) throw new Error("optimization_candidate_identity_mismatch");
   if (!input.definition.promptVersion.trim() || !input.definition.routingProfile.trim()) throw new Error("invalid_optimization_candidate_definition");
   if (policy.minimumEvalCases < 1 || policy.maxTtftRegressionRatio < 0 || policy.maxTotalLatencyRegressionRatio < 0 || policy.maxRewardRegression < 0) {
