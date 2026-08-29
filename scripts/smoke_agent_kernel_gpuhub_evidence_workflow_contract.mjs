@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 const workflow = await readFile(".github/workflows/agent-kernel-gpuhub-evidence.yml", "utf8");
 const request = await readFile("ops/agent-kernel-gpuhub-evidence.request", "utf8");
 const runner = await readFile("scripts/eval_agent_kernel_probes_gpuhub.mjs", "utf8");
+const preload = await readFile("scripts/agent_kernel_probe_no_thinking_preload.mjs", "utf8");
 
 const required = [
   ['workflows: ["P8 GPUHub Soak"]', "workflow_run must follow P8 GPUHub Soak"],
@@ -11,6 +12,8 @@ const required = [
   ["StrictHostKeyChecking=yes", "strict host checking missing"],
   ["ops/agent-kernel-gpuhub-evidence.request", "explicit request gate missing"],
   ["scripts/eval_agent_kernel_probes_gpuhub.mjs", "evidence runner invocation missing"],
+  ["agent_kernel_probe_no_thinking_preload.mjs", "scoped no-thinking preload missing"],
+  ["NODE_OPTIONS", "evidence runner must preload scoped verifier transport"],
   ["--parallel[=\\ ]+8", "p8 runtime verification missing"],
   ["--ctx-size[=\\ ]+262144", "p8 context verification missing"],
   ["--spec-type ngram-mod", "speculative profile verification missing"],
@@ -43,6 +46,12 @@ for (const [needle, message] of runnerRequired) {
   if (!runner.includes(needle)) throw new Error(message);
 }
 
+for (const needle of ["agent-kernel-quality-", "agent-kernel-evidence-probe-", 'reasoning_effort: "none"', "enable_thinking: false"]) {
+  if (!preload.includes(needle)) throw new Error(`scoped verifier preload missing: ${needle}`);
+}
+if (preload.includes("agent-kernel-evidence-baseline-") || preload.includes("agent-kernel-evidence-loaded-")) {
+  throw new Error("foreground benchmark requests must not disable thinking");
+}
 if (workflow.includes('scp "${ssh_opts[@]}"')) throw new Error("SCP must not reuse SSH -p port options");
 if (workflow.indexOf("actions/upload-artifact@v4") > workflow.indexOf("Enforce promotion gate result")) {
   throw new Error("blocked evidence must be uploaded before promotion gate enforcement");
@@ -65,4 +74,4 @@ for (const needle of forbidden) {
 }
 
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] calibrated verifier + representative 1% evidence load present; production sampling remains disabled");
+console.log("[agent-kernel-gpuhub-evidence-workflow] scoped no-thinking verifier calls + representative 1% evidence load present; normal traffic remains unchanged");
