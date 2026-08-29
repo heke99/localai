@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import styles from "./workspace-shell-v3.module.css";
 
 const TERMINAL = new Set(["completed", "failed", "cancelled", "timed_out"]);
+const AUTO_FOLLOW_THRESHOLD_PX = 180;
 
 export type RunStreamSnapshot = {
   runId: string;
@@ -22,7 +23,31 @@ export function RunStreamPreview({ runId, conversationId, activeConversationId, 
 }) {
   const [snapshot, setSnapshot] = useState<RunStreamSnapshot | null>(null);
   const onSnapshotRef = useRef(onSnapshot);
+  const streamRef = useRef<HTMLDivElement | null>(null);
+  const shouldFollowRef = useRef(true);
   useEffect(() => { onSnapshotRef.current = onSnapshot; }, [onSnapshot]);
+
+  useEffect(() => {
+    if (activeConversationId !== conversationId) return;
+    const canvas = document.querySelector(`.${styles.chatCanvas}`);
+    if (!(canvas instanceof HTMLElement)) return;
+
+    const updateFollowState = () => {
+      const distanceFromBottom = canvas.scrollHeight - canvas.scrollTop - canvas.clientHeight;
+      shouldFollowRef.current = distanceFromBottom <= AUTO_FOLLOW_THRESHOLD_PX;
+    };
+    updateFollowState();
+    canvas.addEventListener("scroll", updateFollowState, { passive: true });
+    return () => canvas.removeEventListener("scroll", updateFollowState);
+  }, [activeConversationId, conversationId]);
+
+  useEffect(() => {
+    if (!snapshot?.content || activeConversationId !== conversationId || !shouldFollowRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      streamRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [snapshot?.revision, snapshot?.content, activeConversationId, conversationId]);
 
   useEffect(() => {
     if (activeConversationId !== conversationId) {
@@ -50,6 +75,8 @@ export function RunStreamPreview({ runId, conversationId, activeConversationId, 
     source.addEventListener("snapshot", onStreamSnapshot as EventListener);
     source.addEventListener("done", onDone);
     source.onerror = () => {
+      // EventSource reconnects automatically while CONNECTING. REST polling in
+      // the parent remains the recovery path if the stream closes permanently.
       if (source.readyState === EventSource.CLOSED) source.close();
     };
     return () => {
@@ -60,7 +87,15 @@ export function RunStreamPreview({ runId, conversationId, activeConversationId, 
   }, [runId, conversationId, activeConversationId, terminal]);
 
   if (activeConversationId !== conversationId || !snapshot?.content) return null;
-  return <div className={styles.messageStream} data-run-stream={runId} data-stream-revision={snapshot.revision}>
+  return <div
+    ref={streamRef}
+    className={styles.messageStream}
+    data-run-stream={runId}
+    data-stream-revision={snapshot.revision}
+    role="status"
+    aria-live="polite"
+    aria-atomic="false"
+  >
     <article className={`${styles.message} ${styles.assistantMessage}`}>
       <div className={styles.messageMeta}>DIV3RSA</div>
       <div className={styles.messageBody}>{snapshot.content}</div>
