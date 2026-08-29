@@ -6,10 +6,6 @@ const tools: GatewayTool[] = [
   { name: "github_read_repository_snapshot", provider: "github", capability: "github.contents.read" },
   { name: "github_write_file", provider: "github", capability: "github.contents.write" },
   { name: "github_create_branch", provider: "github", capability: "github.branch.create" },
-  // Internal recovery primitive. It is intentionally absent from the model-facing
-  // integration tool definitions and can only be invoked through an execution
-  // grant carrying github.contents.write for the selected repository.
-  { name: "github_restore_branch_ref", provider: "github", capability: "github.contents.write" },
   { name: "github_read_pull_requests", provider: "github", capability: "github.pull_request.read" },
   { name: "github_create_pull_request", provider: "github", capability: "github.pull_request.create" },
   { name: "github_merge_pull_request", provider: "github", capability: "github.pull_request.merge" },
