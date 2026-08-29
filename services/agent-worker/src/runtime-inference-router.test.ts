@@ -70,4 +70,27 @@ describe("RuntimeInferenceRouter", () => {
     const router = new RuntimeInferenceRouter(client, "key", fetch, () => adapter("unused", []));
     await expect(router.generate(request)).rejects.toThrow("runtime_inference_route_unavailable");
   });
+
+  it("reaps stale registry workers before resolving traffic", async () => {
+    const { client, rpc } = rpcClient(rows);
+    const router = new RuntimeInferenceRouter(client, "key", fetch, (endpoint) => adapter(endpoint, []), { staleSeconds: 90, reapIntervalMs: 30_000 });
+    await router.generate(request);
+    expect(rpc.mock.calls[0]?.[0]).toBe("runtime_reap_stale_workers");
+    expect(rpc.mock.calls[0]?.[1]).toEqual({ target_stale_seconds: 90 });
+  });
+
+  it("marks a failed primary health probe and continues to healthy standby", async () => {
+    const { client, rpc } = rpcClient(rows);
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => new Response("", { status: String(input).includes("gpu-a") ? 503 : 200 })) as typeof fetch;
+    const router = new RuntimeInferenceRouter(client, "key", fetcher, (endpoint) => adapter(endpoint, []));
+    const health = await router.healthCheck();
+    expect(health.ok).toBe(true);
+    expect(health.detail).toBe("standby:gpu-b");
+    expect(rpc).toHaveBeenCalledWith("runtime_mark_worker_health", expect.objectContaining({
+      target_provider_key: "primary",
+      target_external_worker_id: "gpu-a",
+      target_state: "failed",
+      target_last_error_code: "health_http_503"
+    }));
+  });
 });
