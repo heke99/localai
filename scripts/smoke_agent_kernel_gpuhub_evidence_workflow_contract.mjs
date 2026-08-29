@@ -21,6 +21,7 @@ const required = [
   ["DIV3RSA_PROBE_LOAD_MAX_TOKENS=128", "foreground token budget must stay bounded"],
   ["DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS=128", "configured probe budget must stay bounded before verifier clamp"],
   ["DIV3RSA_PROBE_EVIDENCE_SAMPLE_BPS=100", "evidence must model one-percent sampling"],
+  ["DIV3RSA_PROBE_TIMEOUT_MS=4000", "workflow must retain the four-second probe gate"],
   ["unset DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED", "production probe enablement must be explicitly absent"],
   ["set +e", "gate exit must be captured without losing evidence"],
   ["__EVIDENCE_PATH__=", "remote evidence path marker missing"],
@@ -52,6 +53,7 @@ for (const needle of [
   'reasoning_effort: "none"',
   "enable_thinking: false",
   "VERIFIER_MAX_TOKENS = 64",
+  "LOADED_PROBE_TIMEOUT_MS = 4_000",
   'type: "json_schema"',
   'name: "shadow_verifier_result"',
   'additionalProperties: false',
@@ -64,16 +66,18 @@ for (const needle of [
 if (preload.includes("agent-kernel-evidence-baseline-")) {
   throw new Error("baseline foreground benchmark requests must not be intercepted");
 }
-for (const needle of ["loadedForegroundIndex", "loadedProbeIndex", "response.clone().arrayBuffer()", "await deferred.promise", "const verifierCall = qualityVerifier || probeIndex != null;"]) {
-  if (!preload.includes(needle)) throw new Error(`production-like post-baseline probe ordering missing: ${needle}`);
+for (const needle of [
+  "loadedForegroundIndex",
+  "loadedProbeIndex",
+  "response.clone().arrayBuffer()",
+  "await deferred.promise",
+  "const verifierCall = qualityVerifier || probeIndex != null;",
+  "const signal = probeIndex != null ? AbortSignal.timeout(LOADED_PROBE_TIMEOUT_MS) : init?.signal;"
+]) {
+  if (!preload.includes(needle)) throw new Error(`production-like post-baseline probe timing missing: ${needle}`);
 }
 for (const needle of [
   "loadedProbePressure",
-  'llamacpp:requests_processing',
-  'llamacpp:requests_deferred',
-  'llamacpp:kv_cache_usage_ratio',
-  'llamacpp:n_tokens_max',
-  "AbortSignal.timeout(750)",
   "[agent-kernel-probe-diag] phase=before_fetch",
   "[agent-kernel-probe-diag] phase=headers",
   "[agent-kernel-probe-diag] phase=fetch_error"
@@ -102,4 +106,4 @@ for (const needle of forbidden) {
 }
 
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] constrained verifier + read-only scheduling diagnostics present; normal traffic remains unchanged");
+console.log("[agent-kernel-gpuhub-evidence-workflow] loaded probe gets a fresh four-second timeout only after baseline completion; production sampling remains disabled");
