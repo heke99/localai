@@ -60,7 +60,7 @@
     {
       "id": "healthy-current-source",
       "prompt": "Summarize a current tax rule and cite the authoritative source.",
-      "baselineAnswer": "I verified the current rule against the relevant tax authority source, state the applicable rate, identify the effective rule, and include the source citation. If live verification is unavailable, I do not present the value as current.",
+      "baselineAnswer": "The current applicable rate in this fixture is 25 percent. I verified it against the official tax authority current-rule page at 2026-08-29T10:00:00Z. Citation: [Tax Authority, Current VAT rules, effective rule checked 2026-08-29].",
       "expectedWeakBaseline": false,
       "expectedEvidence": ["authoritative current source", "citation"]
     },
@@ -102,7 +102,7 @@
     {
       "id": "healthy-live-data",
       "prompt": "Give the latest software version using live evidence.",
-      "baselineAnswer": "Resolve the version from the official live release/current channel, match the exact semantic version, record when it was checked, and fail closed rather than substitute an older remembered version if the live source cannot be resolved.",
+      "baselineAnswer": "The exact current version returned by the official live Current channel is v26.8.1, checked at 2026-08-29T10:00:00Z. Citation: [Official Current channel, v26.8.1, checked 2026-08-29]. If that live source becomes unavailable I fail closed instead of substituting a remembered version.",
       "expectedWeakBaseline": false,
       "expectedEvidence": ["live source", "exact current version"]
     },
@@ -116,7 +116,7 @@
     {
       "id": "healthy-research-uncertainty",
       "prompt": "Research a changing regulation and explain what is confirmed versus uncertain.",
-      "baselineAnswer": "Use the regulator or primary legal source first, separate confirmed current requirements from interpretation, include effective dates, cite each material claim, and explicitly label anything that could not be independently verified.",
+      "baselineAnswer": "Confirmed in the primary regulator source: requirement X applies from 2026-08-01 [Regulator Notice R-2026-08, section 4, checked 2026-08-29]. Still uncertain: implementation guidance for edge case Y is not final [Regulator FAQ, checked 2026-08-29]. I separate that unresolved guidance from the confirmed effective requirement.",
       "expectedWeakBaseline": false,
       "expectedEvidence": ["primary source", "effective date", "uncertainty"]
     },
