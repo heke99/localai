@@ -5,7 +5,7 @@ import { RuntimeInferenceRouter, type RuntimeInferenceRpcClient } from "./runtim
 const request: GenerateRequest = { requestId: "req-1", alias: "general-prod", messages: [{ role: "user", content: "hello" }] };
 
 function rpcClient(rows: Array<Record<string, unknown>>) {
-  const rpc = vi.fn(async <T>(name: string) => {
+  const rpc = vi.fn(async <T>(name: string, _args: Record<string, unknown>) => {
     if (name === "runtime_resolve_model_routes") return { data: rows as T, error: null };
     return { data: true as T, error: null };
   });
