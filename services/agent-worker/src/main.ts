@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@div3rsa/db";
+import type { ModelAdapter } from "@div3rsa/model-sdk";
 import { LlamaCppAdmissionController, OpenAiCompatibleAdapter } from "@div3rsa/model-gateway";
 import { AgentWorkerProcessor } from "./processor";
 import { SupabaseAgentQueue } from "./supabase-queue";
@@ -14,6 +15,7 @@ import { RemoteProviderToolExecutor } from "./remote-provider-executor";
 import { RemoteRepositoryWorkspaceRuntime } from "./repository-runtime";
 import { SandboxVerificationRuntime } from "./sandbox-verification";
 import { RuntimeRegistration, runtimeRegistrationConfigFromEnvironment, type RuntimeRpcClient } from "./runtime-registration";
+import { RuntimeInferenceRouter, type RuntimeInferenceRpcClient } from "./runtime-inference-router";
 import { boundedWorkerConcurrency, runWorkerLanes } from "./worker-loop";
 import { SkillEngine, type SkillManifest } from "@div3rsa/skill-engine";
 import { readFile } from "node:fs/promises";
@@ -41,6 +43,12 @@ function numericEnvironment(name: string, fallback: number): number {
   return value;
 }
 
+export function inferenceRoutingMode(value = process.env.DIV3RSA_INFERENCE_ROUTING_MODE): "direct" | "registry" {
+  const normalized = value?.trim().toLowerCase() || "direct";
+  if (normalized === "direct" || normalized === "registry") return normalized;
+  throw new Error(`invalid_inference_routing_mode:${value}`);
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -64,6 +72,7 @@ const supabase = createClient<Database>(required("SUPABASE_URL"), required("SUPA
 const modelPort = numericEnvironment("DIV3RSA_MODEL_PORT", 8080);
 const modelParallel = Math.max(1, Math.floor(numericEnvironment("DIV3RSA_MODEL_PARALLEL", 4)));
 const workerConcurrency = boundedWorkerConcurrency(numericEnvironment("DIV3RSA_WORKER_CONCURRENCY", modelParallel), modelParallel);
+const routingMode = inferenceRoutingMode();
 const inferenceBaseUrl = process.env.DIV3RSA_INFERENCE_BASE_URL?.trim()
   || process.env.QWEN_INFERENCE_BASE_URL?.trim()
   || `http://127.0.0.1:${modelPort}/v1`;
@@ -85,7 +94,10 @@ const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApi
   telemetryTimeoutMs: numericEnvironment("DIV3RSA_ADMISSION_TELEMETRY_TIMEOUT_MS", 1000),
   gpuMetricsUrl: process.env.DIV3RSA_GPU_METRICS_URL?.trim() || null
 });
-const adapter = new OpenAiCompatibleAdapter(inferenceBaseUrl, inferenceApiKey, fetch, admission);
+const directAdapter = new OpenAiCompatibleAdapter(inferenceBaseUrl, inferenceApiKey, fetch, admission);
+const adapter: ModelAdapter = routingMode === "registry"
+  ? new RuntimeInferenceRouter(supabase as unknown as RuntimeInferenceRpcClient, inferenceApiKey)
+  : directAdapter;
 const baseQueue = new SupabaseAgentQueue(supabase);
 const agentKernelConfig = agentKernelConfigFromEnvironment();
 const shadowProbeConfig = shadowProbeConfigFromEnvironment();
@@ -94,7 +106,7 @@ const shadowProbeRunner = agentKernelConfig.enabled && agentKernelConfig.mode ==
   : undefined;
 const queue = new AgentKernelShadowQueue(baseQueue, agentKernelConfig, shadowProbeRunner);
 const workerId = process.env.DIV3RSA_WORKER_ID ?? `agent-worker-${process.pid}`;
-const runtimeConfig = runtimeRegistrationConfigFromEnvironment(modelPort);
+const runtimeConfig = routingMode === "direct" ? runtimeRegistrationConfigFromEnvironment(modelPort) : null;
 const runtimeRegistration = runtimeConfig
   ? new RuntimeRegistration(supabase as unknown as RuntimeRpcClient, runtimeConfig, workerId)
   : null;
@@ -155,7 +167,8 @@ async function waitForHealthyModel() {
     try {
       const health = await adapter.healthCheck();
       if (health.ok) {
-        console.info(`[agent-worker] model ready; worker=${workerId}; endpoint=${new URL(inferenceBaseUrl).origin}; parallel=${modelParallel}`);
+        const endpointDetail = routingMode === "registry" ? (health.detail ?? "registered-route") : new URL(inferenceBaseUrl).origin;
+        console.info(`[agent-worker] model ready; worker=${workerId}; routing=${routingMode}; endpoint=${endpointDetail}; parallel=${modelParallel}`);
         return;
       }
       lastDetail = health.detail ?? "unhealthy";
@@ -167,7 +180,7 @@ async function waitForHealthyModel() {
       throw new Error(`model_startup_timeout:${lastDetail}`);
     }
 
-    console.warn(`[agent-worker] waiting for model; worker=${workerId}; detail=${lastDetail}`);
+    console.warn(`[agent-worker] waiting for model; worker=${workerId}; routing=${routingMode}; detail=${lastDetail}`);
     await sleep(pollMs);
   }
 }
@@ -192,7 +205,7 @@ if (runtimeRegistration) {
 
 const idlePollMs = Math.max(50, numericEnvironment("DIV3RSA_QUEUE_IDLE_POLL_MS", 100));
 const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BACKOFF_MS", 750));
-console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; aggregateIdlePollMs=${idlePollMs}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}`);
+console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; aggregateIdlePollMs=${idlePollMs}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}`);
 
 await runWorkerLanes({
   concurrency: workerConcurrency,
