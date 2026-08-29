@@ -3,7 +3,7 @@ import type { AgentQueue, ClaimedRun, WorkerToolRuntime } from "../processor";
 import type { PreparedRepositoryWorkspace, WorkerRepositoryRuntime } from "../repository-runtime";
 
 type RollbackOperation = { kind: string; execute: () => Promise<void> };
-type RunState = { operations: RollbackOperation[]; rewinds: number; rewinding: boolean };
+type RunState = { operations: RollbackOperation[]; rewinds: number; rewinding: boolean; branchCheckpoints: Map<string,string> };
 
 const unsafeWithoutGenericRollback = new Set([
   "github_create_branch",
@@ -35,9 +35,14 @@ function repositoryFile(workspace: PreparedRepositoryWorkspace, path: string) {
   return workspace.index.files.find((file) => file.path === normalized) ?? null;
 }
 
+function isAgentOwnedBranch(branch: string) {
+  return branch.startsWith("div3rsa-agent/") && !branch.includes("..") && !branch.includes("//") && !branch.endsWith("/");
+}
+
 /**
- * Coordinates externally reversible mutations. It never attempts to invent a
- * rollback for a resource type that cannot be restored deterministically.
+ * Coordinates externally reversible mutations. Exact Git ref rewind is allowed
+ * only for DIV3RSA-owned ephemeral branches. Normal/default branches retain the
+ * narrower file-level restore path and are never force-reset by this runtime.
  */
 export class AgentKernelRewindCoordinator {
   private readonly states = new Map<string, RunState>();
@@ -51,7 +56,7 @@ export class AgentKernelRewindCoordinator {
   private state(runId: string) {
     let state = this.states.get(runId);
     if (!state) {
-      state = { operations: [], rewinds: 0, rewinding: false };
+      state = { operations: [], rewinds: 0, rewinding: false, branchCheckpoints: new Map() };
       this.states.set(runId, state);
     }
     return state;
@@ -62,18 +67,43 @@ export class AgentKernelRewindCoordinator {
     if (state.rewinding) return;
 
     if (call.name === "github_write_file") {
-      const branch = typeof call.input.branch === "string" ? call.input.branch.trim() : "";
+      const branch = typeof call.input.branch === "string" ? call.input.branch.trim().replace(/^refs\/heads\//, "") : "";
       const path = typeof call.input.path === "string" ? call.input.path.trim() : "";
       const resourceId = typeof call.input.resourceId === "string" ? call.input.resourceId : "";
       if (!branch || !path || !resourceId) throw new Error("kernel_rewind_github_write_snapshot_input_invalid");
+
+      if (isAgentOwnedBranch(branch)) {
+        const checkpointKey = `${resourceId}:${branch}`;
+        if (!state.branchCheckpoints.has(checkpointKey)) {
+          const workspace = await this.repositories.prepare(run, branch);
+          if (!workspace) throw new Error("kernel_rewind_repository_snapshot_unavailable");
+          try {
+            if (!/^[0-9a-f]{40}$/i.test(workspace.revision)) throw new Error("kernel_rewind_branch_revision_invalid");
+            const targetSha = workspace.revision;
+            state.branchCheckpoints.set(checkpointKey, targetSha);
+            state.operations.push({
+              kind: "github_agent_branch",
+              execute: async () => {
+                await this.tools.execute(run, {
+                  id: `${call.id}:rewind-branch`,
+                  name: "github_restore_agent_branch",
+                  input: { resourceId, branch, targetSha }
+                });
+              }
+            });
+          } finally {
+            await this.repositories.release(workspace).catch(() => undefined);
+          }
+        }
+        return;
+      }
+
       const workspace = await this.repositories.prepare(run, branch);
       if (!workspace) throw new Error("kernel_rewind_repository_snapshot_unavailable");
       try {
         const original = repositoryFile(workspace, path);
         if (!original) {
-          // Deleting a newly-created path is not yet an allowed internal tool;
-          // deny the mutation rather than pretending an empty file is a rewind.
-          throw new Error("kernel_rewind_new_file_requires_delete_primitive");
+          throw new Error("kernel_rewind_new_file_requires_agent_branch");
         }
         const originalContent = original.content;
         state.operations.push({
@@ -127,6 +157,7 @@ export class AgentKernelRewindCoordinator {
     try {
       for (const operation of [...state.operations].reverse()) await operation.execute();
       state.operations = [];
+      state.branchCheckpoints.clear();
       state.rewinds += 1;
       return true;
     } finally {
