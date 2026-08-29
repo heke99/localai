@@ -31,18 +31,31 @@ begin
     'queryVersion', 'verified-learning-v1',
     'createdBefore', target_created_before,
     'minReward', target_min_reward,
-    'records', coalesce(jsonb_agg(to_jsonb(x) order by x.created_at asc, x.trajectory_id asc), '[]'::jsonb)
+    'records', coalesce(
+      jsonb_agg(
+        jsonb_build_object(
+          'trajectoryId', x.trajectory_id,
+          'modelVersion', x.model_version,
+          'promptVersion', x.prompt_version,
+          'steps', x.steps,
+          'userFeedback', x.user_feedback,
+          'reward', x.reward,
+          'createdAt', x.created_at
+        )
+        order by x.created_at asc, x.trajectory_id asc
+      ),
+      '[]'::jsonb
+    )
   )
   into result
   from (
     select
-      t.trajectory_id as "trajectoryId",
-      t.model_version as "modelVersion",
-      t.prompt_version as "promptVersion",
+      t.trajectory_id,
+      t.model_version,
+      t.prompt_version,
       t.steps,
-      t.user_feedback as "userFeedback",
+      t.user_feedback,
       t.reward,
-      t.created_at as "createdAt",
       t.created_at
     from internal.agent_trajectories t
     where t.training_eligible
