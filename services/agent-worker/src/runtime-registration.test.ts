@@ -13,6 +13,7 @@ const keys = [
   "DIV3RSA_RUNTIME_ALIASES",
   "DIV3RSA_RUNTIME_GPU_COUNT",
   "DIV3RSA_RUNTIME_VRAM_GB",
+  "DIV3RSA_RUNTIME_ROLE",
   "RUNPOD_FAILOVER_GPU_COUNT"
 ] as const;
 const originals = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
@@ -39,7 +40,8 @@ describe("runtime registration", () => {
       endpoint: "https://pod-123-8080.proxy.runpod.net/v1",
       healthUrl: "https://pod-123-8080.proxy.runpod.net/health",
       profile: "large_96gb",
-      gpuCount: 2
+      gpuCount: 2,
+      runtimeRole: "combined"
     });
     expect(config?.aliases).toEqual(["general-prod", "code-prod", "lab-prod", "research-prod"]);
   });
@@ -62,6 +64,33 @@ describe("runtime registration", () => {
     expect(rpc.mock.calls[1]?.[0]).toBe("runtime_register_worker");
     expect(rpc.mock.calls[2]?.[0]).toBe("runtime_worker_heartbeat");
     expect(rpc.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ target_model_alias: "general-prod", target_state: "ready" }));
+    expect(rpc.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ target_metadata: expect.objectContaining({ runtimeRole: "combined", source: "agent-worker" }) }));
+  });
+
+  it("registers inference-only nodes without pretending the registrar is an agent worker", async () => {
+    process.env.DIV3RSA_RUNTIME_PROVIDER = "gpuhub";
+    process.env.DIV3RSA_RUNTIME_PROVIDER_KIND = "static";
+    process.env.DIV3RSA_RUNTIME_EXTERNAL_ID = "gpu-1";
+    process.env.DIV3RSA_RUNTIME_PUBLIC_ENDPOINT = "https://gpu.example/v1";
+    process.env.DIV3RSA_RUNTIME_PUBLIC_HEALTH_URL = "https://gpu.example/health";
+    process.env.DIV3RSA_RUNTIME_ALIASES = "general-prod";
+    process.env.DIV3RSA_RUNTIME_ROLE = "inference";
+    const config = runtimeRegistrationConfigFromEnvironment(8080)!;
+    const rpc = vi.fn(async (name: string) => ({ data: name === "runtime_worker_heartbeat" || name === "runtime_mark_worker_health" ? true : "worker-db-id", error: null }));
+    const registration = new RuntimeRegistration({ rpc } as unknown as RuntimeRpcClient, config, "registrar-1");
+
+    expect(config.runtimeRole).toBe("inference");
+    await expect(registration.sync()).resolves.toBe(true);
+    expect(rpc.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      target_state: "ready",
+      target_metadata: expect.objectContaining({ source: "inference-node-registrar", runtimeRole: "inference" })
+    }));
+
+    await expect(registration.drain("planned_maintenance")).resolves.toBe(true);
+    expect(rpc).toHaveBeenLastCalledWith("runtime_mark_worker_health", expect.objectContaining({
+      target_state: "draining",
+      target_metadata: expect.objectContaining({ drainReason: "planned_maintenance", runtimeRole: "inference" })
+    }));
   });
 
   it("retries registration after a rollout where the RPC is not installed yet", async () => {
