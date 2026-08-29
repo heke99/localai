@@ -1,10 +1,10 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 const runId = "11111111-1111-1111-1111-111111111111";
 const conversationId = "22222222-2222-2222-2222-222222222222";
 
-async function mockCompletedStream(page: Parameters<typeof test>[0] extends never ? never : any) {
-  await page.route(`**/api/runs/${runId}/stream`, async (route: any) => {
+async function mockCompletedStream(page: Page) {
+  await page.route(`**/api/runs/${runId}/stream`, async (route) => {
     const snapshot = {
       runId,
       conversationId,
