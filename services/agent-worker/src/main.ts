@@ -9,6 +9,7 @@ import { agentKernelConfigFromEnvironment } from "./agent-kernel/config";
 import { AgentKernelShadowProbeRunner } from "./agent-kernel/shadow-probe";
 import { shadowProbeConfigFromEnvironment } from "./agent-kernel/shadow-probe-config";
 import { AgentKernelActiveCanaryAdapter } from "./agent-kernel/active-canary-adapter";
+import { AgentKernelRewindCoordinator, RewindAwareAgentQueue, RewindAwareToolRuntime } from "./agent-kernel/rewind-runtime";
 import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
 import { CompositeWorkerToolRuntime } from "./composite-tool-runtime";
 import { DynamicToolBroker } from "./dynamic-tool-broker";
@@ -115,7 +116,7 @@ const shadowProbeConfig = shadowProbeConfigFromEnvironment();
 const shadowProbeRunner = agentKernelConfig.enabled && agentKernelConfig.mode === "shadow"
   ? new AgentKernelShadowProbeRunner(shadowProbeConfig, { generate: (input) => inferenceAdapter.generate({ ...input, disableThinking: true }) })
   : undefined;
-const queue = new AgentKernelShadowQueue(baseQueue, agentKernelConfig, shadowProbeRunner);
+const shadowQueue = new AgentKernelShadowQueue(baseQueue, agentKernelConfig, shadowProbeRunner);
 const workerId = process.env.DIV3RSA_WORKER_ID ?? `agent-worker-${process.pid}`;
 const runtimeConfig = routingMode === "direct" ? runtimeRegistrationConfigFromEnvironment(modelPort) : null;
 const runtimeRegistration = runtimeConfig
@@ -142,12 +143,16 @@ const executors = new Map([
 const integrationToolRuntime = new PermissionedIntegrationToolRuntime(supabase as unknown as ConstructorParameters<typeof PermissionedIntegrationToolRuntime>[0], executors);
 const baseToolRuntime = new CompositeWorkerToolRuntime([coreToolRuntime, integrationToolRuntime]);
 const dynamicToolDiscoveryEnabled = booleanEnvironment("DIV3RSA_DYNAMIC_TOOL_DISCOVERY_ENABLED", false);
-const toolRuntime = new DynamicToolBroker(baseToolRuntime, {
+const discoveredToolRuntime = new DynamicToolBroker(baseToolRuntime, {
   enabled: dynamicToolDiscoveryEnabled,
   maxImmediateTools: Math.max(1, Math.floor(numericEnvironment("DIV3RSA_DYNAMIC_TOOL_MAX_IMMEDIATE", 8))),
   maxDiscoveredToolsPerRun: Math.max(1, Math.floor(numericEnvironment("DIV3RSA_DYNAMIC_TOOL_MAX_DISCOVERED", 16)))
 });
 const repositoryRuntime = new RemoteRepositoryWorkspaceRuntime(supabase as unknown as ConstructorParameters<typeof RemoteRepositoryWorkspaceRuntime>[0], gatewayUrl);
+const checkpointRewindEnabled = booleanEnvironment("DIV3RSA_CHECKPOINT_REWIND_ENABLED", false);
+const rewindCoordinator = new AgentKernelRewindCoordinator(repositoryRuntime, discoveredToolRuntime, Math.max(1, Math.floor(numericEnvironment("DIV3RSA_CHECKPOINT_MAX_REWINDS", 2))));
+const toolRuntime = new RewindAwareToolRuntime(discoveredToolRuntime, rewindCoordinator, checkpointRewindEnabled);
+const queue = new RewindAwareAgentQueue(shadowQueue, rewindCoordinator, checkpointRewindEnabled);
 const sandboxRuntime = new SandboxVerificationRuntime(process.env.DIV3RSA_SANDBOX_IMAGE_DIGEST?.trim() || null);
 const skillRuntime = {
   prepare: async (mode: Parameters<typeof skillEngine.select>[0], prompt: string) => {
@@ -225,7 +230,7 @@ const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BAC
 const kernelStatus = agentKernelConfig.enabled
   ? `${agentKernelConfig.mode}${agentKernelConfig.mode === "active" ? `-${agentKernelConfig.activeCanaryBasisPoints}bps` : ""}`
   : "disabled";
-console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; aggregateIdlePollMs=${idlePollMs}; agentKernel=${kernelStatus}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}; dynamicToolDiscovery=${dynamicToolDiscoveryEnabled ? "enabled" : "disabled"}`);
+console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; aggregateIdlePollMs=${idlePollMs}; agentKernel=${kernelStatus}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}; dynamicToolDiscovery=${dynamicToolDiscoveryEnabled ? "enabled" : "disabled"}; checkpointRewind=${checkpointRewindEnabled ? "enabled" : "disabled"}`);
 
 await runWorkerLanes({
   concurrency: workerConcurrency,
