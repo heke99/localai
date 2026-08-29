@@ -199,13 +199,14 @@ async function runForegroundLoad(label, withProbes) {
     while (true) {
       const index = next++;
       if (index >= total) return;
-      maybeProbe(index);
-      foreground.push(await chat({
+      const sample = await chat({
         requestId: `agent-kernel-evidence-${label}-${worker}-${index}-${crypto.randomUUID()}`,
         maxTokens: foregroundMaxTokens,
         timeoutMs: requestTimeoutMs,
         messages: [{ role: "user", content: "Implement a TypeScript function that groups records by key, explain complexity briefly, and include one edge-case test." }]
-      }));
+      });
+      foreground.push(sample);
+      maybeProbe(index);
     }
   }));
   await Promise.all(probeTasks);
