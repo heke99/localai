@@ -1,0 +1,37 @@
+{
+  "contract": "div3rsa-gpu-node-v2",
+  "model": {
+    "name": "Qwen3.8-27B-OBLITERATED-V3-Q8_0",
+    "filename": "Qwen3.8-27B-OBLITERATED-Q8_0.gguf",
+    "sha256": "afa839b2fa5bc890e5735031dda2c6239d3b6bba3b6ffa29477cbc14a2e1f221",
+    "bytes": 29047075872,
+    "source": {
+      "kind": "huggingface",
+      "repository": "OBLITERATUS/Qwen3.8-27B-OBLITERATED",
+      "revision": "768dd4ca58e1af3593605d93abef2c1c45647a07"
+    }
+  },
+  "runtime": {
+    "engine": "llama.cpp",
+    "revision": "b10605",
+    "binary": "build/bin/llama-server",
+    "nodeVersion": "24.19.0"
+  },
+  "productionProfile": {
+    "hardwareProfile": "pro6000-96g",
+    "minVramGb": 90,
+    "parallel": 8,
+    "totalContext": 262144,
+    "contextPerSlot": 32768,
+    "specType": "ngram-mod",
+    "batchSize": 2048,
+    "ubatchSize": 512,
+    "healthPath": "/health"
+  },
+  "promotion": {
+    "requiredAgentEvalPassed": 8,
+    "requiredPassRate": 1,
+    "requireLiveOracleFailuresEmpty": true,
+    "failClosed": true
+  }
+}
