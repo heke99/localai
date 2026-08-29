@@ -62,15 +62,16 @@ export function RunStreamPreview({ runId, conversationId, activeConversationId, 
       setSnapshot(null);
       return;
     }
-    const canvas = document.querySelector(`.${styles.chatCanvas}`);
-    if (canvas instanceof HTMLElement) {
-      persistedAssistantBaselineRef.current = persistedAssistantCount(canvas, streamRef.current);
-    }
 
     // Preserve the last streamed answer while the parent replaces it with the
     // persisted assistant message. The handoff effect below removes the stream
     // only after that replacement is actually visible in this chat.
     if (terminal) return;
+
+    const canvas = document.querySelector(`.${styles.chatCanvas}`);
+    if (canvas instanceof HTMLElement) {
+      persistedAssistantBaselineRef.current = persistedAssistantCount(canvas, streamRef.current);
+    }
 
     setSnapshot(null);
     const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream`);
