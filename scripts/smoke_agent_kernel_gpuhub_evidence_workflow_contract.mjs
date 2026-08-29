@@ -67,6 +67,19 @@ if (preload.includes("agent-kernel-evidence-baseline-")) {
 for (const needle of ["loadedForegroundIndex", "loadedProbeIndex", "response.clone().arrayBuffer()", "await deferred.promise", "const verifierCall = qualityVerifier || probeIndex != null;"]) {
   if (!preload.includes(needle)) throw new Error(`production-like post-baseline probe ordering missing: ${needle}`);
 }
+for (const needle of [
+  "loadedProbePressure",
+  'llamacpp:requests_processing',
+  'llamacpp:requests_deferred',
+  'llamacpp:kv_cache_usage_ratio',
+  'llamacpp:n_tokens_max',
+  "AbortSignal.timeout(750)",
+  "[agent-kernel-probe-diag] phase=before_fetch",
+  "[agent-kernel-probe-diag] phase=headers",
+  "[agent-kernel-probe-diag] phase=fetch_error"
+]) {
+  if (!preload.includes(needle)) throw new Error(`scheduling diagnostic missing: ${needle}`);
+}
 if (workflow.includes('scp "${ssh_opts[@]}"')) throw new Error("SCP must not reuse SSH -p port options");
 if (workflow.indexOf("actions/upload-artifact@v4") > workflow.indexOf("Enforce promotion gate result")) {
   throw new Error("blocked evidence must be uploaded before promotion gate enforcement");
@@ -89,4 +102,4 @@ for (const needle of forbidden) {
 }
 
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] 64-token JSON-schema verifier + post-baseline sampled probe ordering present; normal traffic remains unchanged");
+console.log("[agent-kernel-gpuhub-evidence-workflow] constrained verifier + read-only scheduling diagnostics present; normal traffic remains unchanged");
