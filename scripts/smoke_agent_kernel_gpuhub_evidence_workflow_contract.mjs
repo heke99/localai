@@ -17,10 +17,15 @@ const required = [
   ["--parallel[=\\ ]+8", "p8 runtime verification missing"],
   ["--ctx-size[=\\ ]+262144", "p8 context verification missing"],
   ["--spec-type ngram-mod", "speculative profile verification missing"],
-  ["DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER=16", "evidence load must provide 128 foreground requests"],
+  ["DIV3RSA_PROBE_LOAD_CONCURRENCY=7", "evidence must leave one p8 slot available to low-priority shadow work"],
+  ["DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER=286", "evidence must provide roughly twenty samples at one-percent sampling"],
   ["DIV3RSA_PROBE_LOAD_MAX_TOKENS=128", "foreground token budget must stay bounded"],
   ["DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS=32", "loaded verifier evidence must use the 32-token budget"],
   ["DIV3RSA_PROBE_EVIDENCE_SAMPLE_BPS=100", "evidence must model one-percent sampling"],
+  ["DIV3RSA_PROBE_RUNTIME_PARALLEL=8", "capacity scheduler must know the p8 runtime width"],
+  ["DIV3RSA_PROBE_CAPACITY_WAIT_MS=30000", "shadow capacity queue must have a bounded wait"],
+  ["DIV3RSA_PROBE_CAPACITY_POLL_MS=50", "shadow capacity polling must stay bounded"],
+  ["DIV3RSA_PROBE_PRIORITY_YIELD_MS=25", "foreground priority yield missing"],
   ["DIV3RSA_PROBE_TIMEOUT_MS=4000", "workflow must retain the four-second probe gate"],
   ["unset DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED", "production probe enablement must be explicitly absent"],
   ["actions/upload-artifact@v4", "evidence artifact upload missing"],
@@ -28,9 +33,18 @@ const required = [
 ];
 for (const [needle, message] of required) if (!workflow.includes(needle)) throw new Error(message);
 
-for (const needle of ["selectedSampleIndexes", "sampledRuns: withProbes ? sampledRuns : 0", "actualSampleRate", "every material request requirement", "score <70 when passed=false"]) {
-  if (!runner.includes(needle)) throw new Error(`runner contract missing: ${needle}`);
-}
+for (const needle of [
+  "selectedSampleIndexes", "readRuntimeCapacity", "/slots", 'llamacpp:requests_processing', 'llamacpp:requests_deferred',
+  "waitForShadowCapacity", "shadowPriorityYieldMs", "confirmed.queueDepth === 0", "confirmed.freeSlots >= 1",
+  "outcome=capacity_skipped", "capacitySkippedRuns", "p95CapacityWaitMs", "probeDurations.push(result.totalMs)",
+  "enqueueProbe(index)", "actualSampleRate", "every material request requirement", "score <70 when passed=false"
+]) if (!runner.includes(needle)) throw new Error(`capacity-aware runner contract missing: ${needle}`);
+
+if (!runner.includes('const concurrency = positiveInteger("DIV3RSA_PROBE_LOAD_CONCURRENCY", 7)')) throw new Error("runner must default to seven foreground clients on p8");
+if (!runner.includes('const requestsPerWorker = positiveInteger("DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER", 286)')) throw new Error("runner must default to statistically meaningful evidence volume");
+if (!runner.includes("if (concurrency >= runtimeParallel)")) throw new Error("runner must fail closed without spare runtime capacity");
+if (runner.includes("probeActive")) throw new Error("single active flag must not classify queued shadow work as immediate capacity skip");
+
 for (const needle of [
   "agent-kernel-quality-", "agent-kernel-evidence-probe-", 'reasoning_effort: "none"', "enable_thinking: false",
   "VERIFIER_MAX_TOKENS = 64", "LOADED_PROBE_TIMEOUT_MS = 4_000", 'type: "json_schema"', 'name: "shadow_verifier_result"',
@@ -50,4 +64,4 @@ if (workflow.includes('workflows: ["Deploy GPUHub"]')) throw new Error("evidence
 const forbidden = ["rollback-legacy-gpuhub-p1.sh", "recover-legacy-gpuhub", "reconcile-gpuhub-production-profile.sh", "DIV3RSA_FORCE_MODEL_RESTART", "DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED=1", "DIV3RSA_AGENT_KERNEL_V2_PROBE_SAMPLE_BPS=", "systemctl restart", "pkill", "killall"];
 for (const needle of forbidden) if (workflow.includes(needle)) throw new Error(`observational evidence workflow contains forbidden mutation: ${needle}`);
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] loaded verifier uses non-stream generate semantics with a 32-token evidence budget; four-second gate and production sampling state unchanged");
+console.log("[agent-kernel-gpuhub-evidence-workflow] capacity-aware low-priority shadow scheduling + statistically meaningful 1% evidence volume present; all promotion gates unchanged");
