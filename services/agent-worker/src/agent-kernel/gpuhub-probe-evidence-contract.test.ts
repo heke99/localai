@@ -22,11 +22,16 @@ describe("GPUHub shadow probe evidence contract", () => {
     expect(byId.get("healthy-research-uncertainty")?.baselineAnswer).toMatch(/Confirmed.+2026-08-01.+Still uncertain.+Regulator FAQ/i);
   });
 
-  it("keeps the GPUHub evidence runner observational and non-mutating", async () => {
+  it("keeps the GPUHub evidence runner observational, capacity-aware and non-mutating", async () => {
     const source = await readFile(resolve(root, "scripts/eval_agent_kernel_probes_gpuhub.mjs"), "utf8");
     expect(source).toContain("eval_agent_kernel_shadow_probes.ts");
-    expect(source).toContain("probeActive");
+    expect(source).toContain("readRuntimeCapacity");
+    expect(source).toContain("waitForShadowCapacity");
+    expect(source).toContain("shadowTail");
     expect(source).toContain("capacitySkippedRuns");
+    expect(source).toContain("p95CapacityWaitMs");
+    expect(source).toContain("probeDurations.push(result.totalMs)");
+    expect(source).not.toContain("probeActive");
     expect(source).not.toContain("DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED=");
     expect(source).not.toContain("systemctl restart");
     expect(source).not.toContain("llama-server --model");
