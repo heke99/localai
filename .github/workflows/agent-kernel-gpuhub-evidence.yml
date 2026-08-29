@@ -2,7 +2,7 @@ name: Agent Kernel GPUHub Evidence
 
 on:
   workflow_run:
-    workflows: ["Deploy GPUHub"]
+    workflows: ["P8 GPUHub Soak"]
     types: [completed]
 
 permissions:
