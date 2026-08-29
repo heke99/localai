@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const root = resolve(import.meta.dirname, "../../..");
+const root = resolve(import.meta.dirname, "../../../..");
 const workflow = readFileSync(resolve(root, ".github/workflows/agent-kernel-learning-optimizer.yml"), "utf8");
 
 describe("Agent Kernel learning optimizer workflow contract", () => {
