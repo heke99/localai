@@ -49,8 +49,11 @@ for (const [needle, message] of runnerRequired) {
 for (const needle of ["agent-kernel-quality-", "agent-kernel-evidence-probe-", 'reasoning_effort: "none"', "enable_thinking: false"]) {
   if (!preload.includes(needle)) throw new Error(`scoped verifier preload missing: ${needle}`);
 }
-if (preload.includes("agent-kernel-evidence-baseline-") || preload.includes("agent-kernel-evidence-loaded-")) {
-  throw new Error("foreground benchmark requests must not disable thinking");
+if (preload.includes("agent-kernel-evidence-baseline-")) {
+  throw new Error("baseline foreground benchmark requests must not be intercepted");
+}
+for (const needle of ["loadedForegroundIndex", "loadedProbeIndex", "response.clone().arrayBuffer()", "await deferred.promise", "const verifierCall = qualityVerifier || probeIndex != null;"]) {
+  if (!preload.includes(needle)) throw new Error(`production-like post-baseline probe ordering missing: ${needle}`);
 }
 if (workflow.includes('scp "${ssh_opts[@]}"')) throw new Error("SCP must not reuse SSH -p port options");
 if (workflow.indexOf("actions/upload-artifact@v4") > workflow.indexOf("Enforce promotion gate result")) {
@@ -74,4 +77,4 @@ for (const needle of forbidden) {
 }
 
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] scoped no-thinking verifier calls + representative 1% evidence load present; normal traffic remains unchanged");
+console.log("[agent-kernel-gpuhub-evidence-workflow] scoped no-thinking verifier calls + post-baseline sampled probe ordering present; normal traffic remains unchanged");
