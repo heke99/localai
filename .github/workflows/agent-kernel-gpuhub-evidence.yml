@@ -145,6 +145,10 @@ jobs:
           unset DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED || true
           unset DIV3RSA_AGENT_KERNEL_V2_PROBE_SAMPLE_BPS || true
 
+          # This preload changes only evidence request IDs for quality/probe verification.
+          # Foreground benchmark calls and normal production traffic remain unchanged.
+          export NODE_OPTIONS="--import=$app_dir/scripts/agent_kernel_probe_no_thinking_preload.mjs"
+
           echo "=== AGENT KERNEL GPUHUB EVIDENCE START ===" >&2
           set +e
           "$node_bin" scripts/eval_agent_kernel_probes_gpuhub.mjs
