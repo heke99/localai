@@ -1,0 +1,26 @@
+[Unit]
+Description=DIV3RSA Agent Control Plane Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=div3rsa
+Group=div3rsa
+WorkingDirectory=/opt/div3rsa/localai/app
+EnvironmentFile=/opt/div3rsa/localai/secrets/control-plane.env
+ExecStart=/opt/div3rsa/localai/runtime/node/bin/node --experimental-transform-types --import ./infra/runpod/native-typescript-register.mjs services/agent-worker/src/main.ts
+Restart=always
+RestartSec=3
+TimeoutStopSec=45
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/div3rsa/localai/logs /opt/div3rsa/localai/state
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
