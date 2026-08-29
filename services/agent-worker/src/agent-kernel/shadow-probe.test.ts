@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TaskAnalysis } from "@div3rsa/agent-runtime";
-import { AgentKernelShadowProbeRunner, deterministicProbeSample } from "./shadow-probe";
+import { AgentKernelShadowProbeRunner, deterministicProbeSample, parseShadowProbeQuality } from "./shadow-probe";
 import type { AgentKernelShadowProbeConfig } from "./shadow-probe-config";
 
 function config(overrides: Partial<AgentKernelShadowProbeConfig> = {}): AgentKernelShadowProbeConfig {
@@ -59,6 +59,20 @@ describe("AgentKernelShadowProbeRunner", () => {
     expect(deterministicProbeSample("same-run", 250)).toBe(deterministicProbeSample("same-run", 250));
   });
 
+  it("accepts a bounded JSON object even when the model wraps it in a JSON fence", () => {
+    expect(parseShadowProbeQuality("```json\n{\"score\":42,\"passed\":false,\"reasonCode\":\"missing_test\"}\n```"))
+      .toEqual({ score: 42, passed: false, reasonCode: "missing_test" });
+    expect(parseShadowProbeQuality("Result: {\"score\":88,\"passed\":true,\"reasonCode\":\"complete\"}"))
+      .toEqual({ score: 88, passed: true, reasonCode: "complete" });
+  });
+
+  it("fails closed when verifier fields are missing or malformed", () => {
+    expect(parseShadowProbeQuality("{\"score\":90,\"reasonCode\":\"missing_passed\"}"))
+      .toEqual({ score: null, passed: null, reasonCode: "verifier_output_unparsed" });
+    expect(parseShadowProbeQuality("not-json"))
+      .toEqual({ score: null, passed: null, reasonCode: "verifier_output_unparsed" });
+  });
+
   it("does not call the model when disabled or not sampled", async () => {
     const generate = vi.fn();
     await expect(new AgentKernelShadowProbeRunner(config({ enabled: false }), { generate }).run(input())).resolves.toEqual({ status: "disabled" });
@@ -77,6 +91,10 @@ describe("AgentKernelShadowProbeRunner", () => {
       expect(call[0].maxOutputTokens).toBe(128);
       expect(call[0].signal).toBeInstanceOf(AbortSignal);
     }
+    const verifierSystem = generate.mock.calls[1]?.[0]?.messages?.[0]?.content ?? "";
+    expect(verifierSystem).toContain("every material request constraint");
+    expect(verifierSystem).toContain("current/live evidence");
+    expect(verifierSystem).toContain("score <70 for passed=false");
     if (outcome.status !== "completed") throw new Error("expected_completed");
     expect(outcome.observation.quality).toEqual({ score: 88, passed: true, reasonCode: "baseline_supported" });
     expect(JSON.stringify(outcome.observation)).not.toContain("plan output");
@@ -87,7 +105,7 @@ describe("AgentKernelShadowProbeRunner", () => {
     const generate = vi.fn()
       .mockResolvedValueOnce({ content: "plan" })
       .mockResolvedValueOnce({ content: "research requirements" })
-      .mockResolvedValueOnce({ content: JSON.stringify({ score: 70, passed: false, reasonCode: "missing_evidence" }) });
+      .mockResolvedValueOnce({ content: JSON.stringify({ score: 69, passed: false, reasonCode: "missing_evidence" }) });
     const outcome = await new AgentKernelShadowProbeRunner(config(), { generate }).run(input({
       task: task({ requiresCurrentInformation: true, researchDepth: "deep", informationFreshness: "current" })
     }));
