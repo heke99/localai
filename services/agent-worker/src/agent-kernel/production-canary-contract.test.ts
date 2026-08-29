@@ -16,10 +16,12 @@ describe("Agent Kernel production canary contract", () => {
     expect(profile).toContain("DIV3RSA_TRAINING_ELIGIBILITY_ENABLED=0");
   });
 
-  it("exercises 100 percent active path before applying the tiny canary", () => {
+  it("uses the existing 8-case runtime eval before and after applying the tiny canary", () => {
     expect(workflow).toContain("DIV3RSA_AGENT_KERNEL_V2_ACTIVE_CANARY_BPS=10000");
-    expect(workflow).toContain("scripts/eval_agent_runtime.ts");
-    expect(workflow).toContain("scripts/eval_agent_production.mjs --json");
+    expect(workflow.match(/scripts\/eval_agent_runtime\.ts/g)?.length).toBe(2);
+    expect(workflow).toContain("data.get('cases') != 8");
+    expect(workflow).toContain("data.get('passed') != 8");
+    expect(workflow).not.toContain("eval_agent_production.mjs");
   });
 
   it("preserves the p8 profile and rolls back the exact previous worker environment", () => {
