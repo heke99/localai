@@ -72,6 +72,39 @@ function datasetDigest(envelope: VerifiedLearningExportEnvelope): string {
   })).digest("hex");
 }
 
+function assertOrderedUniqueRecords(records: readonly VerifiedLearningRecord[]): void {
+  for (const record of records) assertVerifiedLearningRecord(record);
+  for (let index = 1; index < records.length; index += 1) {
+    const previous = records[index - 1]!;
+    const current = records[index]!;
+    const previousKey = `${previous.createdAt}:${previous.trajectoryId}`;
+    const currentKey = `${current.createdAt}:${current.trajectoryId}`;
+    if (previousKey > currentKey) throw new Error("learning_export_not_deterministically_ordered");
+  }
+  if (new Set(records.map((record) => record.trajectoryId)).size !== records.length) throw new Error("duplicate_learning_trajectory");
+}
+
+export function assertVerifiedLearningDatasetManifest(manifest: VerifiedLearningDatasetManifest): void {
+  if (manifest.schemaVersion !== 1 || manifest.queryVersion !== "verified-learning-v1") throw new Error("unsupported_learning_export_schema");
+  if (!Number.isFinite(Date.parse(manifest.generatedAt))) throw new Error("invalid_learning_manifest_generated_at");
+  if (!Number.isFinite(Date.parse(manifest.createdBefore))) throw new Error("invalid_learning_export_cutoff");
+  if (!Number.isInteger(manifest.minReward) || manifest.minReward < 1 || manifest.minReward > 1000) throw new Error("invalid_learning_export_min_reward");
+  if (!Number.isInteger(manifest.minimumSamples) || manifest.minimumSamples < 1 || manifest.minimumSamples > 5000) throw new Error("invalid_learning_minimum_samples");
+  if (!Array.isArray(manifest.records)) throw new Error("invalid_learning_manifest_records");
+  assertOrderedUniqueRecords(manifest.records);
+  if (manifest.recordCount !== manifest.records.length) throw new Error("learning_manifest_record_count_mismatch");
+  if (manifest.readyForOptimization !== (manifest.records.length >= manifest.minimumSamples)) throw new Error("learning_manifest_readiness_mismatch");
+  if (!SHA256.test(manifest.datasetDigest)) throw new Error("invalid_learning_dataset_digest");
+  const expected = datasetDigest({
+    schemaVersion: 1,
+    queryVersion: "verified-learning-v1",
+    createdBefore: manifest.createdBefore,
+    minReward: manifest.minReward,
+    records: manifest.records
+  });
+  if (manifest.datasetDigest !== expected) throw new Error("learning_manifest_digest_mismatch");
+}
+
 export function buildVerifiedLearningDatasetManifest(
   envelope: VerifiedLearningExportEnvelope,
   options: { minimumSamples?: number; generatedAt?: string } = {}
@@ -82,17 +115,8 @@ export function buildVerifiedLearningDatasetManifest(
 
   const minimumSamples = Math.max(1, Math.min(5000, Math.floor(options.minimumSamples ?? 25)));
   const records = [...envelope.records];
-  for (const record of records) assertVerifiedLearningRecord(record);
-  for (let index = 1; index < records.length; index += 1) {
-    const previous = records[index - 1]!;
-    const current = records[index]!;
-    const previousKey = `${previous.createdAt}:${previous.trajectoryId}`;
-    const currentKey = `${current.createdAt}:${current.trajectoryId}`;
-    if (previousKey > currentKey) throw new Error("learning_export_not_deterministically_ordered");
-  }
-  if (new Set(records.map((record) => record.trajectoryId)).size !== records.length) throw new Error("duplicate_learning_trajectory");
-
-  return {
+  assertOrderedUniqueRecords(records);
+  const manifest: VerifiedLearningDatasetManifest = {
     schemaVersion: 1,
     queryVersion: "verified-learning-v1",
     generatedAt: options.generatedAt ?? new Date().toISOString(),
@@ -104,4 +128,6 @@ export function buildVerifiedLearningDatasetManifest(
     datasetDigest: datasetDigest({ ...envelope, records }),
     records
   };
+  assertVerifiedLearningDatasetManifest(manifest);
+  return manifest;
 }
