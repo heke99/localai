@@ -90,7 +90,7 @@ const baseQueue = new SupabaseAgentQueue(supabase);
 const agentKernelConfig = agentKernelConfigFromEnvironment();
 const shadowProbeConfig = shadowProbeConfigFromEnvironment();
 const shadowProbeRunner = agentKernelConfig.enabled && agentKernelConfig.mode === "shadow"
-  ? new AgentKernelShadowProbeRunner(shadowProbeConfig, { generate: (input) => adapter.generate(input) })
+  ? new AgentKernelShadowProbeRunner(shadowProbeConfig, { generate: (input) => adapter.generate({ ...input, disableThinking: true }) })
   : undefined;
 const queue = new AgentKernelShadowQueue(baseQueue, agentKernelConfig, shadowProbeRunner);
 const workerId = process.env.DIV3RSA_WORKER_ID ?? `agent-worker-${process.pid}`;
@@ -102,8 +102,6 @@ const repositoryRoot = process.env.DIV3RSA_REPOSITORY_ROOT ?? process.cwd();
 const manifest = JSON.parse(await readFile(resolve(repositoryRoot, "skills/runtime-manifest.json"), "utf8")) as SkillManifest;
 const skillEngine = new SkillEngine(manifest, { read: (path) => readFile(resolve(repositoryRoot, path), "utf8") });
 
-// Local deterministic/public-web tools are deliberately separate from account-linked provider tools.
-// Provider OAuth credentials never enter this worker; integration writes still require one-time grants.
 const coreToolRuntime = new CoreToolRuntime({
   searchBaseUrl: process.env.DIV3RSA_SEARCH_BASE_URL?.trim() || null,
   webFetchEnabled: process.env.DIV3RSA_WEB_FETCH_ENABLED?.trim() !== "0",
