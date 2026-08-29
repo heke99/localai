@@ -4,7 +4,7 @@ const workflow = await readFile(".github/workflows/agent-kernel-gpuhub-evidence.
 const request = await readFile("ops/agent-kernel-gpuhub-evidence.request", "utf8");
 
 const required = [
-  ['workflows: ["Deploy GPUHub"]', "workflow_run must follow Deploy GPUHub"],
+  ['workflows: ["P8 GPUHub Soak"]', "workflow_run must follow P8 GPUHub Soak"],
   ["environment: production-gpuhub", "production-gpuhub environment missing"],
   ["GPUHUB_SSH_KNOWN_HOSTS", "pinned SSH known-hosts missing"],
   ["StrictHostKeyChecking=yes", "strict host checking missing"],
@@ -19,6 +19,8 @@ const required = [
 for (const [needle, message] of required) {
   if (!workflow.includes(needle)) throw new Error(message);
 }
+
+if (workflow.includes('workflows: ["Deploy GPUHub"]')) throw new Error("evidence must not race P8 soak after Deploy GPUHub");
 
 const forbidden = [
   "rollback-legacy-gpuhub-p1.sh",
@@ -36,4 +38,4 @@ for (const needle of forbidden) {
 }
 
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] pinned SSH, explicit request, p8 pre/post checks, observational-only evidence and artifact upload present");
+console.log("[agent-kernel-gpuhub-evidence-workflow] runs after P8 soak with pinned SSH, explicit request, p8 pre/post checks, observational-only evidence and artifact upload present");
