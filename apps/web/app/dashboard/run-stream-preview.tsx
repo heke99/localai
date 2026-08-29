@@ -5,6 +5,7 @@ import styles from "./workspace-shell-v3.module.css";
 
 const TERMINAL = new Set(["completed", "failed", "cancelled", "timed_out"]);
 const AUTO_FOLLOW_THRESHOLD_PX = 180;
+const PERSISTED_HANDOFF_OBSERVER_MS = 15_000;
 
 export type RunStreamSnapshot = {
   runId: string;
@@ -13,6 +14,12 @@ export type RunStreamSnapshot = {
   content: string;
   revision: number;
 };
+
+function persistedAssistantCount(canvas: HTMLElement, stream: HTMLElement | null) {
+  return Array.from(canvas.querySelectorAll(`.${styles.assistantMessage}`))
+    .filter((message) => !stream?.contains(message))
+    .length;
+}
 
 export function RunStreamPreview({ runId, conversationId, activeConversationId, terminal, onSnapshot }: {
   runId: string;
@@ -25,6 +32,7 @@ export function RunStreamPreview({ runId, conversationId, activeConversationId, 
   const onSnapshotRef = useRef(onSnapshot);
   const streamRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowRef = useRef(true);
+  const persistedAssistantBaselineRef = useRef(0);
   useEffect(() => { onSnapshotRef.current = onSnapshot; }, [onSnapshot]);
 
   useEffect(() => {
@@ -54,10 +62,14 @@ export function RunStreamPreview({ runId, conversationId, activeConversationId, 
       setSnapshot(null);
       return;
     }
+    const canvas = document.querySelector(`.${styles.chatCanvas}`);
+    if (canvas instanceof HTMLElement) {
+      persistedAssistantBaselineRef.current = persistedAssistantCount(canvas, streamRef.current);
+    }
+
     // Preserve the last streamed answer while the parent replaces it with the
-    // persisted assistant message. This prevents very fast deterministic runs
-    // from briefly disappearing when status reaches completed before the
-    // conversation refresh finishes.
+    // persisted assistant message. The handoff effect below removes the stream
+    // only after that replacement is actually visible in this chat.
     if (terminal) return;
 
     setSnapshot(null);
@@ -85,6 +97,32 @@ export function RunStreamPreview({ runId, conversationId, activeConversationId, 
       source.close();
     };
   }, [runId, conversationId, activeConversationId, terminal]);
+
+  useEffect(() => {
+    if (!terminal || !snapshot?.content || activeConversationId !== conversationId) return;
+    const canvas = document.querySelector(`.${styles.chatCanvas}`);
+    if (!(canvas instanceof HTMLElement)) return;
+    const baseline = persistedAssistantBaselineRef.current;
+
+    const handoffReady = () => persistedAssistantCount(canvas, streamRef.current) > baseline;
+    if (handoffReady()) {
+      setSnapshot(null);
+      return;
+    }
+
+    const observer = new MutationObserver(() => {
+      if (!handoffReady()) return;
+      observer.disconnect();
+      window.clearTimeout(timeout);
+      setSnapshot(null);
+    });
+    observer.observe(canvas, { childList: true, subtree: true });
+    const timeout = window.setTimeout(() => observer.disconnect(), PERSISTED_HANDOFF_OBSERVER_MS);
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(timeout);
+    };
+  }, [terminal, snapshot?.content, activeConversationId, conversationId]);
 
   if (activeConversationId !== conversationId || !snapshot?.content) return null;
   return <div
