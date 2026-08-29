@@ -2,6 +2,24 @@ const originalFetch = globalThis.fetch;
 if (typeof originalFetch !== "function") throw new Error("global_fetch_unavailable");
 
 const foregroundCompletion = new Map();
+const VERIFIER_MAX_TOKENS = 64;
+const VERIFIER_RESPONSE_FORMAT = {
+  type: "json_schema",
+  json_schema: {
+    name: "shadow_verifier_result",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["score", "passed", "reasonCode"],
+      properties: {
+        score: { type: "integer", minimum: 0, maximum: 100 },
+        passed: { type: "boolean" },
+        reasonCode: { type: "string", pattern: "^[A-Za-z0-9_-]{1,80}$" }
+      }
+    }
+  }
+};
 
 function deferredFor(index) {
   let deferred = foregroundCompletion.get(index);
@@ -23,11 +41,14 @@ function loadedProbeIndex(requestId) {
   return match?.[1] ?? null;
 }
 
-function withThinkingDisabled(body) {
+function withVerifierConstraints(body) {
+  const requestedMax = Number.isFinite(body.max_tokens) ? Number(body.max_tokens) : VERIFIER_MAX_TOKENS;
   return JSON.stringify({
     ...body,
+    max_tokens: Math.min(requestedMax, VERIFIER_MAX_TOKENS),
     reasoning_effort: "none",
-    chat_template_kwargs: { ...(body.chat_template_kwargs || {}), enable_thinking: false }
+    chat_template_kwargs: { ...(body.chat_template_kwargs || {}), enable_thinking: false },
+    response_format: VERIFIER_RESPONSE_FORMAT
   });
 }
 
@@ -73,6 +94,6 @@ globalThis.fetch = async function agentKernelProbeFetch(input, init) {
 
   return originalFetch(input, {
     ...init,
-    body: withThinkingDisabled(body)
+    body: withVerifierConstraints(body)
   });
 };

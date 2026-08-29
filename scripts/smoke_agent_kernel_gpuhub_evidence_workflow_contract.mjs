@@ -19,7 +19,7 @@ const required = [
   ["--spec-type ngram-mod", "speculative profile verification missing"],
   ["DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER=16", "evidence load must provide 128 foreground requests"],
   ["DIV3RSA_PROBE_LOAD_MAX_TOKENS=128", "foreground token budget must stay bounded"],
-  ["DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS=128", "probe token budget must stay bounded"],
+  ["DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS=128", "configured probe budget must stay bounded before verifier clamp"],
   ["DIV3RSA_PROBE_EVIDENCE_SAMPLE_BPS=100", "evidence must model one-percent sampling"],
   ["unset DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED", "production probe enablement must be explicitly absent"],
   ["set +e", "gate exit must be captured without losing evidence"],
@@ -46,8 +46,20 @@ for (const [needle, message] of runnerRequired) {
   if (!runner.includes(needle)) throw new Error(message);
 }
 
-for (const needle of ["agent-kernel-quality-", "agent-kernel-evidence-probe-", 'reasoning_effort: "none"', "enable_thinking: false"]) {
-  if (!preload.includes(needle)) throw new Error(`scoped verifier preload missing: ${needle}`);
+for (const needle of [
+  "agent-kernel-quality-",
+  "agent-kernel-evidence-probe-",
+  'reasoning_effort: "none"',
+  "enable_thinking: false",
+  "VERIFIER_MAX_TOKENS = 64",
+  'type: "json_schema"',
+  'name: "shadow_verifier_result"',
+  'additionalProperties: false',
+  'required: ["score", "passed", "reasonCode"]',
+  "max_tokens: Math.min(requestedMax, VERIFIER_MAX_TOKENS)",
+  "response_format: VERIFIER_RESPONSE_FORMAT"
+]) {
+  if (!preload.includes(needle)) throw new Error(`scoped constrained verifier preload missing: ${needle}`);
 }
 if (preload.includes("agent-kernel-evidence-baseline-")) {
   throw new Error("baseline foreground benchmark requests must not be intercepted");
@@ -77,4 +89,4 @@ for (const needle of forbidden) {
 }
 
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] scoped no-thinking verifier calls + post-baseline sampled probe ordering present; normal traffic remains unchanged");
+console.log("[agent-kernel-gpuhub-evidence-workflow] 64-token JSON-schema verifier + post-baseline sampled probe ordering present; normal traffic remains unchanged");
