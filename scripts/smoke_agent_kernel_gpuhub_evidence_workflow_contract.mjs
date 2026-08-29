@@ -42,8 +42,11 @@ if (preload.includes("agent-kernel-evidence-baseline-")) throw new Error("baseli
 for (const needle of ["loadedForegroundIndex", "loadedProbeIndex", "response.clone().arrayBuffer()", "await deferred.promise", "const verifierCall = qualityVerifier || probeIndex != null;", "const signal = probeIndex != null ? AbortSignal.timeout(LOADED_PROBE_TIMEOUT_MS) : init?.signal;"]) {
   if (!preload.includes(needle)) throw new Error(`production-like post-baseline probe timing missing: ${needle}`);
 }
-for (const needle of ["loadedProbePressure", "traceProbeStream", "TransformStream", "phase=before_fetch", "phase=headers", "phase=first_chunk", "phase=stream_end", "phase=fetch_error"]) {
-  if (!preload.includes(needle)) throw new Error(`stream scheduling diagnostic missing: ${needle}`);
+for (const needle of [
+  "loadedProbePressure", "traceProbeStream", "TransformStream", "validVerifierObject", "verifierContent", "controller.terminate()",
+  "phase=before_fetch", "phase=headers", "phase=first_chunk", "phase=json_complete", "phase=stream_end", "phase=fetch_error"
+]) {
+  if (!preload.includes(needle)) throw new Error(`early verifier completion diagnostic missing: ${needle}`);
 }
 
 if (workflow.includes('scp "${ssh_opts[@]}"')) throw new Error("SCP must not reuse SSH -p port options");
@@ -53,4 +56,4 @@ if (workflow.includes('workflows: ["Deploy GPUHub"]')) throw new Error("evidence
 const forbidden = ["rollback-legacy-gpuhub-p1.sh", "recover-legacy-gpuhub", "reconcile-gpuhub-production-profile.sh", "DIV3RSA_FORCE_MODEL_RESTART", "DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED=1", "DIV3RSA_AGENT_KERNEL_V2_PROBE_SAMPLE_BPS=", "systemctl restart", "pkill", "killall"];
 for (const needle of forbidden) if (workflow.includes(needle)) throw new Error(`observational evidence workflow contains forbidden mutation: ${needle}`);
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] read-only stream timing diagnostics present; four-second gate and production sampling state unchanged");
+console.log("[agent-kernel-gpuhub-evidence-workflow] loaded verifier may end only after schema-valid JSON; four-second gate and production sampling state unchanged");
