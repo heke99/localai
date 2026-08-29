@@ -10,6 +10,9 @@ import { AgentKernelShadowProbeRunner } from "./agent-kernel/shadow-probe";
 import { shadowProbeConfigFromEnvironment } from "./agent-kernel/shadow-probe-config";
 import { AgentKernelActiveCanaryAdapter } from "./agent-kernel/active-canary-adapter";
 import { AgentKernelRewindCoordinator, RewindAwareAgentQueue, RewindAwareToolRuntime } from "./agent-kernel/rewind-runtime";
+import { SupabaseAgentKernelStore, type AgentKernelStoreRpcClient } from "./agent-kernel/store";
+import { VerifiedLearningAgentQueue } from "./agent-kernel/learning-lifecycle";
+import { VerifiedMemoryAdapter } from "./agent-kernel/memory-adapter";
 import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
 import { CompositeWorkerToolRuntime } from "./composite-tool-runtime";
 import { DynamicToolBroker } from "./dynamic-tool-broker";
@@ -80,6 +83,7 @@ function errorDetail(error: unknown): string {
 }
 
 const supabase = createClient<Database>(required("SUPABASE_URL"), required("SUPABASE_SECRET_KEY"), { auth: { persistSession: false, autoRefreshToken: false } });
+const kernelStore = new SupabaseAgentKernelStore(supabase as unknown as AgentKernelStoreRpcClient);
 const modelPort = numericEnvironment("DIV3RSA_MODEL_PORT", 8080);
 const modelParallel = Math.max(1, Math.floor(numericEnvironment("DIV3RSA_MODEL_PARALLEL", 4)));
 const workerConcurrency = boundedWorkerConcurrency(numericEnvironment("DIV3RSA_WORKER_CONCURRENCY", modelParallel), modelParallel);
@@ -89,6 +93,9 @@ const inferenceBaseUrl = process.env.DIV3RSA_INFERENCE_BASE_URL?.trim()
   || `http://127.0.0.1:${modelPort}/v1`;
 const inferenceApiKey = requiredAny(["DIV3RSA_INFERENCE_API_KEY", "QWEN_INFERENCE_API_KEY"]);
 const agentKernelConfig = agentKernelConfigFromEnvironment();
+const verifiedMemoryEnabled = booleanEnvironment("DIV3RSA_VERIFIED_MEMORY_ENABLED", false);
+const verifiedLearningEnabled = booleanEnvironment("DIV3RSA_VERIFIED_LEARNING_ENABLED", false);
+const trainingEligibilityEnabled = booleanEnvironment("DIV3RSA_TRAINING_ELIGIBILITY_ENABLED", false);
 const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApiKey, {
   contextLimit: numericEnvironment("DIV3RSA_MODEL_CONTEXT_SIZE", 32768),
   batchSize: numericEnvironment("DIV3RSA_MODEL_BATCH_SIZE", 2048),
@@ -110,7 +117,8 @@ const directAdapter = new OpenAiCompatibleAdapter(inferenceBaseUrl, inferenceApi
 const inferenceAdapter: ModelAdapter = routingMode === "registry"
   ? new RuntimeInferenceRouter(supabase as unknown as RuntimeInferenceRpcClient, inferenceApiKey)
   : directAdapter;
-const adapter: ModelAdapter = new AgentKernelActiveCanaryAdapter(inferenceAdapter, agentKernelConfig);
+const canaryAdapter: ModelAdapter = new AgentKernelActiveCanaryAdapter(inferenceAdapter, agentKernelConfig);
+const adapter: ModelAdapter = new VerifiedMemoryAdapter(canaryAdapter, kernelStore, verifiedMemoryEnabled);
 const baseQueue = new SupabaseAgentQueue(supabase);
 const shadowProbeConfig = shadowProbeConfigFromEnvironment();
 const shadowProbeRunner = agentKernelConfig.enabled && agentKernelConfig.mode === "shadow"
@@ -152,7 +160,8 @@ const repositoryRuntime = new RemoteRepositoryWorkspaceRuntime(supabase as unkno
 const checkpointRewindEnabled = booleanEnvironment("DIV3RSA_CHECKPOINT_REWIND_ENABLED", false);
 const rewindCoordinator = new AgentKernelRewindCoordinator(repositoryRuntime, discoveredToolRuntime, Math.max(1, Math.floor(numericEnvironment("DIV3RSA_CHECKPOINT_MAX_REWINDS", 2))));
 const toolRuntime = new RewindAwareToolRuntime(discoveredToolRuntime, rewindCoordinator, checkpointRewindEnabled);
-const queue = new RewindAwareAgentQueue(shadowQueue, rewindCoordinator, checkpointRewindEnabled);
+const rewindQueue = new RewindAwareAgentQueue(shadowQueue, rewindCoordinator, checkpointRewindEnabled);
+const queue = new VerifiedLearningAgentQueue(rewindQueue, kernelStore, verifiedLearningEnabled, trainingEligibilityEnabled);
 const sandboxRuntime = new SandboxVerificationRuntime(process.env.DIV3RSA_SANDBOX_IMAGE_DIGEST?.trim() || null);
 const skillRuntime = {
   prepare: async (mode: Parameters<typeof skillEngine.select>[0], prompt: string) => {
@@ -198,10 +207,7 @@ async function waitForHealthyModel() {
       lastDetail = errorDetail(error);
     }
 
-    if (Date.now() - startedAt >= timeoutMs) {
-      throw new Error(`model_startup_timeout:${lastDetail}`);
-    }
-
+    if (Date.now() - startedAt >= timeoutMs) throw new Error(`model_startup_timeout:${lastDetail}`);
     console.warn(`[agent-worker] waiting for model; worker=${workerId}; routing=${routingMode}; detail=${lastDetail}`);
     await sleep(pollMs);
   }
@@ -230,7 +236,7 @@ const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BAC
 const kernelStatus = agentKernelConfig.enabled
   ? `${agentKernelConfig.mode}${agentKernelConfig.mode === "active" ? `-${agentKernelConfig.activeCanaryBasisPoints}bps` : ""}`
   : "disabled";
-console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; aggregateIdlePollMs=${idlePollMs}; agentKernel=${kernelStatus}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}; dynamicToolDiscovery=${dynamicToolDiscoveryEnabled ? "enabled" : "disabled"}; checkpointRewind=${checkpointRewindEnabled ? "enabled" : "disabled"}`);
+console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; aggregateIdlePollMs=${idlePollMs}; agentKernel=${kernelStatus}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}; dynamicToolDiscovery=${dynamicToolDiscoveryEnabled ? "enabled" : "disabled"}; checkpointRewind=${checkpointRewindEnabled ? "enabled" : "disabled"}; verifiedMemory=${verifiedMemoryEnabled ? "enabled" : "disabled"}; verifiedLearning=${verifiedLearningEnabled ? "enabled" : "disabled"}; trainingEligibility=${trainingEligibilityEnabled ? "enabled" : "disabled"}`);
 
 await runWorkerLanes({
   concurrency: workerConcurrency,
