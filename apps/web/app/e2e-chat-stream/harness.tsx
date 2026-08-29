@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RunStreamPreview } from "../dashboard/run-stream-preview";
 import styles from "../dashboard/workspace-shell-v3.module.css";
 
@@ -11,9 +11,17 @@ const OTHER_CONVERSATION_ID = "33333333-3333-3333-3333-333333333333";
 export function ChatStreamHarness() {
   const [terminal, setTerminal] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState(CONVERSATION_ID);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.scrollTop = canvas.scrollHeight;
+  }, []);
+
   return <main>
     <h1>Chat stream E2E harness</h1>
-    <div className={styles.chatCanvas} data-testid="chat-canvas" style={{ height: 160, overflowY: "auto" }}>
+    <div ref={canvasRef} className={styles.chatCanvas} data-testid="chat-canvas" style={{ height: 160, overflowY: "auto" }}>
       <div style={{ height: 900 }} aria-hidden="true" />
       <RunStreamPreview
         runId={RUN_ID}
