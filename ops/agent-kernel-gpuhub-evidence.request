@@ -2,5 +2,5 @@ schemaVersion=1
 requestedAt=2026-08-29
 purpose=agent-kernel-v2-gpuhub-shadow-probe-evidence
 productionSampling=false
-requestSequence=13
-calibration=verifier-v10-nonstream-generate
+requestSequence=14
+calibration=verifier-v11-nonstream-32-token
