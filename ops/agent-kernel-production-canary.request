@@ -1,9 +1,11 @@
 Agent Kernel V2 production canary request
-requested_at=2026-08-29T19:58:00Z
+requested_at=2026-08-29T20:06:00Z
+attempt=2
 profile=infra/agent-kernel/production-canary.env
 canary_basis_points=25
 preflight_active_basis_points=10000
 required_production_eval=8/8
+production_eval=scripts/eval_agent_runtime.ts
 required_runtime=parallel8,total_context262144,context_per_slot32768,spec_type_ngram-mod
 rollback=restore_exact_previous_worker_environment
 training_eligibility=disabled
