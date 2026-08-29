@@ -16,6 +16,7 @@ export type RuntimeRegistrationConfig = {
   gpuType: string | null;
   gpuCount: number | null;
   vramTotalBytes: number | null;
+  runtimeRole: "combined" | "inference";
 };
 
 function integer(value: string | undefined, fallback: number) {
@@ -64,6 +65,7 @@ export function runtimeRegistrationConfigFromEnvironment(modelPort: number): Run
   const gpuCount = optionalInteger(process.env.DIV3RSA_RUNTIME_GPU_COUNT || process.env.RUNPOD_FAILOVER_GPU_COUNT);
   const vramGb = Number(process.env.DIV3RSA_RUNTIME_VRAM_GB ?? "");
   const targetAliases = aliases();
+  const runtimeRole = process.env.DIV3RSA_RUNTIME_ROLE?.trim().toLowerCase() === "inference" ? "inference" : "combined";
   if (!targetAliases.length) return null;
 
   return {
@@ -78,12 +80,13 @@ export function runtimeRegistrationConfigFromEnvironment(modelPort: number): Run
     region: process.env.DIV3RSA_RUNTIME_REGION?.trim() || null,
     gpuType: process.env.DIV3RSA_RUNTIME_GPU_TYPE?.trim() || null,
     gpuCount,
-    vramTotalBytes: Number.isFinite(vramGb) && vramGb >= 0 ? Math.round(vramGb * 1024 ** 3) : null
+    vramTotalBytes: Number.isFinite(vramGb) && vramGb >= 0 ? Math.round(vramGb * 1024 ** 3) : null,
+    runtimeRole
   };
 }
 
 function rolloutMissing(error: RpcError | null) {
-  return Boolean(error && (error.code === "PGRST202" || /runtime_(register_worker|worker_heartbeat)|could not find the function/i.test(error.message ?? "")));
+  return Boolean(error && (error.code === "PGRST202" || /runtime_(register_worker|worker_heartbeat|mark_worker_health)|could not find the function/i.test(error.message ?? "")));
 }
 
 export class RuntimeRegistration {
@@ -94,6 +97,16 @@ export class RuntimeRegistration {
     private readonly config: RuntimeRegistrationConfig,
     private readonly workerId: string
   ) {}
+
+  private metadata(extra: Record<string, unknown> = {}) {
+    return {
+      source: this.config.runtimeRole === "inference" ? "inference-node-registrar" : "agent-worker",
+      workerId: this.workerId,
+      runtimeRole: this.config.runtimeRole,
+      runtimeContract: "div3rsa-runtime-v1",
+      ...extra
+    };
+  }
 
   async sync() {
     if (!this.registered) {
@@ -113,7 +126,7 @@ export class RuntimeRegistration {
           target_gpu_count: this.config.gpuCount,
           target_vram_total_bytes: this.config.vramTotalBytes,
           target_route_priority: 100,
-          target_metadata: { source: "agent-worker", workerId: this.workerId, runtimeContract: "div3rsa-runtime-v1" }
+          target_metadata: this.metadata()
         });
         if (error) {
           if (rolloutMissing(error)) return false;
@@ -126,7 +139,7 @@ export class RuntimeRegistration {
     const { data, error } = await this.client.rpc<boolean>("runtime_worker_heartbeat", {
       target_provider_key: this.config.providerKey,
       target_external_worker_id: this.config.externalId,
-      target_metadata: { workerId: this.workerId, runtimeContract: "div3rsa-runtime-v1" }
+      target_metadata: this.metadata()
     });
     if (error) {
       if (rolloutMissing(error)) {
@@ -140,5 +153,21 @@ export class RuntimeRegistration {
       return false;
     }
     return true;
+  }
+
+  async drain(reason = "runtime_shutdown"): Promise<boolean> {
+    const { data, error } = await this.client.rpc<boolean>("runtime_mark_worker_health", {
+      target_provider_key: this.config.providerKey,
+      target_external_worker_id: this.config.externalId,
+      target_state: "draining",
+      target_last_error_code: null,
+      target_metadata: this.metadata({ drainReason: reason })
+    });
+    this.registered = false;
+    if (error) {
+      if (rolloutMissing(error)) return false;
+      throw new Error(`runtime_drain_failed:${error.code ?? "unknown"}`);
+    }
+    return data === true;
   }
 }
