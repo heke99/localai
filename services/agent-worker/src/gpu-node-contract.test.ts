@@ -7,6 +7,7 @@ const portableProfile = readFileSync("infra/gpu/runtime-profile.env", "utf8");
 const productionProfile = readFileSync("infra/runtime/gpuhub-production-profile.env", "utf8");
 const modelFetcher = readFileSync("scripts/fetch_qwen_v3_q8.sh", "utf8");
 const bootstrap = readFileSync("infra/gpu/bootstrap-node.sh", "utf8");
+const baseBootstrap = readFileSync("infra/runtime/bootstrap-host.sh", "utf8");
 const verify = readFileSync("infra/gpu/verify-node.sh", "utf8");
 
 function envValue(text: string, key: string) {
@@ -48,9 +49,25 @@ describe("portable GPU node contract", () => {
     expect(hardware.profiles["l40s-48g"].modelQuantization).toBeNull();
   });
 
-  it("requires exact source revision, artifact verification and production eval before equivalence", () => {
+  it("starts a blank GPU as inference-only from its first systemd process", () => {
+    const roleExport = bootstrap.indexOf("export DIV3RSA_RUNTIME_ROLE=inference");
+    const baseBootstrapCall = bootstrap.indexOf('infra/runtime/bootstrap-host.sh');
+    expect(roleExport).toBeGreaterThan(-1);
+    expect(baseBootstrapCall).toBeGreaterThan(roleExport);
+    expect(baseBootstrap).toContain('case "$runtime_role" in');
+    expect(baseBootstrap).toContain('start_script="${REPO_DIR}/infra/gpu/start-inference-node.sh"');
+    expect(baseBootstrap).toContain('Environment=DIV3RSA_RUNTIME_ROLE=${runtime_role}');
+    expect(bootstrap).not.toContain("20-inference-only.conf");
+    expect(bootstrap).toContain("combined_runtime_start_path_present");
+  });
+
+  it("requires exact source revision, artifact verification and authoritative 8/8 eval before equivalence", () => {
     expect(bootstrap).toContain("DIV3RSA_RUNTIME_GIT_REF_must_be_exact_40_hex_sha");
     expect(bootstrap).toContain("verify-node.sh");
+    expect(bootstrap).toContain("scripts/eval_agent_runtime.ts");
+    expect(bootstrap).not.toContain("eval_agent_production.mjs");
+    expect(bootstrap).toContain("data.get('cases') != 8");
+    expect(bootstrap).toContain("data.get('passed') != 8");
     expect(bootstrap).toContain("production_eval_gate_blocked");
     expect(verify).toContain("model_sha256_mismatch");
     expect(verify).toContain("llama_revision_mismatch");
