@@ -1,0 +1,152 @@
+name: Control Plane Cutover
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Exact main commit SHA to deploy"
+        required: true
+        type: string
+      disable_legacy_gpu_worker:
+        description: "After CPU preflight succeeds, stop the legacy agent worker on GPUHub"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-plane-cutover
+  cancel-in-progress: false
+
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CONTROL_PLANE_SSH_HOST: ${{ secrets.CONTROL_PLANE_SSH_HOST }}
+      CONTROL_PLANE_SSH_PORT: ${{ secrets.CONTROL_PLANE_SSH_PORT }}
+      CONTROL_PLANE_SSH_USER: ${{ secrets.CONTROL_PLANE_SSH_USER }}
+      CONTROL_PLANE_SSH_PRIVATE_KEY: ${{ secrets.CONTROL_PLANE_SSH_PRIVATE_KEY }}
+      CONTROL_PLANE_SSH_KNOWN_HOSTS: ${{ secrets.CONTROL_PLANE_SSH_KNOWN_HOSTS }}
+      GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
+      GPUHUB_SSH_PORT: ${{ secrets.GPUHUB_SSH_PORT }}
+      GPUHUB_SSH_USER: ${{ secrets.GPUHUB_SSH_USER }}
+      GPUHUB_SSH_PRIVATE_KEY: ${{ secrets.GPUHUB_SSH_PRIVATE_KEY }}
+      GPUHUB_SSH_KNOWN_HOSTS: ${{ secrets.GPUHUB_SSH_KNOWN_HOSTS }}
+    steps:
+      - name: Validate exact main revision
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          revision='${{ inputs.revision }}'
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "revision must be an exact 40-char SHA" >&2; exit 1; }
+          main_sha="$(git ls-remote https://github.com/${GITHUB_REPOSITORY}.git refs/heads/main | awk '{print $1}')"
+          [[ "$revision" == "$main_sha" ]] || { echo "cutover revision must equal current main: requested=$revision main=$main_sha" >&2; exit 1; }
+
+      - name: Validate control-plane secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in CONTROL_PLANE_SSH_HOST CONTROL_PLANE_SSH_PORT CONTROL_PLANE_SSH_USER CONTROL_PLANE_SSH_PRIVATE_KEY CONTROL_PLANE_SSH_KNOWN_HOSTS; do
+            [[ -n "${!name:-}" ]] || { echo "Missing required control-plane secret: $name" >&2; exit 1; }
+          done
+          if [[ '${{ inputs.disable_legacy_gpu_worker }}' == 'true' ]]; then
+            for name in GPUHUB_SSH_HOST GPUHUB_SSH_PORT GPUHUB_SSH_USER GPUHUB_SSH_PRIVATE_KEY GPUHUB_SSH_KNOWN_HOSTS; do
+              [[ -n "${!name:-}" ]] || { echo "Missing required GPU rollback/cutover secret: $name" >&2; exit 1; }
+            done
+          fi
+
+      - name: Configure pinned SSH identities
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$CONTROL_PLANE_SSH_PRIVATE_KEY" > "$HOME/.ssh/control_plane"
+          printf '%s\n' "$CONTROL_PLANE_SSH_KNOWN_HOSTS" > "$HOME/.ssh/control_plane_known_hosts"
+          chmod 600 "$HOME/.ssh/control_plane" "$HOME/.ssh/control_plane_known_hosts"
+          if [[ '${{ inputs.disable_legacy_gpu_worker }}' == 'true' ]]; then
+            printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" > "$HOME/.ssh/gpuhub"
+            printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/gpuhub_known_hosts"
+            chmod 600 "$HOME/.ssh/gpuhub" "$HOME/.ssh/gpuhub_known_hosts"
+          fi
+
+      - name: Bootstrap exact CPU control plane and prove readiness
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          revision='${{ inputs.revision }}'
+          cp_opts=(-i "$HOME/.ssh/control_plane" -p "$CONTROL_PLANE_SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/control_plane_known_hosts")
+          remote="${CONTROL_PLANE_SSH_USER}@${CONTROL_PLANE_SSH_HOST}"
+          ssh "${cp_opts[@]}" "$remote" "bash -s -- '$revision'" <<'REMOTE'
+          set -Eeuo pipefail
+          revision="$1"
+          export DIV3RSA_RUNTIME_GIT_REF="$revision"
+          export DIV3RSA_CONTROL_PLANE_ROOT="${DIV3RSA_CONTROL_PLANE_ROOT:-/opt/div3rsa/localai}"
+          env_file="$DIV3RSA_CONTROL_PLANE_ROOT/secrets/control-plane.env"
+          [[ -f "$env_file" ]] || { echo "Pre-provisioned control-plane env is missing: $env_file" >&2; exit 1; }
+          repo="$DIV3RSA_CONTROL_PLANE_ROOT/app"
+          if [[ ! -d "$repo/.git" ]]; then
+            mkdir -p "$DIV3RSA_CONTROL_PLANE_ROOT"
+            git clone https://github.com/heke99/localai.git "$repo"
+          fi
+          git -C "$repo" fetch --prune origin main
+          git -C "$repo" cat-file -e "${revision}^{commit}"
+          git -C "$repo" reset --hard "$revision"
+          [[ "$(git -C "$repo" rev-parse HEAD)" == "$revision" ]]
+          chmod +x "$repo/infra/control-plane/bootstrap-worker.sh" "$repo/infra/control-plane/preflight-worker.sh"
+          bash "$repo/infra/control-plane/bootstrap-worker.sh"
+          bash "$repo/infra/control-plane/preflight-worker.sh"
+          REMOTE
+
+      - name: Stop legacy GPU-host worker only after CPU is proven
+        if: ${{ inputs.disable_legacy_gpu_worker }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gpu_opts=(-i "$HOME/.ssh/gpuhub" -p "$GPUHUB_SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/gpuhub_known_hosts")
+          gpu="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
+          cp_opts=(-i "$HOME/.ssh/control_plane" -p "$CONTROL_PLANE_SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/control_plane_known_hosts")
+          cpu="${CONTROL_PLANE_SSH_USER}@${CONTROL_PLANE_SSH_HOST}"
+          legacy_stopped=0
+          rollback() {
+            status=$?
+            trap - EXIT
+            if [[ "$legacy_stopped" == "1" && "$status" != "0" ]]; then
+              echo "Cutover verification failed; restoring legacy GPU-host worker" >&2
+              ssh "${gpu_opts[@]}" "$gpu" 'bash -s' <<'REMOTE' || true
+              set -Eeuo pipefail
+              root=/root/autodl-tmp/localai
+              env_file="$root/secrets/gpuhub-worker.env"
+              node_bin="$root/runtime/node-current/bin/node"
+              app="$root/app"
+              screen -S localai-agent -X quit >/dev/null 2>&1 || true
+              screen -dmS localai-agent bash -lc "set -Eeuo pipefail; export PATH='$(dirname "$node_bin")':\$PATH; set -a; source '$env_file'; set +a; cd '$app'; exec node --experimental-transform-types --import ./infra/runpod/native-typescript-register.mjs services/agent-worker/src/main.ts >>'$root/logs/agent-worker.log' 2>&1"
+              sleep 4
+              screen -list | grep -F '.localai-agent' >/dev/null
+              REMOTE
+            fi
+            exit "$status"
+          }
+          trap rollback EXIT
+
+          ssh "${gpu_opts[@]}" "$gpu" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          screen -S localai-agent -X quit >/dev/null 2>&1 || true
+          sleep 2
+          if screen -list | grep -F '.localai-agent' >/dev/null; then
+            echo "legacy GPU-host worker is still running" >&2
+            exit 1
+          fi
+          pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf' >/dev/null
+          curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null
+          REMOTE
+          legacy_stopped=1
+
+          # Re-prove the CPU worker and registry route after legacy queue processing is gone.
+          ssh "${cp_opts[@]}" "$cpu" 'bash /opt/div3rsa/localai/app/infra/control-plane/preflight-worker.sh'
+          legacy_stopped=0
+          trap - EXIT
+          echo "CONTROL_PLANE_CUTOVER_COMPLETE revision=${{ inputs.revision }} legacyGpuWorker=stopped inferenceNode=healthy"
