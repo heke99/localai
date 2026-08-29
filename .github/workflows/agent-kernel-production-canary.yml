@@ -1,0 +1,218 @@
+name: Agent Kernel Production Canary
+
+on:
+  workflow_run:
+    workflows: ["Deploy GPUHub"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpuhub-production
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote tiny Agent Kernel V2 canary
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production-gpuhub
+    env:
+      GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
+      GPUHUB_SSH_PORT: ${{ secrets.GPUHUB_SSH_PORT }}
+      GPUHUB_SSH_USER: ${{ secrets.GPUHUB_SSH_USER }}
+      GPUHUB_SSH_PRIVATE_KEY: ${{ secrets.GPUHUB_SSH_PRIVATE_KEY }}
+      GPUHUB_SSH_KNOWN_HOSTS: ${{ secrets.GPUHUB_SSH_KNOWN_HOSTS }}
+    steps:
+      - name: Checkout deployed revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Detect explicit canary request
+        id: requested
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          run=false
+          if git rev-parse HEAD^ >/dev/null 2>&1 && git diff --name-only HEAD^ HEAD -- | grep -Fxq 'ops/agent-kernel-production-canary.request'; then
+            run=true
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "Agent Kernel production canary requested: $run"
+
+      - name: Validate production secrets
+        if: steps.requested.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in GPUHUB_SSH_HOST GPUHUB_SSH_PORT GPUHUB_SSH_USER GPUHUB_SSH_PRIVATE_KEY GPUHUB_SSH_KNOWN_HOSTS; do
+            [[ -n "${!name:-}" ]] || { echo "Missing required production secret: ${name}" >&2; exit 1; }
+          done
+
+      - name: Configure pinned SSH host identity
+        if: steps.requested.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Promote with automatic legacy rollback
+        if: steps.requested.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          expected_sha='${{ github.event.workflow_run.head_sha }}'
+          remote="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
+          ssh_opts=(
+            -i "$HOME/.ssh/id_ed25519"
+            -p "$GPUHUB_SSH_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=4
+          )
+
+          ssh "${ssh_opts[@]}" "$remote" "bash -s -- '$expected_sha'" <<'REMOTE'
+          set -Eeuo pipefail
+          expected_sha="$1"
+          root_dir="/root/autodl-tmp/localai"
+          app_dir="$root_dir/app"
+          env_file="$root_dir/secrets/gpuhub-worker.env"
+          node_bin="$root_dir/runtime/node-current/bin/node"
+          profile_file="$app_dir/infra/runtime/gpuhub-production-profile.env"
+          canary_file="$app_dir/infra/agent-kernel/production-canary.env"
+          model_port=6006
+          screen_name=localai-agent
+          backup="$(mktemp "$root_dir/secrets/gpuhub-worker.env.canary.XXXXXX")"
+          cp -a "$env_file" "$backup"
+          chmod 600 "$backup"
+          promoted=0
+
+          start_worker() {
+            screen -S "$screen_name" -X quit >/dev/null 2>&1 || true
+            screen -dmS "$screen_name" bash -lc "
+              set -Eeuo pipefail
+              export PATH='$(dirname "$node_bin")':\$PATH
+              set -a
+              source '$env_file'
+              set +a
+              cd '$app_dir'
+              exec node --experimental-transform-types --import ./infra/runpod/native-typescript-register.mjs services/agent-worker/src/main.ts >>'$root_dir/logs/agent-worker.log' 2>&1
+            "
+          }
+
+          verify_p8() {
+            # shellcheck disable=SC1090
+            source "$profile_file"
+            [[ "$DIV3RSA_GPUHUB_PRODUCTION_PARALLEL" == "8" ]]
+            [[ "$DIV3RSA_GPUHUB_PRODUCTION_TOTAL_CONTEXT" == "262144" ]]
+            [[ "$DIV3RSA_GPUHUB_PRODUCTION_CONTEXT_PER_SLOT" == "32768" ]]
+            [[ "${DIV3RSA_GPUHUB_PRODUCTION_SPEC_TYPE:-none}" == "ngram-mod" ]]
+            process="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
+            [[ "$process" =~ --parallel[=\ ]+8 ]]
+            [[ "$process" =~ --ctx-size[=\ ]+262144 ]]
+            [[ "$process" == *"--spec-type ngram-mod"* ]]
+            curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${model_port}/health" >/dev/null
+          }
+
+          rollback() {
+            status=$?
+            trap - EXIT
+            if [[ "$promoted" == "1" ]]; then
+              echo "Agent Kernel canary failed; restoring exact previous worker environment" >&2
+              cp -a "$backup" "$env_file"
+              chmod 600 "$env_file"
+              start_worker
+              sleep 4
+              screen -list | grep -F ".${screen_name}" >/dev/null || true
+              verify_p8 || true
+            fi
+            rm -f "$backup"
+            exit "$status"
+          }
+          trap rollback EXIT
+
+          [[ -x "$node_bin" && -f "$env_file" && -f "$profile_file" && -f "$canary_file" ]] || { echo "canary prerequisites missing" >&2; exit 1; }
+          cd "$app_dir"
+          current_sha="$(git rev-parse HEAD)"
+          [[ "$current_sha" == "$expected_sha" ]] || { echo "wrong deployed revision: expected=$expected_sha current=$current_sha" >&2; exit 1; }
+          verify_p8
+          screen -list | grep -F ".${screen_name}" >/dev/null
+
+          # Exercise the active path deterministically before touching the production worker.
+          set -a
+          # shellcheck disable=SC1090
+          source "$env_file"
+          # shellcheck disable=SC1090
+          source "$canary_file"
+          set +a
+          export DIV3RSA_AGENT_KERNEL_V2_ACTIVE_CANARY_BPS=10000
+          export DIV3RSA_VERIFIED_MEMORY_ENABLED=0
+          export DIV3RSA_VERIFIED_LEARNING_ENABLED=0
+          export DIV3RSA_CHECKPOINT_REWIND_ENABLED=0
+          export DIV3RSA_REPOSITORY_ROOT="$app_dir"
+          echo "=== ISOLATED 100% ACTIVE KERNEL EVAL ==="
+          "$node_bin" --experimental-transform-types --import ./infra/runpod/native-typescript-register.mjs scripts/eval_agent_runtime.ts
+          verify_p8
+
+          # Apply the source-controlled tiny canary profile without copying secrets.
+          python3 - "$env_file" "$canary_file" <<'PY'
+          from pathlib import Path
+          import re, shlex, sys
+          env_path=Path(sys.argv[1]); profile_path=Path(sys.argv[2])
+          text=env_path.read_text(encoding='utf-8')
+          for raw in profile_path.read_text(encoding='utf-8').splitlines():
+              raw=raw.strip()
+              if not raw or raw.startswith('#'): continue
+              key,value=raw.split('=',1)
+              line=f"export {key}={shlex.quote(value)}"
+              pattern=re.compile(rf"^(?:export\s+)?{re.escape(key)}=.*$", re.M)
+              text=pattern.sub(line,text) if pattern.search(text) else text.rstrip()+"\n"+line+"\n"
+          env_path.write_text(text,encoding='utf-8')
+          PY
+          chmod 600 "$env_file"
+          promoted=1
+          start_worker
+          sleep 5
+          screen -list | grep -F ".${screen_name}" >/dev/null
+          verify_p8
+
+          # Startup log must prove the exact tiny canary and auxiliary gates loaded.
+          tail -n 160 "$root_dir/logs/agent-worker.log" | grep -F 'agentKernel=active-25bps' >/dev/null
+          tail -n 160 "$root_dir/logs/agent-worker.log" | grep -F 'dynamicToolDiscovery=enabled' >/dev/null
+          tail -n 160 "$root_dir/logs/agent-worker.log" | grep -F 'checkpointRewind=enabled' >/dev/null
+          tail -n 160 "$root_dir/logs/agent-worker.log" | grep -F 'verifiedMemory=enabled' >/dev/null
+          tail -n 160 "$root_dir/logs/agent-worker.log" | grep -F 'verifiedLearning=enabled' >/dev/null
+          tail -n 160 "$root_dir/logs/agent-worker.log" | grep -F 'trainingEligibility=disabled' >/dev/null
+
+          # Production-facing 8/8 gate remains authoritative after restart.
+          set -a
+          # shellcheck disable=SC1090
+          source "$env_file"
+          set +a
+          eval_json="$("$node_bin" scripts/eval_agent_production.mjs --json)"
+          CANARY_EVAL="$eval_json" python3 - <<'PY'
+          import json,os
+          raw=os.environ['CANARY_EVAL']; start=raw.find('{')
+          if start < 0: raise SystemExit(1)
+          data=json.loads(raw[start:])
+          if data.get('passed') != 8 or data.get('passRate') != 1 or data.get('allowed') is not True or data.get('liveOracleFailures') != []:
+              raise SystemExit(1)
+          PY
+          verify_p8
+
+          promoted=0
+          rm -f "$backup"
+          trap - EXIT
+          echo "AGENT_KERNEL_CANARY_PROMOTED bps=25 sha=$expected_sha p8=8 ctx=262144 spec=ngram-mod"
+          REMOTE
