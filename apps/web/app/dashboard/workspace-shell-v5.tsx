@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { WorkspaceShellV4 } from "./workspace-shell-v4";
 import styles from "./workspace-shell-v3.module.css";
 
@@ -28,6 +28,7 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
   const prewarmFailures = useRef(0);
   const lastSuccessfulPrewarmAt = useRef(0);
   const deleteRetrying = useRef(false);
+  const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -134,9 +135,20 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
       });
     }
 
+    function closeMobileHistoryAfterSelection(event: MouseEvent) {
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest(`.${styles.chatRow}, .${styles.projectOpen}, .${styles.emptyRow}`)) setMobileHistoryOpen(false);
+    }
+
+    function closeMobileHistoryOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setMobileHistoryOpen(false);
+    }
+
     document.addEventListener("input", schedulePrewarm, true);
     document.addEventListener("focusin", schedulePrewarm, true);
     document.addEventListener("click", retryDeleteAfterAutomaticCancel, true);
+    document.addEventListener("click", closeMobileHistoryAfterSelection, true);
+    document.addEventListener("keydown", closeMobileHistoryOnEscape, true);
 
     // Start warming as soon as a chat composer is rendered. This gives the GPU
     // boot process a head start before the user has finished typing a prompt.
@@ -147,6 +159,8 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
       document.removeEventListener("input", schedulePrewarm, true);
       document.removeEventListener("focusin", schedulePrewarm, true);
       document.removeEventListener("click", retryDeleteAfterAutomaticCancel, true);
+      document.removeEventListener("click", closeMobileHistoryAfterSelection, true);
+      document.removeEventListener("keydown", closeMobileHistoryOnEscape, true);
       if (prewarmTimer.current !== null) window.clearTimeout(prewarmTimer.current);
       if (prewarmRetryTimer.current !== null) window.clearTimeout(prewarmRetryTimer.current);
     };
@@ -210,14 +224,64 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
     .${styles.runBar}:has(.${styles.runDotIdle}):not(:has(.${styles.runError})) {
       display: none !important;
     }
-    @media (max-width: 700px) {
+    .div3rsa-mobile-history-toggle {
+      display: none;
+    }
+    @media (max-width: 780px) {
+      [data-mobile-ui] .${styles.nav} {
+        justify-content: flex-start !important;
+        overflow-x: auto;
+        overscroll-behavior-x: contain;
+        scrollbar-width: none;
+      }
+      [data-mobile-ui] .${styles.nav}::-webkit-scrollbar { display: none; }
+      [data-mobile-ui] .${styles.navButton} { flex: 0 0 46px; min-width: 46px; }
+      [data-mobile-ui] .${styles.composerArea} { bottom: 62px; }
+      [data-mobile-ui]:has(.${styles.chatSidebar}) > .div3rsa-mobile-history-toggle {
+        display: inline-flex;
+        position: fixed;
+        right: 12px;
+        bottom: 72px;
+        z-index: 47;
+        min-height: 38px;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid #34373e;
+        border-radius: 999px;
+        padding: 0 13px;
+        background: #181a1e;
+        color: #e2e3e5;
+        box-shadow: 0 10px 28px rgba(0,0,0,.35);
+      }
+      [data-mobile-history="open"] .${styles.chatSidebar} {
+        position: fixed !important;
+        inset: 0 0 62px 0;
+        z-index: 46;
+        height: auto !important;
+        display: grid !important;
+        grid-template-rows: auto minmax(0,1fr);
+        background: #101114;
+        border: 0;
+      }
+      [data-mobile-history="open"] .${styles.sidebarScroll} {
+        display: block !important;
+        overflow-y: auto;
+        padding-bottom: 84px;
+      }
       .${styles.userMessage} { width: 88%; }
       .${styles.assistantMessage} { width: 96%; }
     }
   `;
 
-  return <>
+  return <div data-mobile-ui data-mobile-history={mobileHistoryOpen ? "open" : "closed"}>
     <WorkspaceShellV4 {...props} />
+    <button
+      type="button"
+      className="div3rsa-mobile-history-toggle"
+      aria-expanded={mobileHistoryOpen}
+      aria-label={mobileHistoryOpen ? "Stäng chatthistorik" : "Öppna chatthistorik"}
+      onClick={() => setMobileHistoryOpen((open) => !open)}
+    >{mobileHistoryOpen ? "Stäng" : "Chattar"}</button>
     <style>{statusStyles}</style>
-  </>;
+  </div>;
 }
