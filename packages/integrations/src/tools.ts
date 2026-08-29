@@ -17,6 +17,7 @@ export interface IntegrationToolDefinition extends ModelToolDefinition {
   provider: IntegrationProvider;
   capability: string;
   risk: IntegrationRisk;
+  internalOnly?: boolean;
 }
 
 const resourceProperty = { type: "string", description: "Selected DIV3RSA integration resource id" };
@@ -24,6 +25,8 @@ const resourceProperty = { type: "string", description: "Selected DIV3RSA integr
 export const INTEGRATION_TOOL_DEFINITIONS: readonly IntegrationToolDefinition[] = [
   { name: "github_read_file", provider: "github", capability: "github.contents.read", risk: "read", description: "Read a file from the selected GitHub repository.", inputSchema: { type: "object", required: ["resourceId", "path"], properties: { resourceId: resourceProperty, path: { type: "string" }, ref: { type: "string" } } } },
   { name: "github_write_file", provider: "github", capability: "github.contents.write", risk: "write", description: "Create or update a file in the selected GitHub repository.", inputSchema: { type: "object", required: ["resourceId", "path", "content", "message", "branch"], properties: { resourceId: resourceProperty, path: { type: "string" }, content: { type: "string" }, message: { type: "string" }, branch: { type: "string" } } } },
+  { name: "github_read_branch_ref", provider: "github", capability: "github.contents.read", risk: "read", internalOnly: true, description: "Internal checkpoint primitive for reading an exact branch head.", inputSchema: { type: "object", required: ["resourceId", "branch"], properties: { resourceId: resourceProperty, branch: { type: "string" } } } },
+  { name: "github_restore_agent_branch", provider: "github", capability: "github.contents.write", risk: "destructive", internalOnly: true, description: "Internal rewind primitive restricted to DIV3RSA-owned agent branches.", inputSchema: { type: "object", required: ["resourceId", "branch", "targetSha"], properties: { resourceId: resourceProperty, branch: { type: "string" }, targetSha: { type: "string" } } } },
   { name: "github_create_branch", provider: "github", capability: "github.branch.create", risk: "write", description: "Create a branch in the selected GitHub repository.", inputSchema: { type: "object", required: ["resourceId", "branch", "baseRef"], properties: { resourceId: resourceProperty, branch: { type: "string" }, baseRef: { type: "string" } } } },
   { name: "github_read_pull_requests", provider: "github", capability: "github.pull_request.read", risk: "read", description: "Read pull requests in the selected GitHub repository.", inputSchema: { type: "object", required: ["resourceId"], properties: { resourceId: resourceProperty, state: { type: "string", enum: ["open", "closed", "all"] } } } },
   { name: "github_create_pull_request", provider: "github", capability: "github.pull_request.create", risk: "write", description: "Create a pull request in the selected GitHub repository.", inputSchema: { type: "object", required: ["resourceId", "title", "head", "base"], properties: { resourceId: resourceProperty, title: { type: "string" }, body: { type: "string" }, head: { type: "string" }, base: { type: "string" } } } },
@@ -44,7 +47,7 @@ export const INTEGRATION_TOOL_DEFINITIONS: readonly IntegrationToolDefinition[] 
 export function integrationToolsForResources(resources: readonly IntegrationResourceContext[], enabledProviders?: ReadonlySet<string>): ModelToolDefinition[] {
   const capabilities = new Set(resources.flatMap((resource) => resource.capabilities));
   return INTEGRATION_TOOL_DEFINITIONS
-    .filter((tool) => capabilities.has(tool.capability) && (!enabledProviders || enabledProviders.has(tool.provider)))
+    .filter((tool) => !tool.internalOnly && capabilities.has(tool.capability) && (!enabledProviders || enabledProviders.has(tool.provider)))
     .map((tool) => {
       const allowedIds = resources.filter((resource) => resource.provider === tool.provider && resource.capabilities.includes(tool.capability)).map((resource) => resource.resourceId);
       const properties = { ...((tool.inputSchema.properties as Record<string, unknown> | undefined) ?? {}), resourceId: { ...resourceProperty, enum: allowedIds } };
