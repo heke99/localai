@@ -6,21 +6,29 @@ import { spawnSync } from "node:child_process";
 
 const root = process.cwd();
 const baseUrl = (process.env.DIV3RSA_INFERENCE_BASE_URL || process.env.QWEN_INFERENCE_BASE_URL || "").replace(/\/+$/, "");
+const runtimeBaseUrl = baseUrl.replace(/\/v1$/, "");
 const apiKey = process.env.DIV3RSA_INFERENCE_API_KEY || process.env.QWEN_INFERENCE_API_KEY || "";
 const model = process.env.DIV3RSA_MODEL_RUNTIME_ALIAS || "localai-qwen38-v3-q8";
 const outputPath = resolve(root, process.env.DIV3RSA_PROBE_EVIDENCE_OUTPUT || "artifacts/agent-kernel-v2/gpuhub-probe-evidence.json");
 const casesPath = resolve(root, process.env.DIV3RSA_PROBE_EVAL_CASES || "evals/agent-kernel-shadow-probe-quality.json");
-const concurrency = positiveInteger("DIV3RSA_PROBE_LOAD_CONCURRENCY", 8);
-const requestsPerWorker = positiveInteger("DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER", 16);
+const concurrency = positiveInteger("DIV3RSA_PROBE_LOAD_CONCURRENCY", 7);
+const requestsPerWorker = positiveInteger("DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER", 286);
 const foregroundMaxTokens = positiveInteger("DIV3RSA_PROBE_LOAD_MAX_TOKENS", 128);
-const probeMaxTokens = positiveInteger("DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS", 128);
+const probeMaxTokens = positiveInteger("DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS", 32);
 const probeTimeoutMs = positiveInteger("DIV3RSA_PROBE_TIMEOUT_MS", 4_000);
 const requestTimeoutMs = positiveInteger("DIV3RSA_PROBE_FOREGROUND_TIMEOUT_MS", 120_000);
 const sampleBasisPoints = basisPoints("DIV3RSA_PROBE_EVIDENCE_SAMPLE_BPS", 100);
+const runtimeParallel = positiveInteger("DIV3RSA_PROBE_RUNTIME_PARALLEL", 8);
+const capacityWaitMs = positiveInteger("DIV3RSA_PROBE_CAPACITY_WAIT_MS", 30_000);
+const capacityPollMs = positiveInteger("DIV3RSA_PROBE_CAPACITY_POLL_MS", 50);
+const shadowPriorityYieldMs = positiveInteger("DIV3RSA_PROBE_PRIORITY_YIELD_MS", 25);
 
 if (!baseUrl || !apiKey) {
   console.error("Missing DIV3RSA_INFERENCE_BASE_URL or DIV3RSA_INFERENCE_API_KEY");
   process.exit(64);
+}
+if (concurrency >= runtimeParallel) {
+  throw new Error(`shadow_evidence_requires_spare_runtime_slot:concurrency=${concurrency}:parallel=${runtimeParallel}`);
 }
 
 function positiveInteger(name, fallback) {
@@ -61,6 +69,10 @@ function selectedSampleIndexes(total, bps) {
   return indexes;
 }
 
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
 function parseJsonObject(content) {
   const trimmed = content.trim();
   const candidates = [trimmed];
@@ -80,6 +92,108 @@ function parseJsonObject(content) {
   return null;
 }
 
+function authHeaders(extra = {}) {
+  return { authorization: `Bearer ${apiKey}`, ...extra };
+}
+
+function slotIsIdle(slot) {
+  if (!slot || typeof slot !== "object") return false;
+  if (slot.is_processing === false) return true;
+  if (slot.processing === false) return true;
+  if (slot.state === "idle" || slot.status === "idle") return true;
+  if (slot.task_id === -1 && slot.command === "NONE") return true;
+  return false;
+}
+
+function metricSum(text, name) {
+  let total = 0;
+  let found = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const space = line.search(/\s/);
+    if (space <= 0) continue;
+    const metric = line.slice(0, space).replace(/\{.*$/, "");
+    if (metric !== name) continue;
+    const value = Number(line.slice(space).trim().split(/\s+/)[0]);
+    if (!Number.isFinite(value)) continue;
+    total += value;
+    found = true;
+  }
+  return found ? total : null;
+}
+
+async function readRuntimeCapacity() {
+  try {
+    const slotsResponse = await fetch(`${runtimeBaseUrl}/slots`, {
+      headers: authHeaders({ accept: "application/json" }),
+      signal: AbortSignal.timeout(750)
+    });
+    if (slotsResponse.ok) {
+      const payload = await slotsResponse.json();
+      const slots = Array.isArray(payload) ? payload : Array.isArray(payload?.slots) ? payload.slots : null;
+      if (slots?.length) {
+        const freeSlots = slots.filter(slotIsIdle).length;
+        const activeSlots = Math.max(0, slots.length - freeSlots);
+        return { known: true, source: "slots", totalSlots: slots.length, activeSlots, queueDepth: 0, freeSlots };
+      }
+    }
+  } catch {
+    // Fall through to metrics, which is enabled on the production runtime.
+  }
+
+  try {
+    const metricsResponse = await fetch(`${runtimeBaseUrl}/metrics`, {
+      headers: authHeaders({ accept: "text/plain" }),
+      signal: AbortSignal.timeout(750)
+    });
+    if (!metricsResponse.ok) return { known: false, source: "metrics", status: metricsResponse.status };
+    const text = await metricsResponse.text();
+    const activeSlots = metricSum(text, "llamacpp:requests_processing");
+    const queueDepth = metricSum(text, "llamacpp:requests_deferred");
+    if (!Number.isFinite(activeSlots) || !Number.isFinite(queueDepth)) return { known: false, source: "metrics" };
+    return {
+      known: true,
+      source: "metrics",
+      totalSlots: runtimeParallel,
+      activeSlots,
+      queueDepth,
+      freeSlots: Math.max(0, runtimeParallel - activeSlots)
+    };
+  } catch (error) {
+    return { known: false, source: "metrics", error: error instanceof Error ? error.name : "capacity_read_error" };
+  }
+}
+
+async function waitForShadowCapacity(requestId) {
+  const queuedAt = performance.now();
+  const deadline = queuedAt + capacityWaitMs;
+  let observations = 0;
+  let lastState = null;
+  await sleep(shadowPriorityYieldMs);
+  while (performance.now() < deadline) {
+    const state = await readRuntimeCapacity();
+    observations += 1;
+    lastState = state;
+    if (state.known && state.queueDepth === 0 && state.freeSlots >= 1) {
+      await sleep(shadowPriorityYieldMs);
+      const confirmed = await readRuntimeCapacity();
+      observations += 1;
+      lastState = confirmed;
+      if (confirmed.known && confirmed.queueDepth === 0 && confirmed.freeSlots >= 1) {
+        const waitedMs = performance.now() - queuedAt;
+        console.error(`[agent-kernel-capacity] outcome=dispatch requestId=${requestId} waitedMs=${Math.round(waitedMs)} source=${confirmed.source} active=${confirmed.activeSlots} free=${confirmed.freeSlots} deferred=${confirmed.queueDepth}`);
+        return { allowed: true, waitedMs, observations, state: confirmed };
+      }
+    }
+    await sleep(capacityPollMs);
+  }
+
+  const waitedMs = performance.now() - queuedAt;
+  console.error(`[agent-kernel-capacity] outcome=capacity_skipped requestId=${requestId} waitedMs=${Math.round(waitedMs)} observations=${observations} state=${JSON.stringify(lastState)}`);
+  return { allowed: false, waitedMs, observations, state: lastState };
+}
+
 async function chat({ requestId, messages, maxTokens, timeoutMs }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new DOMException("timeout", "AbortError")), timeoutMs);
@@ -91,11 +205,7 @@ async function chat({ requestId, messages, maxTokens, timeoutMs }) {
   try {
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${apiKey}`,
-        "x-request-id": requestId
-      },
+      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}`, "x-request-id": requestId },
       body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature: 0, stream: true, stream_options: { include_usage: true } }),
       signal: controller.signal
     });
@@ -126,22 +236,9 @@ async function chat({ requestId, messages, maxTokens, timeoutMs }) {
     }
     if (!outputTokens && content) outputTokens = Math.max(1, Math.round(content.length / 4));
     const ended = performance.now();
-    return {
-      ok: true,
-      content,
-      outputTokens,
-      ttftMs: firstTokenAt == null ? ended - started : firstTokenAt - started,
-      totalMs: ended - started
-    };
+    return { ok: true, content, outputTokens, ttftMs: firstTokenAt == null ? ended - started : firstTokenAt - started, totalMs: ended - started };
   } catch (error) {
-    return {
-      ok: false,
-      content: "",
-      outputTokens: 0,
-      ttftMs: null,
-      totalMs: performance.now() - started,
-      error: error instanceof Error ? error.message : String(error)
-    };
+    return { ok: false, content: "", outputTokens: 0, ttftMs: null, totalMs: performance.now() - started, error: error instanceof Error ? error.message : String(error) };
   } finally {
     clearTimeout(timer);
   }
@@ -151,65 +248,67 @@ async function runForegroundLoad(label, withProbes) {
   const total = concurrency * requestsPerWorker;
   const sampledIndexes = withProbes ? selectedSampleIndexes(total, sampleBasisPoints) : new Set();
   let next = 0;
-  let probeActive = false;
   const foreground = [];
   const probeDurations = [];
+  const capacityWaitDurations = [];
   let probeErrors = 0;
   let probeSkipped = 0;
   let probeCalls = 0;
   let probeOutputTokens = 0;
   const probeTasks = [];
+  let shadowTail = Promise.resolve();
 
-  const maybeProbe = (runIndex) => {
+  const enqueueProbe = (runIndex) => {
     if (!withProbes || !sampledIndexes.has(runIndex)) return;
-    if (probeActive) {
-      probeSkipped += 1;
-      return;
-    }
-    probeActive = true;
-    const task = (async () => {
-      const started = performance.now();
-      try {
-        const result = await chat({
-          requestId: `agent-kernel-evidence-probe-${label}-${runIndex}-${crypto.randomUUID()}`,
-          maxTokens: probeMaxTokens,
-          timeoutMs: probeTimeoutMs,
-          messages: [
-            { role: "system", content: "You are an independent tool-free shadow verifier. Return exactly one JSON object and nothing else: {\"score\":0-100,\"passed\":boolean,\"reasonCode\":\"short_code\"}. Missing requested proof must fail." },
-            { role: "user", content: "Evaluate this intentionally generic baseline answer for completeness: The implementation should validate inputs, handle errors, and include tests." }
-          ]
-        });
-        probeCalls += 1;
-        probeDurations.push(performance.now() - started);
-        probeOutputTokens += result.outputTokens;
-        if (!result.ok) probeErrors += 1;
-        else {
-          const parsed = parseJsonObject(result.content);
-          if (!parsed || typeof parsed.score !== "number" || typeof parsed.passed !== "boolean" || typeof parsed.reasonCode !== "string") probeErrors += 1;
-        }
-      } finally {
-        probeActive = false;
+    const requestId = `agent-kernel-evidence-probe-${label}-${runIndex}-${crypto.randomUUID()}`;
+    const task = shadowTail.then(async () => {
+      const capacity = await waitForShadowCapacity(requestId);
+      capacityWaitDurations.push(capacity.waitedMs);
+      if (!capacity.allowed) {
+        probeSkipped += 1;
+        return;
       }
-    })();
+
+      const result = await chat({
+        requestId,
+        maxTokens: probeMaxTokens,
+        timeoutMs: probeTimeoutMs,
+        messages: [
+          { role: "system", content: "You are an independent tool-free shadow verifier. Return exactly one JSON object and nothing else: {\"score\":0-100,\"passed\":boolean,\"reasonCode\":\"short_code\"}. Missing requested proof must fail." },
+          { role: "user", content: "Evaluate this intentionally generic baseline answer for completeness: The implementation should validate inputs, handle errors, and include tests." }
+        ]
+      });
+      probeCalls += 1;
+      probeDurations.push(result.totalMs);
+      probeOutputTokens += result.outputTokens;
+      if (!result.ok) probeErrors += 1;
+      else {
+        const parsed = parseJsonObject(result.content);
+        if (!parsed || typeof parsed.score !== "number" || typeof parsed.passed !== "boolean" || typeof parsed.reasonCode !== "string") probeErrors += 1;
+      }
+    });
+    shadowTail = task.catch(() => undefined);
     probeTasks.push(task);
   };
 
-  const started = performance.now();
+  const foregroundStarted = performance.now();
   await Promise.all(Array.from({ length: concurrency }, async (_, worker) => {
     while (true) {
       const index = next++;
       if (index >= total) return;
-      maybeProbe(index);
-      foreground.push(await chat({
+      const result = await chat({
         requestId: `agent-kernel-evidence-${label}-${worker}-${index}-${crypto.randomUUID()}`,
         maxTokens: foregroundMaxTokens,
         timeoutMs: requestTimeoutMs,
         messages: [{ role: "user", content: "Implement a TypeScript function that groups records by key, explain complexity briefly, and include one edge-case test." }]
-      }));
+      });
+      foreground.push(result);
+      enqueueProbe(index);
     }
   }));
+  const foregroundWallDurationMs = performance.now() - foregroundStarted;
   await Promise.all(probeTasks);
-  const wallDurationMs = performance.now() - started;
+  const evidenceWallDurationMs = performance.now() - foregroundStarted;
   const successes = foreground.filter((sample) => sample.ok);
   if (successes.length !== foreground.length) throw new Error(`foreground_load_errors:${foreground.length - successes.length}`);
   const decodedTokens = successes.reduce((sum, sample) => sum + sample.outputTokens, 0);
@@ -219,8 +318,9 @@ async function runForegroundLoad(label, withProbes) {
     sampleBasisPoints,
     actualSampleRate: total > 0 ? sampledRuns / total : 0,
     p95TtftMs: finiteOrThrow(percentile(successes.map((sample) => sample.ttftMs), 95), `${label}_p95_ttft`),
-    aggregateTokensPerSecond: finiteOrThrow(decodedTokens / (wallDurationMs / 1000), `${label}_throughput`),
-    wallDurationMs,
+    aggregateTokensPerSecond: finiteOrThrow(decodedTokens / (foregroundWallDurationMs / 1000), `${label}_throughput`),
+    foregroundWallDurationMs,
+    evidenceWallDurationMs,
     probe: {
       sampledRuns: withProbes ? sampledRuns : 0,
       completedRuns: withProbes ? Math.max(0, sampledRuns - probeSkipped - probeErrors) : 0,
@@ -228,7 +328,8 @@ async function runForegroundLoad(label, withProbes) {
       probeErrors,
       totalProbeCalls: probeCalls,
       totalProbeOutputTokens: probeOutputTokens,
-      p95ProbeDurationMs: withProbes && probeDurations.length ? finiteOrThrow(percentile(probeDurations, 95), "probe_p95_duration") : 0
+      p95ProbeDurationMs: withProbes && probeDurations.length ? finiteOrThrow(percentile(probeDurations, 95), "probe_p95_duration") : 0,
+      p95CapacityWaitMs: withProbes && capacityWaitDurations.length ? finiteOrThrow(percentile(capacityWaitDurations, 95), "capacity_wait_p95") : 0
     }
   };
 }
@@ -239,9 +340,7 @@ function parseVerifier(content) {
   const score = typeof parsed.score === "number" && Number.isFinite(parsed.score) ? Math.max(0, Math.min(100, Math.round(parsed.score))) : null;
   const passed = typeof parsed.passed === "boolean" ? parsed.passed : null;
   const reasonCode = typeof parsed.reasonCode === "string" && /^[a-z0-9_-]{1,80}$/i.test(parsed.reasonCode) ? parsed.reasonCode : "verifier_output_unparsed";
-  if (score == null || passed == null || reasonCode === "verifier_output_unparsed") {
-    return { verifierScore: null, verifierPassed: null, reasonCode: "verifier_output_unparsed" };
-  }
+  if (score == null || passed == null || reasonCode === "verifier_output_unparsed") return { verifierScore: null, verifierPassed: null, reasonCode: "verifier_output_unparsed" };
   return { verifierScore: score, verifierPassed: passed, reasonCode };
 }
 
@@ -276,15 +375,15 @@ async function runQualityEval() {
   return results;
 }
 
-console.error(`[agent-kernel-evidence] endpoint=${baseUrl} model=${model} concurrency=${concurrency} requestsPerWorker=${requestsPerWorker} sampleBps=${sampleBasisPoints}`);
-const health = await fetch(`${baseUrl.replace(/\/v1$/, "")}/health`, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(2_000) }).catch(() => null);
+console.error(`[agent-kernel-evidence] endpoint=${baseUrl} model=${model} concurrency=${concurrency} runtimeParallel=${runtimeParallel} requestsPerWorker=${requestsPerWorker} sampleBps=${sampleBasisPoints}`);
+const health = await fetch(`${runtimeBaseUrl}/health`, { headers: authHeaders(), signal: AbortSignal.timeout(2_000) }).catch(() => null);
 if (health && !health.ok && health.status !== 404) throw new Error(`model_health_failed:${health.status}`);
 
 console.error("[agent-kernel-evidence] running quality verifier suite");
 const qualityCases = await runQualityEval();
 console.error("[agent-kernel-evidence] running baseline foreground load");
 const baseline = await runForegroundLoad("baseline", false);
-console.error("[agent-kernel-evidence] running foreground + sampled bounded probe load");
+console.error("[agent-kernel-evidence] running foreground + capacity-aware sampled shadow load");
 const loaded = await runForegroundLoad("loaded", true);
 
 const evidence = {
@@ -294,10 +393,14 @@ const evidence = {
     baseUrl: new URL(baseUrl).origin,
     model,
     concurrency,
+    runtimeParallel,
     requestsPerWorker,
     foregroundMaxTokens,
     probeMaxTokens,
     probeTimeoutMs,
+    capacityWaitMs,
+    capacityPollMs,
+    shadowPriorityYieldMs,
     sampleBasisPoints,
     actualSampleRate: loaded.actualSampleRate
   },
@@ -309,7 +412,9 @@ const evidence = {
     probeErrors: loaded.probe.probeErrors,
     totalProbeCalls: loaded.probe.totalProbeCalls,
     totalProbeOutputTokens: loaded.probe.totalProbeOutputTokens,
-    wallDurationMs: loaded.wallDurationMs,
+    wallDurationMs: loaded.foregroundWallDurationMs,
+    evidenceWallDurationMs: loaded.evidenceWallDurationMs,
+    p95CapacityWaitMs: loaded.probe.p95CapacityWaitMs,
     p95ProbeDurationMs: loaded.probe.p95ProbeDurationMs,
     baselineP95TtftMs: baseline.p95TtftMs,
     loadedP95TtftMs: loaded.p95TtftMs,
