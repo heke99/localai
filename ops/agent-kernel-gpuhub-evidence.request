@@ -2,5 +2,5 @@ schemaVersion=1
 requestedAt=2026-08-29
 purpose=agent-kernel-v2-gpuhub-shadow-probe-evidence
 productionSampling=false
-requestSequence=15
-calibration=verifier-v12-capacity-aware-statistical-evidence
+requestSequence=16
+calibration=verifier-v13-fast-verdict-capacity-aware-statistical-evidence
