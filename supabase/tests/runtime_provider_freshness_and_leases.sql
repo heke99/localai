@@ -23,7 +23,8 @@ begin
 
   if position('last_heartbeat_at' in lower(resolve_definition)) = 0
      or position('90 seconds' in lower(resolve_definition)) = 0
-     or position('provider_kind = ''static''' in lower(resolve_definition)) = 0 then
+     or position('provider_kind = ''static''' in lower(resolve_definition)) <> 0
+     or position('w.state = ''ready''' in lower(resolve_definition)) = 0 then
     raise exception 'runtime route freshness policy is incomplete';
   end if;
 
