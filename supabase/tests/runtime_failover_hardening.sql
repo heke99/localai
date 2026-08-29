@@ -10,7 +10,7 @@ begin
     raise exception 'client roles must not execute runtime stale reaper';
   end if;
 
-  select pg_get_functiondef(p.oid) into route_def
+  select lower(pg_get_functiondef(p.oid)) into route_def
   from pg_catalog.pg_proc p
   join pg_catalog.pg_namespace n on n.oid = p.pronamespace
   where n.nspname='public' and p.proname='runtime_resolve_model_routes'
@@ -20,7 +20,7 @@ begin
   if route_def not like '%w.state = ''ready''%' then
     raise exception 'runtime resolver must route ready workers only';
   end if;
-  if route_def not like '%w.last_heartbeat_at IS NOT NULL%'
+  if route_def not like '%w.last_heartbeat_at is not null%'
      or route_def not like '%w.last_heartbeat_at >=%'
      or (route_def not like '%00:01:30%' and route_def not like '%90 seconds%') then
     raise exception 'runtime resolver must require fresh 90 second heartbeat for all providers';
