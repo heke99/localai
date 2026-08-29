@@ -18,6 +18,7 @@ const dataset: VerifiedLearningDatasetManifest = {
 const baseline = {
   candidateId: "baseline",
   evalVersion: "runtime-eval-v1",
+  evalSetDigest: "e".repeat(64),
   cases: 8,
   passed: 8,
   passRate: 1,
@@ -43,6 +44,7 @@ describe("offline optimization promotion gate", () => {
     const decision = evaluateOptimizationCandidate({ dataset, baseline, candidate, definition });
     expect(decision.allowed).toBe(true);
     expect(decision.reasons).toEqual([]);
+    expect(decision.evalSetDigest).toBe(baseline.evalSetDigest);
     expect(decision.decisionDigest).toMatch(/^[a-f0-9]{64}$/);
   });
 
@@ -50,6 +52,12 @@ describe("offline optimization promotion gate", () => {
     const decision = evaluateOptimizationCandidate({ dataset, baseline, candidate: { ...candidate, liveOracleFailures: ["node-current-release"] }, definition });
     expect(decision.allowed).toBe(false);
     expect(decision.reasons).toContain("live_oracle_failure");
+  });
+
+  it("fails closed if candidate and baseline did not use the exact same frozen eval set", () => {
+    const decision = evaluateOptimizationCandidate({ dataset, baseline, candidate: { ...candidate, evalSetDigest: "f".repeat(64) }, definition });
+    expect(decision.allowed).toBe(false);
+    expect(decision.reasons).toContain("eval_set_digest_mismatch");
   });
 
   it("fails closed on quality regression even when latency improves", () => {
