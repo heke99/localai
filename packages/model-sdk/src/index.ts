@@ -29,6 +29,8 @@ export interface GenerateRequest {
   temperature?: number;
   tools?: ModelToolDefinition[];
   signal?: AbortSignal;
+  /** Disable hidden model thinking for short machine-readable/internal calls only. */
+  disableThinking?: boolean;
 }
 
 export interface GenerateResult {
