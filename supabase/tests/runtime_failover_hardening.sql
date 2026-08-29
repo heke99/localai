@@ -17,14 +17,15 @@ begin
   order by p.oid desc limit 1;
 
   if route_body is null then raise exception 'runtime route resolver missing'; end if;
-  if route_body not like '%w.state = ''ready''%' then
+  if route_body !~ 'w\.state[[:space:]]*=[[:space:]]*''ready''' then
     raise exception 'runtime resolver must route ready workers only';
   end if;
-  if route_body not like '%w.last_heartbeat_at is not null%'
-     or route_body not like '%w.last_heartbeat_at >= now() - interval ''90 seconds''%' then
+  if route_body !~ 'w\.last_heartbeat_at[[:space:]]+is[[:space:]]+not[[:space:]]+null'
+     or route_body !~ 'w\.last_heartbeat_at[[:space:]]*>=[[:space:]]*now\(\)'
+     or (route_body !~ '90[[:space:]]+seconds' and route_body !~ '00:01:30') then
     raise exception 'runtime resolver must require fresh 90 second heartbeat for all providers';
   end if;
-  if route_body like '%provider_kind = ''static''%' then
+  if route_body ~ 'provider_kind[[:space:]]*=[[:space:]]*''static''' then
     raise exception 'static providers must not bypass heartbeat freshness';
   end if;
 end $$;
