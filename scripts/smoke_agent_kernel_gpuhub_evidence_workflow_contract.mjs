@@ -18,7 +18,7 @@ const required = [
   ["--ctx-size[=\\ ]+262144", "p8 context verification missing"],
   ["--spec-type ngram-mod", "speculative profile verification missing"],
   ["DIV3RSA_PROBE_LOAD_CONCURRENCY=7", "evidence must keep seven foreground clients on p8"],
-  ["DIV3RSA_PROBE_FOREGROUND_RESERVE_SLOTS=1", "shadow admission must keep one additional p8 slot available for foreground"],
+  ["DIV3RSA_PROBE_FOREGROUND_RESERVE_SLOTS=4", "shadow admission must require low-load headroom with at most three active p8 slots"],
   ["DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER=286", "evidence must provide roughly twenty samples at one-percent sampling"],
   ["DIV3RSA_PROBE_LOAD_MAX_TOKENS=128", "foreground token budget must stay bounded"],
   ["DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS=32", "runner request budget must remain bounded before the preload applies the fast-verdict cap"],
@@ -26,7 +26,7 @@ const required = [
   ["DIV3RSA_PROBE_RUNTIME_PARALLEL=8", "capacity scheduler must know the p8 runtime width"],
   ["DIV3RSA_PROBE_CAPACITY_WAIT_MS=30000", "shadow capacity queue must have a bounded wait"],
   ["DIV3RSA_PROBE_CAPACITY_POLL_MS=50", "shadow capacity polling must stay bounded"],
-  ["DIV3RSA_PROBE_PRIORITY_YIELD_MS=25", "foreground priority yield missing"],
+  ["DIV3RSA_PROBE_PRIORITY_YIELD_MS=100", "quiet-window foreground priority yield missing"],
   ["DIV3RSA_PROBE_TIMEOUT_MS=4000", "workflow must retain the four-second probe gate"],
   ["unset DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED", "production probe enablement must be explicitly absent"],
   ["actions/upload-artifact@v4", "evidence artifact upload missing"],
@@ -43,7 +43,7 @@ for (const needle of [
 ]) if (!runner.includes(needle)) throw new Error(`capacity-aware runner contract missing: ${needle}`);
 
 if (!runner.includes('const concurrency = positiveInteger("DIV3RSA_PROBE_LOAD_CONCURRENCY", 7)')) throw new Error("runner must default to seven foreground clients on p8");
-if (!runner.includes('const foregroundReserveSlots = positiveInteger("DIV3RSA_PROBE_FOREGROUND_RESERVE_SLOTS", 1)')) throw new Error("runner must default to one reserved foreground slot beyond the shadow slot");
+if (!runner.includes('const foregroundReserveSlots = positiveInteger("DIV3RSA_PROBE_FOREGROUND_RESERVE_SLOTS", 1)')) throw new Error("runner must retain a safe default reserve when workflow override is absent");
 if (!runner.includes('const minFreeSlotsForShadow = 1 + foregroundReserveSlots')) throw new Error("shadow admission must require its own slot plus the foreground reserve");
 if (!runner.includes('const requestsPerWorker = positiveInteger("DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER", 286)')) throw new Error("runner must default to statistically meaningful evidence volume");
 if (!runner.includes("if (concurrency >= runtimeParallel)")) throw new Error("runner must fail closed without spare runtime capacity");
@@ -69,4 +69,4 @@ if (workflow.includes('workflows: ["Deploy GPUHub"]')) throw new Error("evidence
 const forbidden = ["rollback-legacy-gpuhub-p1.sh", "recover-legacy-gpuhub", "reconcile-gpuhub-production-profile.sh", "DIV3RSA_FORCE_MODEL_RESTART", "DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED=1", "DIV3RSA_AGENT_KERNEL_V2_PROBE_SAMPLE_BPS=", "systemctl restart", "pkill", "killall"];
 for (const needle of forbidden) if (workflow.includes(needle)) throw new Error(`observational evidence workflow contains forbidden mutation: ${needle}`);
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] foreground-reserved capacity-aware fast-verdict shadow scheduling + statistically meaningful 1% evidence volume present; all promotion gates unchanged");
+console.log("[agent-kernel-gpuhub-evidence-workflow] quiet low-load headroom fast-verdict shadow scheduling + statistically meaningful 1% evidence volume present; all promotion gates unchanged");
