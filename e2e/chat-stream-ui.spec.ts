@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 const runId = "11111111-1111-1111-1111-111111111111";
 const conversationId = "22222222-2222-2222-2222-222222222222";
+const answerText = "The current time in Europe/Stockholm is 00:09:00.";
 
 async function mockCompletedStream(page: Page) {
   await page.route(`**/api/runs/${runId}/stream`, async (route) => {
@@ -9,7 +10,7 @@ async function mockCompletedStream(page: Page) {
       runId,
       conversationId,
       status: "completed",
-      content: "The current time in Europe/Stockholm is 00:09:00.",
+      content: answerText,
       revision: 1,
       updatedAt: "2026-08-28T00:09:00+02:00"
     };
@@ -24,11 +25,11 @@ async function mockCompletedStream(page: Page) {
   });
 }
 
-test("streamed assistant text becomes visible, follows the active chat and survives terminal transition", async ({ page }) => {
+test("streamed assistant text hands off once to the persisted answer in the active chat", async ({ page }) => {
   await mockCompletedStream(page);
   await page.goto("/e2e-chat-stream");
 
-  const answer = page.getByText("The current time in Europe/Stockholm is 00:09:00.");
+  const answer = page.getByText(answerText, { exact: true });
   await expect(answer).toBeVisible();
   const stream = page.locator(`[data-run-stream="${runId}"]`);
   await expect(stream).toHaveAttribute("data-stream-revision", "1");
@@ -38,7 +39,13 @@ test("streamed assistant text becomes visible, follows the active chat and survi
   await expect.poll(async () => page.getByTestId("chat-canvas").evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 
   await page.getByRole("button", { name: "Mark terminal" }).click();
-  await expect(answer).toBeVisible();
+  await expect(stream).toBeVisible();
+  await expect(answer).toHaveCount(1);
+
+  await page.getByRole("button", { name: "Persist answer" }).click();
+  await expect(page.getByTestId("persisted-answer")).toBeVisible();
+  await expect(stream).toBeHidden();
+  await expect(answer).toHaveCount(1);
 
   await page.getByRole("button", { name: "Switch conversation" }).click();
   await expect(answer).toBeHidden();
