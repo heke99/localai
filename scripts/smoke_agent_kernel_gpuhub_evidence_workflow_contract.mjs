@@ -17,7 +17,8 @@ const required = [
   ["--parallel[=\\ ]+8", "p8 runtime verification missing"],
   ["--ctx-size[=\\ ]+262144", "p8 context verification missing"],
   ["--spec-type ngram-mod", "speculative profile verification missing"],
-  ["DIV3RSA_PROBE_LOAD_CONCURRENCY=7", "evidence must leave one p8 slot available to low-priority shadow work"],
+  ["DIV3RSA_PROBE_LOAD_CONCURRENCY=7", "evidence must keep seven foreground clients on p8"],
+  ["DIV3RSA_PROBE_FOREGROUND_RESERVE_SLOTS=1", "shadow admission must keep one additional p8 slot available for foreground"],
   ["DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER=286", "evidence must provide roughly twenty samples at one-percent sampling"],
   ["DIV3RSA_PROBE_LOAD_MAX_TOKENS=128", "foreground token budget must stay bounded"],
   ["DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS=32", "runner request budget must remain bounded before the preload applies the fast-verdict cap"],
@@ -35,14 +36,18 @@ for (const [needle, message] of required) if (!workflow.includes(needle)) throw 
 
 for (const needle of [
   "selectedSampleIndexes", "readRuntimeCapacity", "/slots", 'llamacpp:requests_processing', 'llamacpp:requests_deferred',
-  "waitForShadowCapacity", "shadowPriorityYieldMs", "confirmed.queueDepth === 0", "confirmed.freeSlots >= 1",
-  "outcome=capacity_skipped", "capacitySkippedRuns", "p95CapacityWaitMs", "probeDurations.push(result.totalMs)",
-  "enqueueProbe(index)", "actualSampleRate", "every material request requirement", "score <70 when passed=false"
+  "foregroundReserveSlots", "minFreeSlotsForShadow", "shadowCapacityAvailable", "state.freeSlots >= minFreeSlotsForShadow",
+  "waitForShadowCapacity", "shadowPriorityYieldMs", "reservedForForeground=", "outcome=capacity_skipped", "capacitySkippedRuns",
+  "p95CapacityWaitMs", "probeDurations.push(result.totalMs)", "enqueueProbe(index)", "actualSampleRate",
+  "every material request requirement", "score <70 when passed=false"
 ]) if (!runner.includes(needle)) throw new Error(`capacity-aware runner contract missing: ${needle}`);
 
 if (!runner.includes('const concurrency = positiveInteger("DIV3RSA_PROBE_LOAD_CONCURRENCY", 7)')) throw new Error("runner must default to seven foreground clients on p8");
+if (!runner.includes('const foregroundReserveSlots = positiveInteger("DIV3RSA_PROBE_FOREGROUND_RESERVE_SLOTS", 1)')) throw new Error("runner must default to one reserved foreground slot beyond the shadow slot");
+if (!runner.includes('const minFreeSlotsForShadow = 1 + foregroundReserveSlots')) throw new Error("shadow admission must require its own slot plus the foreground reserve");
 if (!runner.includes('const requestsPerWorker = positiveInteger("DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER", 286)')) throw new Error("runner must default to statistically meaningful evidence volume");
 if (!runner.includes("if (concurrency >= runtimeParallel)")) throw new Error("runner must fail closed without spare runtime capacity");
+if (!runner.includes("if (minFreeSlotsForShadow > runtimeParallel)")) throw new Error("runner must fail closed when foreground reserve exceeds runtime width");
 if (runner.includes("probeActive")) throw new Error("single active flag must not classify queued shadow work as immediate capacity skip");
 
 for (const needle of [
@@ -64,4 +69,4 @@ if (workflow.includes('workflows: ["Deploy GPUHub"]')) throw new Error("evidence
 const forbidden = ["rollback-legacy-gpuhub-p1.sh", "recover-legacy-gpuhub", "reconcile-gpuhub-production-profile.sh", "DIV3RSA_FORCE_MODEL_RESTART", "DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED=1", "DIV3RSA_AGENT_KERNEL_V2_PROBE_SAMPLE_BPS=", "systemctl restart", "pkill", "killall"];
 for (const needle of forbidden) if (workflow.includes(needle)) throw new Error(`observational evidence workflow contains forbidden mutation: ${needle}`);
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] capacity-aware low-priority fast-verdict shadow scheduling + statistically meaningful 1% evidence volume present; all promotion gates unchanged");
+console.log("[agent-kernel-gpuhub-evidence-workflow] foreground-reserved capacity-aware fast-verdict shadow scheduling + statistically meaningful 1% evidence volume present; all promotion gates unchanged");
