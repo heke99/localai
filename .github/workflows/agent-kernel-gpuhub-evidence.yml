@@ -39,10 +39,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           run=false
-          if git rev-parse HEAD^ >/dev/null 2>&1; then
-            if git diff --name-only HEAD^ HEAD -- | grep -Fxq 'ops/agent-kernel-gpuhub-evidence.request'; then
-              run=true
-            fi
+          if git rev-parse HEAD^ >/dev/null 2>&1 && git diff --name-only HEAD^ HEAD -- | grep -Fxq 'ops/agent-kernel-gpuhub-evidence.request'; then
+            run=true
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
           echo "Agent Kernel GPUHub evidence requested: $run"
@@ -84,6 +82,13 @@ jobs:
             -o ServerAliveInterval=15
             -o ServerAliveCountMax=4
           )
+          scp_opts=(
+            -i "$HOME/.ssh/id_ed25519"
+            -P "$GPUHUB_SSH_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+          )
           local_dir="$RUNNER_TEMP/agent-kernel-gpuhub-evidence"
           mkdir -p "$local_dir"
 
@@ -100,17 +105,10 @@ jobs:
           evidence_dir="$root_dir/logs/evals/agent-kernel-probes-$run_id"
           evidence_file="$evidence_dir/gpuhub-probe-evidence.json"
 
-          [[ -x "$node_bin" && -f "$env_file" && -f "$profile_file" ]] || {
-            echo "GPUHub evidence prerequisites missing" >&2
-            exit 1
-          }
-
+          [[ -x "$node_bin" && -f "$env_file" && -f "$profile_file" ]] || { echo "GPUHub evidence prerequisites missing" >&2; exit 1; }
           cd "$app_dir"
           current_sha="$(git rev-parse HEAD)"
-          [[ "$current_sha" == "$expected_sha" ]] || {
-            echo "refusing evidence run on wrong revision: expected=$expected_sha current=$current_sha" >&2
-            exit 1
-          }
+          [[ "$current_sha" == "$expected_sha" ]] || { echo "refusing evidence run on wrong revision: expected=$expected_sha current=$current_sha" >&2; exit 1; }
 
           # shellcheck disable=SC1090
           source "$profile_file"
@@ -143,7 +141,6 @@ jobs:
           export DIV3RSA_PROBE_LOAD_MAX_TOKENS=256
           export DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS=256
           export DIV3RSA_PROBE_TIMEOUT_MS=4000
-
           unset DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED || true
           unset DIV3RSA_AGENT_KERNEL_V2_PROBE_SAMPLE_BPS || true
 
@@ -157,10 +154,7 @@ jobs:
           [[ -s "$evidence_file" ]] || { echo "evidence file missing" >&2; exit 1; }
           curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${model_port}/health" >/dev/null
           post_process="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
-          [[ "$post_process" =~ --parallel[=\ ]+8 && "$post_process" =~ --ctx-size[=\ ]+262144 ]] || {
-            echo "production process changed during evidence run" >&2
-            exit 1
-          }
+          [[ "$post_process" =~ --parallel[=\ ]+8 && "$post_process" =~ --ctx-size[=\ ]+262144 ]] || { echo "production process changed during evidence run" >&2; exit 1; }
           [[ "$post_process" == *"--spec-type ngram-mod"* ]] || { echo "speculative profile changed during evidence run" >&2; exit 1; }
 
           printf '__EVIDENCE_PATH__=%s\n' "$evidence_file"
@@ -170,13 +164,10 @@ jobs:
 
           remote_evidence="$(printf '%s\n' "$remote_result" | sed -n 's/^__EVIDENCE_PATH__=//p' | tail -n1)"
           gate_status="$(printf '%s\n' "$remote_result" | sed -n 's/^__GATE_STATUS__=//p' | tail -n1)"
-          [[ "$remote_evidence" == /root/autodl-tmp/localai/logs/evals/agent-kernel-probes-*/gpuhub-probe-evidence.json ]] || {
-            echo "unexpected remote evidence path: $remote_evidence" >&2
-            exit 1
-          }
+          [[ "$remote_evidence" == /root/autodl-tmp/localai/logs/evals/agent-kernel-probes-*/gpuhub-probe-evidence.json ]] || { echo "unexpected remote evidence path: $remote_evidence" >&2; exit 1; }
           [[ "$gate_status" =~ ^[0-9]+$ ]] || { echo "missing gate status" >&2; exit 1; }
 
-          scp "${ssh_opts[@]}" "$remote:$remote_evidence" "$local_dir/gpuhub-probe-evidence.json"
+          scp "${scp_opts[@]}" "$remote:$remote_evidence" "$local_dir/gpuhub-probe-evidence.json"
           printf '%s\n' "$remote_result"
           echo "artifact_path=$local_dir/gpuhub-probe-evidence.json" >> "$GITHUB_OUTPUT"
           echo "gate_status=$gate_status" >> "$GITHUB_OUTPUT"

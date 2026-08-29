@@ -17,6 +17,9 @@ const required = [
   ["set +e", "gate exit must be captured without losing evidence"],
   ["__EVIDENCE_PATH__=", "remote evidence path marker missing"],
   ["__GATE_STATUS__=", "gate status marker missing"],
+  ["scp_opts=(", "SCP must use options separate from SSH"],
+  ['-P "$GPUHUB_SSH_PORT"', "SCP must use uppercase -P for port"],
+  ['scp "${scp_opts[@]}"', "SCP must use the dedicated SCP options"],
   ["actions/upload-artifact@v4", "evidence artifact upload missing"],
   ["Enforce promotion gate result", "promotion gate must still be enforced after artifact upload"],
 ];
@@ -24,6 +27,7 @@ for (const [needle, message] of required) {
   if (!workflow.includes(needle)) throw new Error(message);
 }
 
+if (workflow.includes('scp "${ssh_opts[@]}"')) throw new Error("SCP must not reuse SSH -p port options");
 if (workflow.indexOf("actions/upload-artifact@v4") > workflow.indexOf("Enforce promotion gate result")) {
   throw new Error("blocked evidence must be uploaded before promotion gate enforcement");
 }
@@ -45,4 +49,4 @@ for (const needle of forbidden) {
 }
 
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] blocked evidence is preserved before fail-closed gate enforcement; runtime remains observational-only");
+console.log("[agent-kernel-gpuhub-evidence-workflow] SCP uses uppercase -P, blocked evidence is preserved before fail-closed enforcement, runtime remains observational-only");
