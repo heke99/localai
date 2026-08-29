@@ -111,11 +111,33 @@ async function loadedProbePressure(input, init) {
   }
 }
 
+function validVerifierObject(content) {
+  try {
+    const parsed = JSON.parse(content.trim());
+    return Boolean(
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      Number.isInteger(parsed.score) &&
+      parsed.score >= 0 && parsed.score <= 100 &&
+      typeof parsed.passed === "boolean" &&
+      typeof parsed.reasonCode === "string" &&
+      /^[A-Za-z0-9_-]{1,80}$/.test(parsed.reasonCode)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function traceProbeStream(response, requestId, started) {
   if (!response.body) return response;
   let firstChunk = true;
   let chunks = 0;
   let bytes = 0;
+  let sseBuffer = "";
+  let verifierContent = "";
+  let completedEarly = false;
+  const decoder = new TextDecoder();
   const traced = response.body.pipeThrough(new TransformStream({
     transform(chunk, controller) {
       chunks += 1;
@@ -125,9 +147,31 @@ function traceProbeStream(response, requestId, started) {
         console.error(`[agent-kernel-probe-diag] phase=first_chunk requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} bytes=${chunk?.byteLength ?? 0}`);
       }
       controller.enqueue(chunk);
+      sseBuffer += decoder.decode(chunk, { stream: true });
+      const events = sseBuffer.split("\n\n");
+      sseBuffer = events.pop() || "";
+      for (const event of events) {
+        for (const line of event.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (!data || data === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(data);
+            const delta = parsed.choices?.[0]?.delta?.content;
+            if (typeof delta === "string") verifierContent += delta;
+          } catch {
+            // Keep streaming; malformed transport is handled fail-closed by the caller.
+          }
+        }
+      }
+      if (validVerifierObject(verifierContent)) {
+        completedEarly = true;
+        console.error(`[agent-kernel-probe-diag] phase=json_complete requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} chunks=${chunks} bytes=${bytes}`);
+        controller.terminate();
+      }
     },
     flush() {
-      console.error(`[agent-kernel-probe-diag] phase=stream_end requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} chunks=${chunks} bytes=${bytes}`);
+      console.error(`[agent-kernel-probe-diag] phase=stream_end requestId=${requestId} elapsedMs=${Math.round(performance.now() - started)} chunks=${chunks} bytes=${bytes} early=${completedEarly}`);
     }
   }));
   return new Response(traced, { status: response.status, statusText: response.statusText, headers: response.headers });
