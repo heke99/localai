@@ -1,6 +1,5 @@
 import type { ModelAlias, ModelMessage } from "@div3rsa/model-sdk";
 import type { TaskAnalysis } from "@div3rsa/agent-runtime";
-import type { ClaimedRun, WorkerKernelRuntime, WorkerKernelAugmentation } from "../processor";
 import type { AgentKernelConfig } from "./config";
 import { deterministicProbeSample } from "./shadow-probe";
 
@@ -18,6 +17,29 @@ export interface ActiveCanaryModelRuntime {
     maxOutputTokens: number;
     signal: AbortSignal;
   }): Promise<ActiveCanaryModelResult>;
+}
+
+export interface ActiveCanaryInput {
+  readonly runId: string;
+  readonly requestId: string;
+  readonly modelAlias: ModelAlias;
+  readonly prompt: string;
+  readonly task: TaskAnalysis;
+  readonly selectedSkills: readonly string[];
+}
+
+export interface ActiveCanaryAugmentation {
+  readonly mode: "active-canary";
+  readonly instruction: string;
+  readonly telemetry: {
+    readonly sampled: true;
+    readonly roles: readonly {
+      readonly role: string;
+      readonly durationMs: number;
+      readonly usage: Readonly<Record<string, number>>;
+    }[];
+    readonly totalDurationMs: number;
+  };
 }
 
 function compactTask(task: TaskAnalysis) {
@@ -41,47 +63,47 @@ function safeContent(value: string, max = 6_000): string {
   return value.trim().slice(0, max);
 }
 
-export class AgentKernelActiveCanaryRuntime implements WorkerKernelRuntime {
+export class AgentKernelActiveCanaryRuntime {
   constructor(
     private readonly config: AgentKernelConfig,
     private readonly model: ActiveCanaryModelRuntime
   ) {}
 
-  async prepare(run: ClaimedRun, task: TaskAnalysis, prompt: string, selectedSkills: readonly string[]): Promise<WorkerKernelAugmentation | null> {
+  async prepare(input: ActiveCanaryInput): Promise<ActiveCanaryAugmentation | null> {
     if (!this.config.enabled || this.config.mode !== "active") return null;
-    if (!deterministicProbeSample(run.runId, this.config.activeCanaryBasisPoints)) return null;
+    if (!deterministicProbeSample(input.runId, this.config.activeCanaryBasisPoints)) return null;
 
     const startedAt = performance.now();
-    const compact = compactTask(task);
+    const compact = compactTask(input.task);
     const roles: Array<{ role: "planner" | "analyst" | "researcher"; messages: ModelMessage[] }> = [
       {
         role: "planner",
         messages: [
           { role: "system", content: "You are the planner subagent in a bounded production canary. Return a concise execution plan, explicit required evidence, likely failure modes and verification checkpoints. Do not use tools, do not claim work was executed, and do not reveal private chain-of-thought." },
-          { role: "user", content: JSON.stringify({ task: compact, selectedSkills, request: prompt.slice(0, 12_000) }) }
+          { role: "user", content: JSON.stringify({ task: compact, selectedSkills: input.selectedSkills, request: input.prompt.slice(0, 12_000) }) }
         ]
       },
       {
         role: "analyst",
         messages: [
           { role: "system", content: "You are an independent analysis subagent. Identify dependency/consequence risks, state invariants that must remain true, and the smallest safe validation set for this request. Do not use tools or claim execution. Return only concise conclusions." },
-          { role: "user", content: JSON.stringify({ task: compact, request: prompt.slice(0, 12_000) }) }
+          { role: "user", content: JSON.stringify({ task: compact, request: input.prompt.slice(0, 12_000) }) }
         ]
       }
     ];
 
-    if ((task.requiresCurrentInformation || task.researchDepth !== "none") && roles.length < this.config.maxSubagents) {
+    if ((input.task.requiresCurrentInformation || input.task.researchDepth !== "none") && roles.length < this.config.maxSubagents) {
       roles.push({
         role: "researcher",
         messages: [
           { role: "system", content: "You are a research-planning subagent. Specify which authoritative evidence types and source categories are needed and what must be verified. You have no tools in this pass, so never claim you searched or fetched anything." },
-          { role: "user", content: JSON.stringify({ task: compact, request: prompt.slice(0, 12_000) }) }
+          { role: "user", content: JSON.stringify({ task: compact, request: input.prompt.slice(0, 12_000) }) }
         ]
       });
     }
 
     const limited = roles.slice(0, this.config.maxSubagents);
-    const results: Array<{ role: string; content: string; durationMs: number; usage: Readonly<Record<string, number>> }> = [];
+    const results: Array<{ role: string; content: string; durationMs: number; usage: Readonly<Record<string, number>> } | undefined> = [];
 
     let cursor = 0;
     const workers = Array.from({ length: Math.min(this.config.maxParallelSubagents, limited.length) }, async () => {
@@ -95,8 +117,8 @@ export class AgentKernelActiveCanaryRuntime implements WorkerKernelRuntime {
         const callStartedAt = performance.now();
         try {
           const result = await this.model.generate({
-            requestId: `${run.requestId}:agent-kernel-active:${item.role}:${index + 1}`,
-            alias: run.modelAlias,
+            requestId: `${input.requestId}:agent-kernel-active:${item.role}:${index + 1}`,
+            alias: input.modelAlias,
             messages: item.messages,
             temperature: 0,
             maxOutputTokens: this.config.activeMaxOutputTokensPerCall,
