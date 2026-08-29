@@ -17,7 +17,7 @@ jobs:
     name: Collect Agent Kernel V2 GPUHub evidence
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     environment: production-gpuhub
     env:
       GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
@@ -136,11 +136,15 @@ jobs:
           export DIV3RSA_INFERENCE_API_KEY="$api_key"
           export DIV3RSA_MODEL_RUNTIME_ALIAS="localai-qwen38-v3-q8"
           export DIV3RSA_PROBE_EVIDENCE_OUTPUT="$evidence_file"
-          export DIV3RSA_PROBE_LOAD_CONCURRENCY=8
-          export DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER=16
+          export DIV3RSA_PROBE_LOAD_CONCURRENCY=7
+          export DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER=286
           export DIV3RSA_PROBE_LOAD_MAX_TOKENS=128
           export DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS=32
           export DIV3RSA_PROBE_EVIDENCE_SAMPLE_BPS=100
+          export DIV3RSA_PROBE_RUNTIME_PARALLEL=8
+          export DIV3RSA_PROBE_CAPACITY_WAIT_MS=30000
+          export DIV3RSA_PROBE_CAPACITY_POLL_MS=50
+          export DIV3RSA_PROBE_PRIORITY_YIELD_MS=25
           export DIV3RSA_PROBE_TIMEOUT_MS=4000
           unset DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED || true
           unset DIV3RSA_AGENT_KERNEL_V2_PROBE_SAMPLE_BPS || true
