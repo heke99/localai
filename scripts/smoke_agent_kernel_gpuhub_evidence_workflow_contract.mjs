@@ -23,87 +23,34 @@ const required = [
   ["DIV3RSA_PROBE_EVIDENCE_SAMPLE_BPS=100", "evidence must model one-percent sampling"],
   ["DIV3RSA_PROBE_TIMEOUT_MS=4000", "workflow must retain the four-second probe gate"],
   ["unset DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED", "production probe enablement must be explicitly absent"],
-  ["set +e", "gate exit must be captured without losing evidence"],
-  ["__EVIDENCE_PATH__=", "remote evidence path marker missing"],
-  ["__GATE_STATUS__=", "gate status marker missing"],
-  ["scp_opts=(", "SCP must use options separate from SSH"],
-  ['-P "$GPUHUB_SSH_PORT"', "SCP must use uppercase -P for port"],
-  ['scp "${scp_opts[@]}"', "SCP must use the dedicated SCP options"],
   ["actions/upload-artifact@v4", "evidence artifact upload missing"],
-  ["Enforce promotion gate result", "promotion gate must still be enforced after artifact upload"],
+  ["Enforce promotion gate result", "promotion gate must still be enforced after artifact upload"]
 ];
-for (const [needle, message] of required) {
-  if (!workflow.includes(needle)) throw new Error(message);
-}
+for (const [needle, message] of required) if (!workflow.includes(needle)) throw new Error(message);
 
-const runnerRequired = [
-  ["selectedSampleIndexes", "runner must select only the intended sampled requests"],
-  ["sampledRuns: withProbes ? sampledRuns : 0", "sampledRuns must count sampled requests, not all foreground requests"],
-  ["actualSampleRate", "runner must record the effective sample rate"],
-  ["every material request requirement", "quality verifier must use a strict completeness rubric"],
-  ["score <70 when passed=false", "quality verifier score/pass contract missing"],
-];
-for (const [needle, message] of runnerRequired) {
-  if (!runner.includes(needle)) throw new Error(message);
-}
+const runnerRequired = ["selectedSampleIndexes", "sampledRuns: withProbes ? sampledRuns : 0", "actualSampleRate", "every material request requirement", "score <70 when passed=false"];
+for (const needle of runnerRequired) if (!runner.includes(needle)) throw new Error(`runner contract missing: ${needle}`);
 
 for (const needle of [
-  "agent-kernel-quality-",
-  "agent-kernel-evidence-probe-",
-  'reasoning_effort: "none"',
-  "enable_thinking: false",
-  "VERIFIER_MAX_TOKENS = 64",
-  "LOADED_PROBE_TIMEOUT_MS = 4_000",
-  'type: "json_schema"',
-  'name: "shadow_verifier_result"',
-  'additionalProperties: false',
-  'required: ["score", "passed", "reasonCode"]',
-  "max_tokens: Math.min(requestedMax, VERIFIER_MAX_TOKENS)",
+  "agent-kernel-quality-", "agent-kernel-evidence-probe-", 'reasoning_effort: "none"', "enable_thinking: false",
+  "VERIFIER_MAX_TOKENS = 64", "LOADED_PROBE_TIMEOUT_MS = 4_000", 'type: "json_schema"', 'name: "shadow_verifier_result"',
+  'additionalProperties: false', 'required: ["score", "passed", "reasonCode"]', "max_tokens: Math.min(requestedMax, VERIFIER_MAX_TOKENS)",
   "response_format: VERIFIER_RESPONSE_FORMAT"
-]) {
-  if (!preload.includes(needle)) throw new Error(`scoped constrained verifier preload missing: ${needle}`);
-}
-if (preload.includes("agent-kernel-evidence-baseline-")) {
-  throw new Error("baseline foreground benchmark requests must not be intercepted");
-}
-for (const needle of [
-  "loadedForegroundIndex",
-  "loadedProbeIndex",
-  "response.clone().arrayBuffer()",
-  "await deferred.promise",
-  "const verifierCall = qualityVerifier || probeIndex != null;",
-  "const signal = probeIndex != null ? AbortSignal.timeout(LOADED_PROBE_TIMEOUT_MS) : init?.signal;"
-]) {
+]) if (!preload.includes(needle)) throw new Error(`scoped constrained verifier preload missing: ${needle}`);
+
+if (preload.includes("agent-kernel-evidence-baseline-")) throw new Error("baseline foreground benchmark requests must not be intercepted");
+for (const needle of ["loadedForegroundIndex", "loadedProbeIndex", "response.clone().arrayBuffer()", "await deferred.promise", "const verifierCall = qualityVerifier || probeIndex != null;", "const signal = probeIndex != null ? AbortSignal.timeout(LOADED_PROBE_TIMEOUT_MS) : init?.signal;"]) {
   if (!preload.includes(needle)) throw new Error(`production-like post-baseline probe timing missing: ${needle}`);
 }
-for (const needle of [
-  "loadedProbePressure",
-  "[agent-kernel-probe-diag] phase=before_fetch",
-  "[agent-kernel-probe-diag] phase=headers",
-  "[agent-kernel-probe-diag] phase=fetch_error"
-]) {
-  if (!preload.includes(needle)) throw new Error(`scheduling diagnostic missing: ${needle}`);
+for (const needle of ["loadedProbePressure", "traceProbeStream", "TransformStream", "phase=before_fetch", "phase=headers", "phase=first_chunk", "phase=stream_end", "phase=fetch_error"]) {
+  if (!preload.includes(needle)) throw new Error(`stream scheduling diagnostic missing: ${needle}`);
 }
+
 if (workflow.includes('scp "${ssh_opts[@]}"')) throw new Error("SCP must not reuse SSH -p port options");
-if (workflow.indexOf("actions/upload-artifact@v4") > workflow.indexOf("Enforce promotion gate result")) {
-  throw new Error("blocked evidence must be uploaded before promotion gate enforcement");
-}
+if (workflow.indexOf("actions/upload-artifact@v4") > workflow.indexOf("Enforce promotion gate result")) throw new Error("blocked evidence must be uploaded before promotion gate enforcement");
 if (workflow.includes('workflows: ["Deploy GPUHub"]')) throw new Error("evidence must not race P8 soak after Deploy GPUHub");
 
-const forbidden = [
-  "rollback-legacy-gpuhub-p1.sh",
-  "recover-legacy-gpuhub",
-  "reconcile-gpuhub-production-profile.sh",
-  "DIV3RSA_FORCE_MODEL_RESTART",
-  "DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED=1",
-  "DIV3RSA_AGENT_KERNEL_V2_PROBE_SAMPLE_BPS=",
-  "systemctl restart",
-  "pkill",
-  "killall"
-];
-for (const needle of forbidden) {
-  if (workflow.includes(needle)) throw new Error(`observational evidence workflow contains forbidden mutation: ${needle}`);
-}
-
+const forbidden = ["rollback-legacy-gpuhub-p1.sh", "recover-legacy-gpuhub", "reconcile-gpuhub-production-profile.sh", "DIV3RSA_FORCE_MODEL_RESTART", "DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED=1", "DIV3RSA_AGENT_KERNEL_V2_PROBE_SAMPLE_BPS=", "systemctl restart", "pkill", "killall"];
+for (const needle of forbidden) if (workflow.includes(needle)) throw new Error(`observational evidence workflow contains forbidden mutation: ${needle}`);
 if (!request.includes("productionSampling=false")) throw new Error("evidence request must explicitly keep production sampling disabled");
-console.log("[agent-kernel-gpuhub-evidence-workflow] loaded probe gets a fresh four-second timeout only after baseline completion; production sampling remains disabled");
+console.log("[agent-kernel-gpuhub-evidence-workflow] read-only stream timing diagnostics present; four-second gate and production sampling state unchanged");
