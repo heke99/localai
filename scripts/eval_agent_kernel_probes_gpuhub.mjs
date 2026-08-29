@@ -19,6 +19,8 @@ const probeTimeoutMs = positiveInteger("DIV3RSA_PROBE_TIMEOUT_MS", 4_000);
 const requestTimeoutMs = positiveInteger("DIV3RSA_PROBE_FOREGROUND_TIMEOUT_MS", 120_000);
 const sampleBasisPoints = basisPoints("DIV3RSA_PROBE_EVIDENCE_SAMPLE_BPS", 100);
 const runtimeParallel = positiveInteger("DIV3RSA_PROBE_RUNTIME_PARALLEL", 8);
+const foregroundReserveSlots = positiveInteger("DIV3RSA_PROBE_FOREGROUND_RESERVE_SLOTS", 1);
+const minFreeSlotsForShadow = 1 + foregroundReserveSlots;
 const capacityWaitMs = positiveInteger("DIV3RSA_PROBE_CAPACITY_WAIT_MS", 30_000);
 const capacityPollMs = positiveInteger("DIV3RSA_PROBE_CAPACITY_POLL_MS", 50);
 const shadowPriorityYieldMs = positiveInteger("DIV3RSA_PROBE_PRIORITY_YIELD_MS", 25);
@@ -29,6 +31,9 @@ if (!baseUrl || !apiKey) {
 }
 if (concurrency >= runtimeParallel) {
   throw new Error(`shadow_evidence_requires_spare_runtime_slot:concurrency=${concurrency}:parallel=${runtimeParallel}`);
+}
+if (minFreeSlotsForShadow > runtimeParallel) {
+  throw new Error(`shadow_evidence_foreground_reserve_exceeds_runtime:requiredFree=${minFreeSlotsForShadow}:parallel=${runtimeParallel}`);
 }
 
 function positiveInteger(name, fallback) {
@@ -165,6 +170,10 @@ async function readRuntimeCapacity() {
   }
 }
 
+function shadowCapacityAvailable(state) {
+  return Boolean(state?.known && state.queueDepth === 0 && state.freeSlots >= minFreeSlotsForShadow);
+}
+
 async function waitForShadowCapacity(requestId) {
   const queuedAt = performance.now();
   const deadline = queuedAt + capacityWaitMs;
@@ -175,14 +184,14 @@ async function waitForShadowCapacity(requestId) {
     const state = await readRuntimeCapacity();
     observations += 1;
     lastState = state;
-    if (state.known && state.queueDepth === 0 && state.freeSlots >= 1) {
+    if (shadowCapacityAvailable(state)) {
       await sleep(shadowPriorityYieldMs);
       const confirmed = await readRuntimeCapacity();
       observations += 1;
       lastState = confirmed;
-      if (confirmed.known && confirmed.queueDepth === 0 && confirmed.freeSlots >= 1) {
+      if (shadowCapacityAvailable(confirmed)) {
         const waitedMs = performance.now() - queuedAt;
-        console.error(`[agent-kernel-capacity] outcome=dispatch requestId=${requestId} waitedMs=${Math.round(waitedMs)} source=${confirmed.source} active=${confirmed.activeSlots} free=${confirmed.freeSlots} deferred=${confirmed.queueDepth}`);
+        console.error(`[agent-kernel-capacity] outcome=dispatch requestId=${requestId} waitedMs=${Math.round(waitedMs)} source=${confirmed.source} active=${confirmed.activeSlots} free=${confirmed.freeSlots} reservedForForeground=${foregroundReserveSlots} deferred=${confirmed.queueDepth}`);
         return { allowed: true, waitedMs, observations, state: confirmed };
       }
     }
@@ -190,7 +199,7 @@ async function waitForShadowCapacity(requestId) {
   }
 
   const waitedMs = performance.now() - queuedAt;
-  console.error(`[agent-kernel-capacity] outcome=capacity_skipped requestId=${requestId} waitedMs=${Math.round(waitedMs)} observations=${observations} state=${JSON.stringify(lastState)}`);
+  console.error(`[agent-kernel-capacity] outcome=capacity_skipped requestId=${requestId} waitedMs=${Math.round(waitedMs)} observations=${observations} requiredFree=${minFreeSlotsForShadow} reservedForForeground=${foregroundReserveSlots} state=${JSON.stringify(lastState)}`);
   return { allowed: false, waitedMs, observations, state: lastState };
 }
 
@@ -375,7 +384,7 @@ async function runQualityEval() {
   return results;
 }
 
-console.error(`[agent-kernel-evidence] endpoint=${baseUrl} model=${model} concurrency=${concurrency} runtimeParallel=${runtimeParallel} requestsPerWorker=${requestsPerWorker} sampleBps=${sampleBasisPoints}`);
+console.error(`[agent-kernel-evidence] endpoint=${baseUrl} model=${model} concurrency=${concurrency} runtimeParallel=${runtimeParallel} foregroundReserveSlots=${foregroundReserveSlots} requestsPerWorker=${requestsPerWorker} sampleBps=${sampleBasisPoints}`);
 const health = await fetch(`${runtimeBaseUrl}/health`, { headers: authHeaders(), signal: AbortSignal.timeout(2_000) }).catch(() => null);
 if (health && !health.ok && health.status !== 404) throw new Error(`model_health_failed:${health.status}`);
 
@@ -394,6 +403,8 @@ const evidence = {
     model,
     concurrency,
     runtimeParallel,
+    foregroundReserveSlots,
+    minFreeSlotsForShadow,
     requestsPerWorker,
     foregroundMaxTokens,
     probeMaxTokens,
