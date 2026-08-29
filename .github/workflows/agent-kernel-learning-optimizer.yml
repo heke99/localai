@@ -1,0 +1,104 @@
+name: Agent Kernel Learning Optimizer
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Exact current main commit SHA"
+        required: true
+        type: string
+      created_before:
+        description: "Immutable ISO-8601 cutoff for verified trajectories"
+        required: true
+        type: string
+      baseline_eval_json:
+        description: "Frozen baseline eval snapshot JSON"
+        required: true
+        type: string
+      candidate_eval_json:
+        description: "Frozen candidate eval snapshot JSON"
+        required: true
+        type: string
+      candidate_definition_json:
+        description: "Candidate prompt/routing definition JSON"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-kernel-learning-optimizer
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      DIV3RSA_LEARNING_EXPORT_CREATED_BEFORE: ${{ inputs.created_before }}
+      DIV3RSA_LEARNING_EXPORT_OUTPUT: ${{ runner.temp }}/verified-learning.json
+      DIV3RSA_LEARNING_MINIMUM_SAMPLES: "25"
+      DIV3RSA_OPTIMIZER_BASELINE_EVAL: ${{ runner.temp }}/baseline.json
+      DIV3RSA_OPTIMIZER_CANDIDATE_EVAL: ${{ runner.temp }}/candidate.json
+      DIV3RSA_OPTIMIZER_CANDIDATE_DEFINITION: ${{ runner.temp }}/candidate-definition.json
+      DIV3RSA_OPTIMIZER_OUTPUT: ${{ runner.temp }}/optimization-decision.json
+    steps:
+      - name: Validate exact current main revision
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          revision='${{ inputs.revision }}'
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "revision must be an exact 40-char SHA" >&2; exit 1; }
+          main_sha="$(git ls-remote https://github.com/${GITHUB_REPOSITORY}.git refs/heads/main | awk '{print $1}')"
+          [[ "$revision" == "$main_sha" ]] || { echo "optimizer revision must equal current main" >&2; exit 1; }
+          [[ -n "$SUPABASE_URL" && -n "$SUPABASE_SECRET_KEY" ]] || { echo "Supabase service-role secrets are required" >&2; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Materialize frozen candidate inputs
+        shell: bash
+        env:
+          BASELINE_JSON: ${{ inputs.baseline_eval_json }}
+          CANDIDATE_JSON: ${{ inputs.candidate_eval_json }}
+          DEFINITION_JSON: ${{ inputs.candidate_definition_json }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          printf '%s\n' "$BASELINE_JSON" > "$DIV3RSA_OPTIMIZER_BASELINE_EVAL"
+          printf '%s\n' "$CANDIDATE_JSON" > "$DIV3RSA_OPTIMIZER_CANDIDATE_EVAL"
+          printf '%s\n' "$DEFINITION_JSON" > "$DIV3RSA_OPTIMIZER_CANDIDATE_DEFINITION"
+          node -e 'for (const p of process.argv.slice(1)) JSON.parse(require("fs").readFileSync(p,"utf8"))' "$DIV3RSA_OPTIMIZER_BASELINE_EVAL" "$DIV3RSA_OPTIMIZER_CANDIDATE_EVAL" "$DIV3RSA_OPTIMIZER_CANDIDATE_DEFINITION"
+
+      - name: Export only structurally verified learning records
+        run: npm run learning:export
+
+      - name: Evaluate candidate against frozen baseline
+        env:
+          DIV3RSA_LEARNING_DATASET: ${{ runner.temp }}/verified-learning.json
+        run: npm run learning:optimize
+
+      - name: Publish decision summary without training or promotion
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -f "$DIV3RSA_OPTIMIZER_OUTPUT" ]]; then
+            node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(`allowed=${d.allowed} dataset=${d.datasetDigest} eval=${d.evalSetDigest} decision=${d.decisionDigest} reasons=${(d.reasons||[]).join(",")}`)' "$DIV3RSA_OPTIMIZER_OUTPUT"
+          fi
+
+      # Phase 2 is recommendation-only. No model training, prompt deployment,
+      # routing mutation, canary change or production write is allowed here.

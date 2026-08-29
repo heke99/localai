@@ -1,6 +1,7 @@
 import type { AgentMemoryRecord } from "./verified-experience";
 import type { AgentTrajectory } from "./trajectory";
 import type { VerifiedKernelCheckpoint } from "./checkpoint-rewind";
+import type { VerifiedLearningExportEnvelope } from "./learning-export";
 
 export type AgentKernelStoreRpcClient = {
   rpc<T>(name: string, args: Record<string, unknown>): Promise<{ data: T | null; error: { code?: string; message?: string } | null }>;
@@ -67,5 +68,19 @@ export class SupabaseAgentKernelStore {
       target_training_eligible: trainingEligible
     });
     if (error) throw rpcError("agent_trajectory_record", error);
+  }
+
+  async exportVerifiedLearning(options: { minReward?: number; limit?: number; createdBefore: string }): Promise<VerifiedLearningExportEnvelope> {
+    const minReward = Math.max(1, Math.min(1000, Math.floor(options.minReward ?? 1)));
+    const limit = Math.max(1, Math.min(5000, Math.floor(options.limit ?? 500)));
+    if (!Number.isFinite(Date.parse(options.createdBefore))) throw new Error("invalid_learning_export_cutoff");
+    const { data, error } = await this.client.rpc<VerifiedLearningExportEnvelope>("worker_export_verified_agent_learning", {
+      target_min_reward: minReward,
+      target_limit: limit,
+      target_created_before: options.createdBefore
+    });
+    if (error) throw rpcError("agent_learning_export", error);
+    if (!data) throw new Error("agent_learning_export_failed:empty_response");
+    return data;
   }
 }
