@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import type { AgentQueue, ClaimedRun, WorkerToolRuntime } from "../processor";
 import type { PreparedRepositoryWorkspace, WorkerRepositoryRuntime } from "../repository-runtime";
@@ -35,10 +36,15 @@ function repositoryFile(workspace: PreparedRepositoryWorkspace, path: string) {
   return workspace.index.files.find((file) => file.path === normalized) ?? null;
 }
 
-/**
- * Coordinates externally reversible mutations. It never attempts to invent a
- * rollback for a resource type that cannot be restored deterministically.
- */
+function repositoryTreeFingerprint(workspace: PreparedRepositoryWorkspace) {
+  if (!workspace.complete) throw new Error("kernel_rewind_requires_complete_repository_snapshot");
+  const rows = workspace.index.files
+    .map((file) => `${file.path}\0${file.hash}`)
+    .sort();
+  return createHash("sha256").update(rows.join("\n")).digest("hex");
+}
+
+/** Coordinates externally reversible mutations and verifies the restored state. */
 export class AgentKernelRewindCoordinator {
   private readonly states = new Map<string, RunState>();
 
@@ -69,15 +75,14 @@ export class AgentKernelRewindCoordinator {
       const workspace = await this.repositories.prepare(run, branch);
       if (!workspace) throw new Error("kernel_rewind_repository_snapshot_unavailable");
       try {
+        if (workspace.resourceId !== resourceId) throw new Error("kernel_rewind_repository_resource_mismatch");
+        const checkpointFingerprint = repositoryTreeFingerprint(workspace);
+        const checkpointRevision = workspace.revision;
         const original = repositoryFile(workspace, path);
-        if (!original) {
-          // Deleting a newly-created path is not yet an allowed internal tool;
-          // deny the mutation rather than pretending an empty file is a rewind.
-          throw new Error("kernel_rewind_new_file_requires_delete_primitive");
-        }
+        if (!original) throw new Error("kernel_rewind_new_file_requires_delete_primitive");
         const originalContent = original.content;
         state.operations.push({
-          kind: "github_file",
+          kind: "github_tree",
           execute: async () => {
             await this.tools.execute(run, {
               id: `${call.id}:rewind`,
@@ -87,9 +92,18 @@ export class AgentKernelRewindCoordinator {
                 path,
                 branch,
                 content: originalContent,
-                message: `Restore verified checkpoint for ${run.runId}`
+                message: `Restore verified checkpoint ${checkpointRevision.slice(0, 12)} for ${run.runId}`
               }
             });
+            const restored = await this.repositories.prepare(run, branch);
+            if (!restored) throw new Error("kernel_rewind_repository_verification_unavailable");
+            try {
+              if (restored.resourceId !== resourceId || repositoryTreeFingerprint(restored) !== checkpointFingerprint) {
+                throw new Error("kernel_rewind_repository_tree_mismatch");
+              }
+            } finally {
+              await this.repositories.release(restored).catch(() => undefined);
+            }
           }
         });
       } finally {
@@ -113,9 +127,7 @@ export class AgentKernelRewindCoordinator {
       return;
     }
 
-    if (unsafeWithoutGenericRollback.has(call.name)) {
-      throw new Error(`kernel_rewind_unsupported_mutation:${call.name}`);
-    }
+    if (unsafeWithoutGenericRollback.has(call.name)) throw new Error(`kernel_rewind_unsupported_mutation:${call.name}`);
   }
 
   async rewind(runId: string): Promise<boolean> {
