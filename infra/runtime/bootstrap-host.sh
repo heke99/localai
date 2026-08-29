@@ -86,7 +86,8 @@ keys = [
     "DIV3RSA_RUNTIME_GPU_COUNT", "DIV3RSA_RUNTIME_VRAM_GB",
     "DIV3RSA_INTEGRATION_GATEWAY_URL", "DIV3RSA_RUNTIME_GIT_URL",
     "DIV3RSA_RUNTIME_GIT_REF", "DIV3RSA_LLAMA_CPP_REVISION",
-    "DIV3RSA_RUNTIME_PUBLIC_ENDPOINT", "DIV3RSA_RUNTIME_PUBLIC_HEALTH_URL"
+    "DIV3RSA_RUNTIME_PUBLIC_ENDPOINT", "DIV3RSA_RUNTIME_PUBLIC_HEALTH_URL",
+    "DIV3RSA_RUNTIME_ROLE"
 ]
 with open(path, "w", encoding="utf-8") as handle:
     for key in keys:
@@ -137,6 +138,9 @@ aliases = data.get("aliases")
 if isinstance(aliases, list) and aliases:
     required["DIV3RSA_RUNTIME_ALIASES"] = ",".join(str(item) for item in aliases)
 required["DIV3RSA_RUNTIME_PROVIDER_KIND"] = "managed"
+role = os.environ.get("DIV3RSA_RUNTIME_ROLE")
+if role:
+    required["DIV3RSA_RUNTIME_ROLE"] = role
 with open(path, "w", encoding="utf-8") as handle:
     for key, value in required.items():
         handle.write(f"export {key}={shlex.quote(str(value))}\n")
@@ -247,9 +251,21 @@ EOF
 }
 
 install_runtime_service() {
+  local runtime_role="${DIV3RSA_RUNTIME_ROLE:-combined}"
+  local start_script="${REPO_DIR}/infra/runtime/start-production.sh"
+  case "$runtime_role" in
+    inference)
+      start_script="${REPO_DIR}/infra/gpu/start-inference-node.sh"
+      [[ -f "$start_script" ]] || fatal "inference start script missing: ${start_script}"
+      ;;
+    combined|worker)
+      ;;
+    *) fatal "unsupported DIV3RSA_RUNTIME_ROLE: ${runtime_role}" ;;
+  esac
+
   cat >"$SERVICE_FILE" <<EOF
 [Unit]
-Description=DIV3RSA provider-neutral AI runtime
+Description=DIV3RSA provider-neutral AI runtime (${runtime_role})
 After=network-online.target caddy.service
 Wants=network-online.target
 
@@ -257,7 +273,8 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=${REPO_DIR}
-ExecStart=/bin/bash -lc 'set -a; source ${ENV_FILE}; set +a; exec bash ${REPO_DIR}/infra/runtime/start-production.sh'
+Environment=DIV3RSA_RUNTIME_ROLE=${runtime_role}
+ExecStart=/bin/bash -lc 'set -a; source ${ENV_FILE}; set +a; export DIV3RSA_RUNTIME_ROLE=${runtime_role}; exec bash ${start_script}'
 Restart=always
 RestartSec=5
 TimeoutStopSec=45
@@ -301,8 +318,9 @@ append_environment DIV3RSA_MODEL_PORT "$MODEL_PORT"
 append_environment DIV3RSA_RUNTIME_LOG_DIR "${DIV3RSA_RUNTIME_LOG_DIR:-${ROOT_DIR}/logs}"
 append_environment DIV3RSA_INSTALL_NODE_DEPS_ON_BOOT "0"
 append_environment DIV3RSA_START_PROVIDER_BASE_SERVICES "0"
+if [[ -n "${DIV3RSA_RUNTIME_ROLE:-}" ]]; then append_environment DIV3RSA_RUNTIME_ROLE "$DIV3RSA_RUNTIME_ROLE"; fi
 configure_public_ingress
 install_runtime_service
 
-log "bootstrap complete; runtime supervisor is active"
+log "bootstrap complete; runtime supervisor is active role=${DIV3RSA_RUNTIME_ROLE:-combined}"
 systemctl --no-pager --full status div3rsa-runtime || true
