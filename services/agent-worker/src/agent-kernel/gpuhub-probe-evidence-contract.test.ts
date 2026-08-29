@@ -38,7 +38,7 @@ describe("GPUHub shadow probe evidence contract", () => {
     expect(source).not.toContain("tools:");
   });
 
-  it("delays only loaded evidence probes until their foreground baseline stream completes", async () => {
+  it("delays loaded probes, disables thinking and uses a bounded fast verdict path", async () => {
     const preload = await readFile(resolve(root, "scripts/agent_kernel_probe_no_thinking_preload.mjs"), "utf8");
     expect(preload).toContain("loadedForegroundIndex");
     expect(preload).toContain("loadedProbeIndex");
@@ -46,6 +46,12 @@ describe("GPUHub shadow probe evidence contract", () => {
     expect(preload).toContain("await deferred.promise");
     expect(preload).toContain('reasoning_effort: "none"');
     expect(preload).toContain("enable_thinking: false");
+    expect(preload).toContain("LOADED_PROBE_MAX_TOKENS = 2");
+    expect(preload).toContain("withLoadedFastVerdictConstraints");
+    expect(preload).toContain("canonicalFastVerdict");
+    expect(preload).toContain('normalized === "W"');
+    expect(preload).toContain('normalized === "H"');
+    expect(preload).toContain("nonStreamingFastVerdictToSse");
     expect(preload).not.toContain("DIV3RSA_AGENT_KERNEL_V2_PROBES_ENABLED");
   });
 });
