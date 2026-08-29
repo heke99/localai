@@ -29,6 +29,8 @@ test("mobile dashboard keeps chat history reachable without covering the compose
 
   const nav = page.getByRole("navigation", { name: "Huvudnavigation" });
   await expect(nav).toBeVisible();
-  await expect(nav.getByRole("button", { name: "Chat", exact: true })).toBeVisible();
-  await expect(nav.getByRole("button", { name: "Inställningar", exact: true })).toBeAttached();
+  const navButtons = nav.locator("button");
+  await expect(navButtons).toHaveCount(7);
+  await expect(navButtons.first()).toBeVisible();
+  await expect(navButtons.last()).toBeAttached();
 });
