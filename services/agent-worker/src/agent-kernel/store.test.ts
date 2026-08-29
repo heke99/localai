@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { AGENT_KERNEL_PROTOCOL_VERSION } from "./contracts";
 import { SupabaseAgentKernelStore, type AgentKernelStoreRpcClient } from "./store";
 
 function client() {
@@ -16,14 +17,24 @@ function client() {
 describe("SupabaseAgentKernelStore", () => {
   it("persists verified checkpoints through the service-role RPC contract", async () => {
     const { rpc, store } = client();
+    const observedAt = new Date().toISOString();
     await store.recordCheckpoint({
+      protocolVersion: AGENT_KERNEL_PROTOCOL_VERSION,
       checkpointId: "cp-1",
       runId: "11111111-1111-4111-8111-111111111111",
       label: "before-mutation",
-      snapshots: [{ kind: "repository", resourceId: "repo-1", revision: "a".repeat(40), restoreToken: "branch:work" }],
-      verification: { passed: true, evidenceRefs: ["verification:baseline"] },
+      plan: {
+        protocolVersion: AGENT_KERNEL_PROTOCOL_VERSION,
+        task: { runId: "11111111-1111-4111-8111-111111111111", conversationId: null, objective: "verify durable store", mode: "code", requestedAt: observedAt, capabilities: ["repository", "verification"] },
+        agents: [{ agentId: "verifier", role: "verifier", capabilities: ["verification"], modelAlias: "verifier-prod" }],
+        steps: [],
+        finalVerifierAgentId: "verifier"
+      },
+      results: [],
+      snapshots: [{ kind: "repository", locator: "repo:heke99/localai#work", revision: "a".repeat(40), digest: "c".repeat(64) }],
+      verification: { passed: true, verifierAgentId: "verifier", findings: [], verifiedAt: observedAt },
       verified: true,
-      createdAt: new Date().toISOString()
+      createdAt: observedAt
     }, "b".repeat(64));
 
     expect(rpc).toHaveBeenCalledWith("worker_record_agent_kernel_checkpoint", expect.objectContaining({
