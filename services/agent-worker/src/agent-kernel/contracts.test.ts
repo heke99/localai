@@ -24,30 +24,9 @@ function validPlan(): KernelPlan {
       { agentId: "verifier", role: "verifier", capabilities: ["reasoning", "verification"], modelAlias: "general-prod" }
     ],
     steps: [
-      {
-        id: "plan",
-        objective: "Produce a bounded implementation plan",
-        assignedAgentId: "planner",
-        dependsOn: [],
-        requiredCapabilities: ["reasoning"],
-        verificationRequired: false
-      },
-      {
-        id: "implement",
-        objective: "Implement the planned change",
-        assignedAgentId: "coder",
-        dependsOn: ["plan"],
-        requiredCapabilities: ["repository"],
-        verificationRequired: true
-      },
-      {
-        id: "verify",
-        objective: "Verify the implementation against evidence",
-        assignedAgentId: "verifier",
-        dependsOn: ["implement"],
-        requiredCapabilities: ["verification"],
-        verificationRequired: true
-      }
+      { id: "plan", objective: "Produce a bounded implementation plan", assignedAgentId: "planner", dependsOn: [], requiredCapabilities: ["reasoning"], verificationRequired: false },
+      { id: "implement", objective: "Implement the planned change", assignedAgentId: "coder", dependsOn: ["plan"], requiredCapabilities: ["repository"], verificationRequired: true },
+      { id: "verify", objective: "Verify the implementation against evidence", assignedAgentId: "verifier", dependsOn: ["implement"], requiredCapabilities: ["verification"], verificationRequired: true }
     ],
     finalVerifierAgentId: "verifier"
   };
@@ -60,20 +39,13 @@ describe("Agent Kernel V2 contracts", () => {
 
   it("rejects duplicate identities, missing capabilities and dependency cycles", () => {
     const duplicateAgent = validPlan();
-    expect(() => assertValidKernelPlan({ ...duplicateAgent, agents: [...duplicateAgent.agents, duplicateAgent.agents[0]!] }))
-      .toThrowError(AgentKernelContractError);
+    expect(() => assertValidKernelPlan({ ...duplicateAgent, agents: [...duplicateAgent.agents, duplicateAgent.agents[0]!] })).toThrowError(AgentKernelContractError);
 
     const missingCapability = validPlan();
-    expect(() => assertValidKernelPlan({
-      ...missingCapability,
-      agents: missingCapability.agents.map((agent) => agent.agentId === "coder" ? { ...agent, capabilities: ["reasoning"] as const } : agent)
-    })).toThrow(/lacks capability repository/);
+    expect(() => assertValidKernelPlan({ ...missingCapability, agents: missingCapability.agents.map((agent) => agent.agentId === "coder" ? { ...agent, capabilities: ["reasoning"] as const } : agent) })).toThrow(/lacks capability repository/);
 
     const cyclic = validPlan();
-    expect(() => assertValidKernelPlan({
-      ...cyclic,
-      steps: cyclic.steps.map((step) => step.id === "plan" ? { ...step, dependsOn: ["verify"] } : step)
-    })).toThrow(/Cycle detected/);
+    expect(() => assertValidKernelPlan({ ...cyclic, steps: cyclic.steps.map((step) => step.id === "plan" ? { ...step, dependsOn: ["verify"] } : step) })).toThrow(/Cycle detected/);
   });
 
   it("requires the final verifier to have verification capability", () => {
@@ -89,7 +61,10 @@ describe("Agent Kernel V2 rollout config", () => {
       mode: "legacy",
       maxSubagents: 4,
       maxParallelSubagents: 2,
-      verificationRequired: true
+      verificationRequired: true,
+      activeCanaryBasisPoints: 0,
+      activeTimeoutMsPerCall: 4_000,
+      activeMaxOutputTokensPerCall: 384
     });
   });
 
@@ -104,7 +79,26 @@ describe("Agent Kernel V2 rollout config", () => {
       DIV3RSA_AGENT_KERNEL_V2_MODE: "shadow",
       DIV3RSA_AGENT_KERNEL_V2_MAX_SUBAGENTS: "6",
       DIV3RSA_AGENT_KERNEL_V2_MAX_PARALLEL_SUBAGENTS: "3"
-    })).toEqual({ enabled: true, mode: "shadow", maxSubagents: 6, maxParallelSubagents: 3, verificationRequired: true });
+    })).toEqual({
+      enabled: true,
+      mode: "shadow",
+      maxSubagents: 6,
+      maxParallelSubagents: 3,
+      verificationRequired: true,
+      activeCanaryBasisPoints: 0,
+      activeTimeoutMsPerCall: 4_000,
+      activeMaxOutputTokensPerCall: 384
+    });
+  });
+
+  it("supports bounded active canary controls", () => {
+    expect(agentKernelConfigFromEnvironment({
+      DIV3RSA_AGENT_KERNEL_V2_ENABLED: "1",
+      DIV3RSA_AGENT_KERNEL_V2_MODE: "active",
+      DIV3RSA_AGENT_KERNEL_V2_ACTIVE_CANARY_BPS: "50",
+      DIV3RSA_AGENT_KERNEL_V2_ACTIVE_TIMEOUT_MS: "2500",
+      DIV3RSA_AGENT_KERNEL_V2_ACTIVE_MAX_OUTPUT_TOKENS: "256"
+    })).toMatchObject({ mode: "active", activeCanaryBasisPoints: 50, activeTimeoutMsPerCall: 2500, activeMaxOutputTokensPerCall: 256 });
   });
 
   it("rejects impossible concurrency budgets", () => {

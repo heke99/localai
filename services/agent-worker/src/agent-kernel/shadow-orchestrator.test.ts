@@ -10,6 +10,9 @@ function config(overrides: Partial<AgentKernelConfig> = {}): AgentKernelConfig {
     maxSubagents: 4,
     maxParallelSubagents: 2,
     verificationRequired: true,
+    activeCanaryBasisPoints: 0,
+    activeTimeoutMsPerCall: 4_000,
+    activeMaxOutputTokensPerCall: 384,
     ...overrides
   };
 }
