@@ -11,11 +11,12 @@ const model = process.env.DIV3RSA_MODEL_RUNTIME_ALIAS || "localai-qwen38-v3-q8";
 const outputPath = resolve(root, process.env.DIV3RSA_PROBE_EVIDENCE_OUTPUT || "artifacts/agent-kernel-v2/gpuhub-probe-evidence.json");
 const casesPath = resolve(root, process.env.DIV3RSA_PROBE_EVAL_CASES || "evals/agent-kernel-shadow-probe-quality.json");
 const concurrency = positiveInteger("DIV3RSA_PROBE_LOAD_CONCURRENCY", 8);
-const requestsPerWorker = positiveInteger("DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER", 4);
-const foregroundMaxTokens = positiveInteger("DIV3RSA_PROBE_LOAD_MAX_TOKENS", 256);
-const probeMaxTokens = positiveInteger("DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS", 256);
+const requestsPerWorker = positiveInteger("DIV3RSA_PROBE_LOAD_REQUESTS_PER_WORKER", 16);
+const foregroundMaxTokens = positiveInteger("DIV3RSA_PROBE_LOAD_MAX_TOKENS", 128);
+const probeMaxTokens = positiveInteger("DIV3RSA_AGENT_KERNEL_V2_PROBE_MAX_OUTPUT_TOKENS", 128);
 const probeTimeoutMs = positiveInteger("DIV3RSA_PROBE_TIMEOUT_MS", 4_000);
 const requestTimeoutMs = positiveInteger("DIV3RSA_PROBE_FOREGROUND_TIMEOUT_MS", 120_000);
+const sampleBasisPoints = basisPoints("DIV3RSA_PROBE_EVIDENCE_SAMPLE_BPS", 100);
 
 if (!baseUrl || !apiKey) {
   console.error("Missing DIV3RSA_INFERENCE_BASE_URL or DIV3RSA_INFERENCE_API_KEY");
@@ -30,6 +31,14 @@ function positiveInteger(name, fallback) {
   return value;
 }
 
+function basisPoints(name, fallback) {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 10_000) throw new Error(`invalid_environment:${name}`);
+  return value;
+}
+
 function percentile(values, p) {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
@@ -40,6 +49,35 @@ function percentile(values, p) {
 function finiteOrThrow(value, name) {
   if (!Number.isFinite(value)) throw new Error(`missing_metric:${name}`);
   return value;
+}
+
+function selectedSampleIndexes(total, bps) {
+  if (total < 1 || bps < 1) return new Set();
+  const target = Math.max(1, Math.round((total * bps) / 10_000));
+  const indexes = new Set();
+  for (let i = 0; i < target; i += 1) {
+    indexes.add(Math.min(total - 1, Math.floor(((i + 0.5) * total) / target)));
+  }
+  return indexes;
+}
+
+function parseJsonObject(content) {
+  const trimmed = content.trim();
+  const candidates = [trimmed];
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenceMatch?.[1]) candidates.push(fenceMatch[1].trim());
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {
+      // Continue through bounded candidates only.
+    }
+  }
+  return null;
 }
 
 async function chat({ requestId, messages, maxTokens, timeoutMs }) {
@@ -111,6 +149,7 @@ async function chat({ requestId, messages, maxTokens, timeoutMs }) {
 
 async function runForegroundLoad(label, withProbes) {
   const total = concurrency * requestsPerWorker;
+  const sampledIndexes = withProbes ? selectedSampleIndexes(total, sampleBasisPoints) : new Set();
   let next = 0;
   let probeActive = false;
   const foreground = [];
@@ -122,7 +161,7 @@ async function runForegroundLoad(label, withProbes) {
   const probeTasks = [];
 
   const maybeProbe = (runIndex) => {
-    if (!withProbes) return;
+    if (!withProbes || !sampledIndexes.has(runIndex)) return;
     if (probeActive) {
       probeSkipped += 1;
       return;
@@ -136,7 +175,7 @@ async function runForegroundLoad(label, withProbes) {
           maxTokens: probeMaxTokens,
           timeoutMs: probeTimeoutMs,
           messages: [
-            { role: "system", content: "You are an independent tool-free shadow verifier. Do not use tools. Return JSON only: {\"score\":0-100,\"passed\":boolean,\"reasonCode\":\"short_code\"}." },
+            { role: "system", content: "You are an independent tool-free shadow verifier. Return exactly one JSON object and nothing else: {\"score\":0-100,\"passed\":boolean,\"reasonCode\":\"short_code\"}. Missing requested proof must fail." },
             { role: "user", content: "Evaluate this intentionally generic baseline answer for completeness: The implementation should validate inputs, handle errors, and include tests." }
           ]
         });
@@ -145,12 +184,8 @@ async function runForegroundLoad(label, withProbes) {
         probeOutputTokens += result.outputTokens;
         if (!result.ok) probeErrors += 1;
         else {
-          try {
-            const parsed = JSON.parse(result.content);
-            if (typeof parsed.score !== "number" || typeof parsed.passed !== "boolean") probeErrors += 1;
-          } catch {
-            probeErrors += 1;
-          }
+          const parsed = parseJsonObject(result.content);
+          if (!parsed || typeof parsed.score !== "number" || typeof parsed.passed !== "boolean" || typeof parsed.reasonCode !== "string") probeErrors += 1;
         }
       } finally {
         probeActive = false;
@@ -178,33 +213,36 @@ async function runForegroundLoad(label, withProbes) {
   const successes = foreground.filter((sample) => sample.ok);
   if (successes.length !== foreground.length) throw new Error(`foreground_load_errors:${foreground.length - successes.length}`);
   const decodedTokens = successes.reduce((sum, sample) => sum + sample.outputTokens, 0);
+  const sampledRuns = sampledIndexes.size;
   return {
     requests: foreground.length,
+    sampleBasisPoints,
+    actualSampleRate: total > 0 ? sampledRuns / total : 0,
     p95TtftMs: finiteOrThrow(percentile(successes.map((sample) => sample.ttftMs), 95), `${label}_p95_ttft`),
     aggregateTokensPerSecond: finiteOrThrow(decodedTokens / (wallDurationMs / 1000), `${label}_throughput`),
     wallDurationMs,
     probe: {
-      sampledRuns: withProbes ? total : 0,
-      completedRuns: withProbes ? Math.max(0, total - probeSkipped - probeErrors) : 0,
+      sampledRuns: withProbes ? sampledRuns : 0,
+      completedRuns: withProbes ? Math.max(0, sampledRuns - probeSkipped - probeErrors) : 0,
       capacitySkippedRuns: probeSkipped,
       probeErrors,
       totalProbeCalls: probeCalls,
       totalProbeOutputTokens: probeOutputTokens,
-      p95ProbeDurationMs: withProbes ? finiteOrThrow(percentile(probeDurations, 95), "probe_p95_duration") : 0
+      p95ProbeDurationMs: withProbes && probeDurations.length ? finiteOrThrow(percentile(probeDurations, 95), "probe_p95_duration") : 0
     }
   };
 }
 
 function parseVerifier(content) {
-  try {
-    const parsed = JSON.parse(content);
-    const score = typeof parsed.score === "number" && Number.isFinite(parsed.score) ? Math.max(0, Math.min(100, Math.round(parsed.score))) : null;
-    const passed = typeof parsed.passed === "boolean" ? parsed.passed : null;
-    const reasonCode = typeof parsed.reasonCode === "string" && /^[a-z0-9_-]{1,80}$/i.test(parsed.reasonCode) ? parsed.reasonCode : "verifier_output_unparsed";
-    return { verifierScore: score, verifierPassed: passed, reasonCode };
-  } catch {
+  const parsed = parseJsonObject(content);
+  if (!parsed) return { verifierScore: null, verifierPassed: null, reasonCode: "verifier_output_unparsed" };
+  const score = typeof parsed.score === "number" && Number.isFinite(parsed.score) ? Math.max(0, Math.min(100, Math.round(parsed.score))) : null;
+  const passed = typeof parsed.passed === "boolean" ? parsed.passed : null;
+  const reasonCode = typeof parsed.reasonCode === "string" && /^[a-z0-9_-]{1,80}$/i.test(parsed.reasonCode) ? parsed.reasonCode : "verifier_output_unparsed";
+  if (score == null || passed == null || reasonCode === "verifier_output_unparsed") {
     return { verifierScore: null, verifierPassed: null, reasonCode: "verifier_output_unparsed" };
   }
+  return { verifierScore: score, verifierPassed: passed, reasonCode };
 }
 
 async function runQualityEval() {
@@ -214,10 +252,21 @@ async function runQualityEval() {
   for (const test of suite.cases) {
     const result = await chat({
       requestId: `agent-kernel-quality-${test.id}-${crypto.randomUUID()}`,
-      maxTokens: 128,
+      maxTokens: 96,
       timeoutMs: probeTimeoutMs,
       messages: [
-        { role: "system", content: "You are an independent tool-free quality verifier. Judge only whether the baseline answer satisfies the request. Do not use tools. Return JSON only: {\"score\":0-100,\"passed\":boolean,\"reasonCode\":\"short_machine_code\"}." },
+        {
+          role: "system",
+          content: [
+            "You are an independent tool-free quality verifier. Judge only the supplied baseline answer; never infer work that is not explicitly shown.",
+            "Return exactly one JSON object and nothing else: {\"score\":0-100,\"passed\":boolean,\"reasonCode\":\"short_machine_code\"}.",
+            "passed=true only if every material request requirement and every expectedEvidence item is explicitly satisfied by the baseline answer.",
+            "Missing tests, caller impact analysis, rollback/canary controls, tenant isolation, live/current evidence, citations, measurements, authorization boundaries, or other requested proof must fail.",
+            "Unsupported claims of safety, correctness, freshness, execution, or completion must fail.",
+            "For live/current requests, memory, probability, or an uncited generic value fails even if it might be correct.",
+            "Use score >=70 only when passed=true and score <70 when passed=false."
+          ].join(" ")
+        },
         { role: "user", content: JSON.stringify({ request: test.prompt, baselineAnswer: test.baselineAnswer, expectedEvidence: test.expectedEvidence || [] }) }
       ]
     });
@@ -227,7 +276,7 @@ async function runQualityEval() {
   return results;
 }
 
-console.error(`[agent-kernel-evidence] endpoint=${baseUrl} model=${model} concurrency=${concurrency} requestsPerWorker=${requestsPerWorker}`);
+console.error(`[agent-kernel-evidence] endpoint=${baseUrl} model=${model} concurrency=${concurrency} requestsPerWorker=${requestsPerWorker} sampleBps=${sampleBasisPoints}`);
 const health = await fetch(`${baseUrl.replace(/\/v1$/, "")}/health`, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(2_000) }).catch(() => null);
 if (health && !health.ok && health.status !== 404) throw new Error(`model_health_failed:${health.status}`);
 
@@ -235,13 +284,23 @@ console.error("[agent-kernel-evidence] running quality verifier suite");
 const qualityCases = await runQualityEval();
 console.error("[agent-kernel-evidence] running baseline foreground load");
 const baseline = await runForegroundLoad("baseline", false);
-console.error("[agent-kernel-evidence] running foreground + bounded probe load");
+console.error("[agent-kernel-evidence] running foreground + sampled bounded probe load");
 const loaded = await runForegroundLoad("loaded", true);
 
 const evidence = {
   schemaVersion: 1,
   generatedAt: new Date().toISOString(),
-  runtime: { baseUrl: new URL(baseUrl).origin, model, concurrency, requestsPerWorker, foregroundMaxTokens, probeMaxTokens, probeTimeoutMs },
+  runtime: {
+    baseUrl: new URL(baseUrl).origin,
+    model,
+    concurrency,
+    requestsPerWorker,
+    foregroundMaxTokens,
+    probeMaxTokens,
+    probeTimeoutMs,
+    sampleBasisPoints,
+    actualSampleRate: loaded.actualSampleRate
+  },
   cases: qualityCases,
   load: {
     sampledRuns: loaded.probe.sampledRuns,
