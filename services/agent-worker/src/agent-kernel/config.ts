@@ -6,6 +6,9 @@ export interface AgentKernelConfig {
   readonly maxSubagents: number;
   readonly maxParallelSubagents: number;
   readonly verificationRequired: boolean;
+  readonly activeCanaryBasisPoints: number;
+  readonly activeTimeoutMsPerCall: number;
+  readonly activeMaxOutputTokensPerCall: number;
 }
 
 type EnvironmentMap = Readonly<Record<string, string | undefined>>;
@@ -22,6 +25,13 @@ function integerValue(value: string | undefined, fallback: number, name: string)
   if (value === undefined || value.trim() === "") return fallback;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`invalid_positive_integer_environment:${name}`);
+  return parsed;
+}
+
+function basisPointsValue(value: string | undefined, fallback: number, name: string): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 10_000) throw new Error(`invalid_basis_points_environment:${name}`);
   return parsed;
 }
 
@@ -47,6 +57,9 @@ export function agentKernelConfigFromEnvironment(env: EnvironmentMap = process.e
     mode,
     maxSubagents,
     maxParallelSubagents,
-    verificationRequired: booleanValue(env.DIV3RSA_AGENT_KERNEL_V2_VERIFICATION_REQUIRED, true)
+    verificationRequired: booleanValue(env.DIV3RSA_AGENT_KERNEL_V2_VERIFICATION_REQUIRED, true),
+    activeCanaryBasisPoints: basisPointsValue(env.DIV3RSA_AGENT_KERNEL_V2_ACTIVE_CANARY_BPS, 0, "DIV3RSA_AGENT_KERNEL_V2_ACTIVE_CANARY_BPS"),
+    activeTimeoutMsPerCall: integerValue(env.DIV3RSA_AGENT_KERNEL_V2_ACTIVE_TIMEOUT_MS, 4_000, "DIV3RSA_AGENT_KERNEL_V2_ACTIVE_TIMEOUT_MS"),
+    activeMaxOutputTokensPerCall: integerValue(env.DIV3RSA_AGENT_KERNEL_V2_ACTIVE_MAX_OUTPUT_TOKENS, 384, "DIV3RSA_AGENT_KERNEL_V2_ACTIVE_MAX_OUTPUT_TOKENS")
   };
 }
