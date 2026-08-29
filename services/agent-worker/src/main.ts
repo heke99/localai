@@ -8,8 +8,10 @@ import { AgentKernelShadowQueue } from "./agent-kernel/shadow-queue";
 import { agentKernelConfigFromEnvironment } from "./agent-kernel/config";
 import { AgentKernelShadowProbeRunner } from "./agent-kernel/shadow-probe";
 import { shadowProbeConfigFromEnvironment } from "./agent-kernel/shadow-probe-config";
+import { AgentKernelActiveCanaryAdapter } from "./agent-kernel/active-canary-adapter";
 import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
 import { CompositeWorkerToolRuntime } from "./composite-tool-runtime";
+import { DynamicToolBroker } from "./dynamic-tool-broker";
 import { CoreToolRuntime } from "./core-tool-runtime";
 import { RemoteProviderToolExecutor } from "./remote-provider-executor";
 import { RemoteRepositoryWorkspaceRuntime } from "./repository-runtime";
@@ -41,6 +43,14 @@ function numericEnvironment(name: string, fallback: number): number {
   const value = Number(raw);
   if (!Number.isFinite(value)) throw new Error(`invalid_environment_number:${name}`);
   return value;
+}
+
+function booleanEnvironment(name: string, fallback = false): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) return fallback;
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  throw new Error(`invalid_environment_boolean:${name}`);
 }
 
 export function inferenceRoutingMode(value = process.env.DIV3RSA_INFERENCE_ROUTING_MODE): "direct" | "registry" {
@@ -77,6 +87,7 @@ const inferenceBaseUrl = process.env.DIV3RSA_INFERENCE_BASE_URL?.trim()
   || process.env.QWEN_INFERENCE_BASE_URL?.trim()
   || `http://127.0.0.1:${modelPort}/v1`;
 const inferenceApiKey = requiredAny(["DIV3RSA_INFERENCE_API_KEY", "QWEN_INFERENCE_API_KEY"]);
+const agentKernelConfig = agentKernelConfigFromEnvironment();
 const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApiKey, {
   contextLimit: numericEnvironment("DIV3RSA_MODEL_CONTEXT_SIZE", 32768),
   batchSize: numericEnvironment("DIV3RSA_MODEL_BATCH_SIZE", 2048),
@@ -95,14 +106,14 @@ const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApi
   gpuMetricsUrl: process.env.DIV3RSA_GPU_METRICS_URL?.trim() || null
 });
 const directAdapter = new OpenAiCompatibleAdapter(inferenceBaseUrl, inferenceApiKey, fetch, admission);
-const adapter: ModelAdapter = routingMode === "registry"
+const inferenceAdapter: ModelAdapter = routingMode === "registry"
   ? new RuntimeInferenceRouter(supabase as unknown as RuntimeInferenceRpcClient, inferenceApiKey)
   : directAdapter;
+const adapter: ModelAdapter = new AgentKernelActiveCanaryAdapter(inferenceAdapter, agentKernelConfig);
 const baseQueue = new SupabaseAgentQueue(supabase);
-const agentKernelConfig = agentKernelConfigFromEnvironment();
 const shadowProbeConfig = shadowProbeConfigFromEnvironment();
 const shadowProbeRunner = agentKernelConfig.enabled && agentKernelConfig.mode === "shadow"
-  ? new AgentKernelShadowProbeRunner(shadowProbeConfig, { generate: (input) => adapter.generate({ ...input, disableThinking: true }) })
+  ? new AgentKernelShadowProbeRunner(shadowProbeConfig, { generate: (input) => inferenceAdapter.generate({ ...input, disableThinking: true }) })
   : undefined;
 const queue = new AgentKernelShadowQueue(baseQueue, agentKernelConfig, shadowProbeRunner);
 const workerId = process.env.DIV3RSA_WORKER_ID ?? `agent-worker-${process.pid}`;
@@ -129,7 +140,13 @@ const executors = new Map([
   ["vercel", remoteExecutor]
 ]);
 const integrationToolRuntime = new PermissionedIntegrationToolRuntime(supabase as unknown as ConstructorParameters<typeof PermissionedIntegrationToolRuntime>[0], executors);
-const toolRuntime = new CompositeWorkerToolRuntime([coreToolRuntime, integrationToolRuntime]);
+const baseToolRuntime = new CompositeWorkerToolRuntime([coreToolRuntime, integrationToolRuntime]);
+const dynamicToolDiscoveryEnabled = booleanEnvironment("DIV3RSA_DYNAMIC_TOOL_DISCOVERY_ENABLED", false);
+const toolRuntime = new DynamicToolBroker(baseToolRuntime, {
+  enabled: dynamicToolDiscoveryEnabled,
+  maxImmediateTools: Math.max(1, Math.floor(numericEnvironment("DIV3RSA_DYNAMIC_TOOL_MAX_IMMEDIATE", 8))),
+  maxDiscoveredToolsPerRun: Math.max(1, Math.floor(numericEnvironment("DIV3RSA_DYNAMIC_TOOL_MAX_DISCOVERED", 16)))
+});
 const repositoryRuntime = new RemoteRepositoryWorkspaceRuntime(supabase as unknown as ConstructorParameters<typeof RemoteRepositoryWorkspaceRuntime>[0], gatewayUrl);
 const sandboxRuntime = new SandboxVerificationRuntime(process.env.DIV3RSA_SANDBOX_IMAGE_DIGEST?.trim() || null);
 const skillRuntime = {
@@ -205,7 +222,10 @@ if (runtimeRegistration) {
 
 const idlePollMs = Math.max(50, numericEnvironment("DIV3RSA_QUEUE_IDLE_POLL_MS", 100));
 const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BACKOFF_MS", 750));
-console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; aggregateIdlePollMs=${idlePollMs}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}`);
+const kernelStatus = agentKernelConfig.enabled
+  ? `${agentKernelConfig.mode}${agentKernelConfig.mode === "active" ? `-${agentKernelConfig.activeCanaryBasisPoints}bps` : ""}`
+  : "disabled";
+console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; aggregateIdlePollMs=${idlePollMs}; agentKernel=${kernelStatus}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}; dynamicToolDiscovery=${dynamicToolDiscoveryEnabled ? "enabled" : "disabled"}`);
 
 await runWorkerLanes({
   concurrency: workerConcurrency,
