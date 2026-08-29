@@ -6,6 +6,9 @@ test("mobile dashboard keeps chat history reachable without covering the compose
   await page.route("**/api/runtime/prewarm", (route) => route.fulfill({ status: 204 }));
   await page.goto("/e2e-dashboard-ui");
 
+  const cookieDialog = page.getByRole("dialog", { name: "Cookieinställningar" });
+  if (await cookieDialog.isVisible()) await page.getByRole("button", { name: "Avvisa valfria" }).click();
+
   const composer = page.getByPlaceholder("Vad vill du få gjort?");
   await expect(composer).toBeVisible();
 
