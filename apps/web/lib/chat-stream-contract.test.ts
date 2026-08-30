@@ -27,9 +27,23 @@ describe("chat streaming UI contract", () => {
   it("keeps the last streamed answer visible while persisted conversation state catches up", () => {
     const preview = source("apps/web/app/dashboard/run-stream-preview.tsx");
     expect(preview).toContain("if (terminal) return;");
-    expect(preview).toContain("if (activeConversationId !== conversationId || !snapshot?.content) return null;");
-    expect(preview).not.toContain("if (terminal || activeConversationId !== conversationId || !snapshot?.content) return null;");
+    expect(preview).toContain("if (activeConversationId !== conversationId || !snapshot) return null;");
+    expect(preview).toContain("if (!displayedContent && !showActivity) return null;");
+    expect(preview).toContain("if (!terminal || !snapshot?.content || activeConversationId !== conversationId) return;");
+    expect(preview).toContain("const handoffReady = () => persistedAssistantCount(canvas, streamRef.current) > baseline;");
     expect(preview).toContain("data-stream-revision");
+  });
+
+  it("shows only user-safe procedural activity and smooths authoritative stream snapshots", () => {
+    const route = source("apps/web/app/api/runs/[runId]/stream/route.ts");
+    const preview = source("apps/web/app/dashboard/run-stream-preview.tsx");
+    expect(route).toContain("function safeActivity(row: RunStreamRow)");
+    expect(route).toContain("const urlTarget = safeUrlTarget(state.url) ?? safeUrlTarget(state.target);");
+    expect(route).toContain("const path = url.pathname === \"/\" ? \"\" : url.pathname");
+    expect(route).not.toContain("activity_state: current.activity_state");
+    expect(preview).toContain("requestAnimationFrame(animate)");
+    expect(preview).toContain('label: "Skriver svar"');
+    expect(preview).toContain("data-run-activity={activity.kind}");
   });
 
   it("uses SSE as the primary run-status transport and only slow REST recovery polling", () => {
