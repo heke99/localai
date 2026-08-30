@@ -8,6 +8,8 @@ REPOSITORY="mukul975/Anthropic-Cybersecurity-Skills"
 BASE_DIR="${DIV3RSA_SECURITY_SKILL_BASE_DIR:-${ROOT_DIR}/runtime/security-skills}"
 FINAL_DIR="${DIV3RSA_SECURITY_SKILL_ROOT:-${BASE_DIR}/${COMMIT}}"
 ARCHIVE_URL="https://github.com/${REPOSITORY}/archive/${COMMIT}.tar.gz"
+
+mkdir -p "$BASE_DIR"
 TMP_DIR="$(mktemp -d "${BASE_DIR}/.sync-${COMMIT}.XXXXXX")"
 ARCHIVE="${TMP_DIR}/upstream.tar.gz"
 EXTRACTED="${TMP_DIR}/extracted"
@@ -16,7 +18,7 @@ SNAPSHOT="${TMP_DIR}/snapshot"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
-mkdir -p "$BASE_DIR" "$EXTRACTED" "$SNAPSHOT/skills"
+mkdir -p "$EXTRACTED" "$SNAPSHOT/skills"
 
 if [[ -f "$FINAL_DIR/source.json" && -f "$FINAL_DIR/index.json" ]]; then
   if node "$REPO_DIR/scripts/validate_security_skill_snapshot.mjs" "$FINAL_DIR" >/dev/null; then
