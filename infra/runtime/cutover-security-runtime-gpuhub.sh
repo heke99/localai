@@ -13,6 +13,8 @@ TEST_IP="${DIV3RSA_SECURITY_E2E_IP:-10.254.254.1}"
 TEST_PORT="${DIV3RSA_SECURITY_E2E_PORT:-18080}"
 TEST_TLS_PORT="${DIV3RSA_SECURITY_E2E_TLS_PORT:-18443}"
 TOOLS_ROOT="${DIV3RSA_SECURITY_TOOLS_ROOT:-/opt/div3rsa/security-tools}"
+INSTALL_ROOT="${DIV3RSA_SECURITY_INSTALL_ROOT:-/opt/div3rsa/localai}"
+ENV_FILE="${DIV3RSA_SECURITY_ENV_FILE:-/etc/div3rsa/security-executor.env}"
 READINESS_DIR="${DIV3RSA_SECURITY_READINESS_DIR:-/var/lib/div3rsa}"
 READINESS_FILE="${DIV3RSA_SECURITY_READINESS_FILE:-${READINESS_DIR}/security-runtime-readiness.json}"
 FIXTURE_PID=""
@@ -23,6 +25,12 @@ TLS_DIR=""
 for cmd in curl screen openssl; do command -v "$cmd" >/dev/null 2>&1 || fatal "required command missing: $cmd"; done
 [[ -d "$APP_DIR/.git" ]] || fatal "GPUHub checkout missing: $APP_DIR"
 [[ -f "$WORKER_ENV_FILE" ]] || fatal "GPUHub worker env missing: $WORKER_ENV_FILE"
+
+security_supervisor() {
+  DIV3RSA_SECURITY_INSTALL_ROOT="$INSTALL_ROOT" \
+  DIV3RSA_SECURITY_ENV_FILE="$ENV_FILE" \
+    bash "$INSTALL_ROOT/infra/runtime/security-executor-supervisor.sh" "$1"
+}
 
 cleanup() {
   if [[ -n "$FIXTURE_PID" ]]; then kill "$FIXTURE_PID" >/dev/null 2>&1 || true; fi
@@ -62,7 +70,7 @@ done
 exec "\$REAL" -t "\$TEMPLATES" "\$@"
 EOF
 chmod 0755 "$TOOLS_ROOT/bin/nuclei"
-systemctl restart div3rsa-security-executor.service
+security_supervisor restart
 curl --fail --silent --show-error --max-time 3 http://127.0.0.1:7319/health >/dev/null
 
 # Provisioning changes worker environment. Restart only the worker; recovery-v2
@@ -150,7 +158,7 @@ current_sha="$(git rev-parse HEAD)"
 ' "$READINESS_TMP" "$READINESS_FILE" "$current_sha"
 rm -f "$READINESS_TMP"
 
-systemctl is-active --quiet div3rsa-security-executor.service || fatal "security executor service not active"
+security_supervisor status || fatal "security executor supervisor not active"
 curl --fail --silent --show-error --max-time 3 http://127.0.0.1:7319/health >/dev/null
 "$NODE_BIN" -e 'const fs=require("fs"); const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(v.ready!==true||v.commit!==process.argv[2]||v.cases!==6||v.passed!==6) process.exit(1)' "$READINESS_FILE" "$current_sha" || fatal "security readiness marker invalid or stale"
 log "GPUHub security runtime live cutover and full agent readiness passed"
