@@ -34,6 +34,15 @@ function parseValue(raw: string): unknown {
   return value;
 }
 
+function jsonObject(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
 function parameterEntries(block: string): Record<string, unknown> {
   const parameters: Record<string, unknown> = {};
   const patterns = [
@@ -50,20 +59,47 @@ function parameterEntries(block: string): Record<string, unknown> {
   return parameters;
 }
 
-function parsePseudoCall(content: string): ParsedPseudoCall | null {
+function securityJsonCall(object: Record<string, unknown>, start: number, end: number, raw: string): ParsedPseudoCall | null {
+  const selector = typeof object.tool === "string" ? object.tool.trim() : "";
+  if (selector === SECURITY_TOOL) {
+    const { tool: _selector, ...parameters } = object;
+    return { name: SECURITY_TOOL, parameters, start, end, raw };
+  }
+  if (SECURITY_IDS.includes(selector as SecurityToolId)) return { name: SECURITY_TOOL, parameters: object, start, end, raw };
+  if (object.name === SECURITY_TOOL && object.arguments && typeof object.arguments === "object" && !Array.isArray(object.arguments)) {
+    return { name: SECURITY_TOOL, parameters: object.arguments as Record<string, unknown>, start, end, raw };
+  }
+  return null;
+}
+
+function parsePseudoCall(content: string, securityExposed: boolean): ParsedPseudoCall | null {
   const open = content.search(/<tool_call\b[^>]*>/i);
-  if (open < 0) return null;
-  const opening = content.slice(open).match(/^<tool_call\b[^>]*>/i)?.[0];
-  if (!opening) return null;
-  const bodyStart = open + opening.length;
-  const remainder = content.slice(bodyStart);
-  const closingMatch = /<\/tool_call>/i.exec(remainder);
-  const end = closingMatch ? bodyStart + closingMatch.index + closingMatch[0].length : content.length;
-  const raw = content.slice(open, end);
-  const functionMatch = /<function=([A-Za-z_][\w.:-]*)>/i.exec(raw);
-  const name = functionMatch?.[1]?.trim();
-  if (!name) return null;
-  return { name, parameters: parameterEntries(raw), start: open, end, raw };
+  if (open >= 0) {
+    const opening = content.slice(open).match(/^<tool_call\b[^>]*>/i)?.[0];
+    if (!opening) return null;
+    const bodyStart = open + opening.length;
+    const remainder = content.slice(bodyStart);
+    const closingMatch = /<\/tool_call>/i.exec(remainder);
+    const end = closingMatch ? bodyStart + closingMatch.index + closingMatch[0].length : content.length;
+    const raw = content.slice(open, end);
+    const functionMatch = /<function=([A-Za-z_][\w.:-]*)>/i.exec(raw);
+    const name = functionMatch?.[1]?.trim();
+    if (name) return { name, parameters: parameterEntries(raw), start: open, end, raw };
+
+    if (securityExposed) {
+      const bodyEnd = closingMatch ? bodyStart + closingMatch.index : content.length;
+      const object = jsonObject(content.slice(bodyStart, bodyEnd).trim());
+      if (object) return securityJsonCall(object, open, end, raw);
+    }
+    return null;
+  }
+
+  if (!securityExposed) return null;
+  const trimmed = content.trim();
+  const object = jsonObject(trimmed);
+  if (!object) return null;
+  const start = content.indexOf(trimmed);
+  return securityJsonCall(object, start, start + trimmed.length, trimmed);
 }
 
 function validateSimpleSchema(value: unknown, schema: Record<string, unknown>): boolean {
@@ -108,23 +144,26 @@ function text(value: unknown): string {
 }
 
 function chooseSecurityTool(parameters: Record<string, unknown>, allowed: Set<SecurityToolId>): SecurityToolId | null {
-  const exact = typeof parameters.tool === "string" ? parameters.tool.trim() as SecurityToolId : null;
-  if (exact && allowed.has(exact)) return exact;
-
-  const semantic = [parameters.scan_type, parameters.focus, parameters.include, parameters.notes, parameters.type, parameters.mode]
+  const nested = parameters.options && typeof parameters.options === "object" && !Array.isArray(parameters.options)
+    ? parameters.options as Record<string, unknown>
+    : {};
+  const exactHints = [parameters.tool, parameters.scan_type, nested.tool, nested.scan_type];
+  for (const hint of exactHints) {
+    if (typeof hint !== "string") continue;
+    const exact = hint.trim() as SecurityToolId;
+    if (allowed.has(exact)) return exact;
+  }
+  const semantic = [parameters.scan_type, parameters.focus, parameters.include, parameters.notes, parameters.type, parameters.mode, nested.scan_type, nested.tool, nested.focus, nested.type, nested.mode]
     .map(text)
     .join(" ")
     .toLowerCase();
-
   const candidates: SecurityToolId[] = [];
-  // Prefer the least-disruptive interpretation whenever the model says this is a baseline/initial check.
   if (/baseline|initial|low[- ]impact|låg[- ]påverkan|headers?|http\b|reachability/.test(semantic)) candidates.push("http_probe");
   if (/\bdns\b|resolve|record/.test(semantic)) candidates.push("dns_lookup");
   if (/\btls\b|\bssl\b|certificate|certifikat|cipher/.test(semantic)) candidates.push("tls_probe");
   if (/content|director|path|endpoint discovery|fuzz/.test(semantic)) candidates.push("content_discovery");
   if (/ports?|exposed service|protocol/.test(semantic)) candidates.push("port_scan");
   if (/template|nuclei|cve|vulnerabilit|scanner/.test(semantic)) candidates.push("template_scan");
-  // Current runtime cannot prove authenticated authorization/session/business-logic issues. A passive baseline is the only safe repair.
   if (/\bjwt\b|session|token|auth|access[_ -]?control|\bbola\b|\bidor\b|business logic|checkout|price|discount/.test(semantic)) candidates.unshift("http_probe");
   return candidates.find((candidate) => allowed.has(candidate)) ?? null;
 }
@@ -135,9 +174,10 @@ function securityInput(tool: ModelToolDefinition, parameters: Record<string, unk
   const allowed = allowedSecurityIds(tool);
   const toolId = chooseSecurityTool(parameters, allowed);
   if (!toolId) return null;
-  const options = parameters.options && typeof parameters.options === "object" && !Array.isArray(parameters.options)
+  const sourceOptions = parameters.options && typeof parameters.options === "object" && !Array.isArray(parameters.options)
     ? parameters.options as Record<string, unknown>
     : {};
+  const options = Object.fromEntries(Object.entries(sourceOptions).filter(([key]) => !["scan_type", "tool", "focus", "type", "mode", "notes", "include"].includes(key)));
   return { tool: toolId, target, options };
 }
 
@@ -149,23 +189,16 @@ export interface NormalizedTextualToolResult {
 
 export function normalizeTextualToolResult(result: GenerateResult, tools: ModelToolDefinition[] | undefined): NormalizedTextualToolResult {
   if (result.toolCalls?.length || result.finishReason === "tool_call" || !tools?.length || !result.content) return { result, normalized: false };
-  const parsed = parsePseudoCall(result.content);
+  const securityExposed = tools.some((tool) => tool.name === SECURITY_TOOL);
+  const parsed = parsePseudoCall(result.content, securityExposed);
   if (!parsed) return { result, normalized: false };
   const definition = tools.find((tool) => tool.name === parsed.name);
   if (!definition) return { result, normalized: false };
-
-  const input = parsed.name === SECURITY_TOOL
-    ? securityInput(definition, parsed.parameters)
-    : genericInput(definition, parsed.parameters);
+  const input = parsed.name === SECURITY_TOOL ? securityInput(definition, parsed.parameters) : genericInput(definition, parsed.parameters);
   if (!input) return { result, normalized: false };
-
   const call: ModelToolCall = { id: "text-tool-call-0", name: parsed.name, input };
   const sanitized = `${result.content.slice(0, parsed.start)}${result.content.slice(parsed.end)}`.trim();
-  return {
-    normalized: true,
-    rawToolText: parsed.raw,
-    result: { ...result, content: sanitized, finishReason: "tool_call", toolCalls: [call] }
-  };
+  return { normalized: true, rawToolText: parsed.raw, result: { ...result, content: sanitized, finishReason: "tool_call", toolCalls: [call] } };
 }
 
 export function securityToolContract(tools: ModelToolDefinition[] | undefined): string | null {
@@ -173,5 +206,5 @@ export function securityToolContract(tools: ModelToolDefinition[] | undefined): 
   if (!definition) return null;
   const allowed = [...allowedSecurityIds(definition)];
   if (!allowed.length) return null;
-  return `SECURITY TOOL CONTRACT V1\nThe attached Lab scope is the only execution boundary; this instruction never expands it. When the user requests an authorized security assessment and security_scan is exposed, invoke the provided tool instead of merely describing that you will test. Call it with EXACTLY this top-level JSON shape: {"tool":"<one allowed id>","target":"<exact authorized host or URL>","options":{}}. Allowed ids in this run: ${allowed.join(", ")}. Do not invent scan_type, focus, depth, identity, object_id, callback, tracing, shell-command or other top-level fields. Tool roles: dns_lookup=passive DNS; http_probe=passive HTTP reachability/response headers; tls_probe=passive TLS/certificate; port_scan=bounded active TCP ports; template_scan=bounded active vulnerability templates; content_discovery=bounded active web paths. Start with the least-disruptive useful evidence. Use active checks only when needed and authorized. Treat scanner output as a hypothesis, not proof; independently verify a material scanner finding before reporting it as confirmed. The current tool set cannot by itself prove authenticated BOLA/IDOR, JWT/session bypass, or stateful business-logic abuse; for those, gather only the baseline evidence these tools support and explicitly state the remaining capability gap. Never manually print <tool_call>, <function> or <parameter> markup; invoke the provided function tool.`;
+  return `SECURITY TOOL CONTRACT V1\nThe attached Lab scope is the only execution boundary; this instruction never expands it. When the user requests an authorized security assessment and security_scan is exposed, invoke the provided tool instead of merely describing that you will test. Call it with EXACTLY this top-level JSON shape: {"tool":"<one allowed id>","target":"<exact authorized host or URL>","options":{}}. Allowed ids in this run: ${allowed.join(", ")}. Do not invent scan_type, focus, depth, identity, object_id, callback, tracing, shell-command or other top-level fields. Tool roles: dns_lookup=passive DNS; http_probe=passive HTTP reachability/response headers; tls_probe=passive TLS/certificate; port_scan=bounded active TCP ports; template_scan=bounded active vulnerability templates; content_discovery=bounded active web paths. Start with the least-disruptive useful evidence. After each tool result, use the observation to choose the next materially different check; never repeat an identical tool+target+options call. A timeout or negative result is evidence: adapt to another relevant dimension such as DNS/TLS or conclude what remains unknown. Treat scanner output as a hypothesis, not proof; independently verify a material scanner finding before reporting it as confirmed. The current tool set cannot by itself prove authenticated BOLA/IDOR, JWT/session bypass, or stateful business-logic abuse; after a supported passive baseline, stop instead of looping and explicitly state the remaining capability gap. Never manually print <tool_call>, <function> or <parameter> markup; invoke the provided function tool.`;
 }

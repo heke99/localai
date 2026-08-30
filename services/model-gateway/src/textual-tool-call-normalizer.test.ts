@@ -35,8 +35,25 @@ describe("textual tool-call normalization", () => {
     expect(normalized.result.content).toBe("Jag kontrollerar baseline.");
   });
 
+  it("normalizes the JSON-in-tool-call form observed in the live GPUHub baseline", () => {
+    const normalized = normalizeTextualToolResult(result(`<tool_call>\n{"tool":"security_scan","target":"https://edge.localai.test","options":{"scan_type":"http_probe"}}\n</tool_call>`), [securityTool]);
+    expect(normalized.normalized).toBe(true);
+    expect(normalized.result.toolCalls?.[0]).toEqual({ id: "text-tool-call-0", name: "security_scan", input: { tool: "http_probe", target: "https://edge.localai.test", options: {} } });
+  });
+
+  it("normalizes the bare bounded security JSON form observed in the live baseline", () => {
+    const normalized = normalizeTextualToolResult(result(`{"tool":"http_probe","target":"portal.localai.test","options":{}}`), [securityTool]);
+    expect(normalized.normalized).toBe(true);
+    expect(normalized.result.toolCalls?.[0]).toEqual({ id: "text-tool-call-0", name: "security_scan", input: { tool: "http_probe", target: "portal.localai.test", options: {} } });
+  });
+
   it("repairs Qwen baseline vocabulary without forwarding hallucinated top-level fields", () => {
     const normalized = normalizeTextualToolResult(result(`<tool_call>\n<function=security_scan>\n<parameter=target>https://headers.localai.test</parameter>\n<parameter=scan_type>baseline</parameter>\n<parameter=depth>deep</parameter>\n<parameter=callback>external</parameter>\n</function>\n</tool_call>`), [securityTool]);
+    expect(normalized.result.toolCalls?.[0]?.input).toEqual({ tool: "http_probe", target: "https://headers.localai.test", options: {} });
+  });
+
+  it("uses nested options hints only for compatibility selection and does not forward them", () => {
+    const normalized = normalizeTextualToolResult(result(`<tool_call>{"tool":"security_scan","target":"https://headers.localai.test","options":{"tool":"http_probe","focus":"headers"}}</tool_call>`), [securityTool]);
     expect(normalized.result.toolCalls?.[0]?.input).toEqual({ tool: "http_probe", target: "https://headers.localai.test", options: {} });
   });
 
@@ -52,6 +69,12 @@ describe("textual tool-call normalization", () => {
 
   it("does not normalize unknown or unexposed function names", () => {
     const normalized = normalizeTextualToolResult(result(`<tool_call><function=shell_exec><parameter=command>id</parameter></function></tool_call>`), [securityTool]);
+    expect(normalized.normalized).toBe(false);
+    expect(normalized.result.toolCalls).toBeUndefined();
+  });
+
+  it("does not treat arbitrary bare JSON as a security call", () => {
+    const normalized = normalizeTextualToolResult(result(`{"tool":"shell_exec","command":"id"}`), [securityTool]);
     expect(normalized.normalized).toBe(false);
     expect(normalized.result.toolCalls).toBeUndefined();
   });
@@ -72,10 +95,11 @@ describe("textual tool-call normalization", () => {
     expect(normalized.normalized).toBe(false);
   });
 
-  it("publishes the exact security contract from the exposed enum", () => {
+  it("publishes evidence-driven loop-control and capability-stop rules", () => {
     const contract = securityToolContract([securityTool]);
     expect(contract).toContain('EXACTLY this top-level JSON shape: {"tool":"<one allowed id>","target":"<exact authorized host or URL>","options":{}}');
-    expect(contract).toContain("http_probe");
+    expect(contract).toContain("never repeat an identical tool+target+options call");
+    expect(contract).toContain("stop instead of looping");
     expect(contract).toContain("cannot by itself prove authenticated BOLA/IDOR");
   });
 });

@@ -5,7 +5,8 @@ import type {
   ModelCapability,
   ModelHealth,
   ModelMessage,
-  ModelStreamDeltaHandler
+  ModelStreamDeltaHandler,
+  ModelToolCall
 } from "@div3rsa/model-sdk";
 import type { AdmissionController } from "./admission-control";
 import { OpenAiCompatibleAdapter as RawOpenAiCompatibleAdapter, type InferenceWatchdogOptions } from "./openai-compatible-adapter";
@@ -52,7 +53,48 @@ function mergeUsage(first: GenerateResult["usage"], second: GenerateResult["usag
   };
 }
 
-function repairRequest(request: GenerateRequest, previous: GenerateResult): GenerateRequest {
+function normalizeTarget(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+}
+
+function stableObject(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableObject);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, nested]) => [key, stableObject(nested)]));
+}
+
+function securityCallKey(call: ModelToolCall): string | null {
+  if (call.name !== "security_scan") return null;
+  const tool = typeof call.input.tool === "string" ? call.input.tool.trim() : "";
+  const target = normalizeTarget(call.input.target);
+  if (!tool || !target) return null;
+  const options = call.input.options && typeof call.input.options === "object" && !Array.isArray(call.input.options) ? call.input.options : {};
+  return JSON.stringify([tool, target, stableObject(options)]);
+}
+
+function priorSecurityCallKeys(request: GenerateRequest): Set<string> {
+  const keys = new Set<string>();
+  for (const message of request.messages) {
+    if (message.role !== "assistant" || !message.toolCalls?.length) continue;
+    for (const call of message.toolCalls) {
+      const key = securityCallKey(call);
+      if (key) keys.add(key);
+    }
+  }
+  return keys;
+}
+
+function duplicateSecurityCall(request: GenerateRequest, result: GenerateResult): boolean {
+  if (result.finishReason !== "tool_call" || !result.toolCalls?.length) return false;
+  const prior = priorSecurityCallKeys(request);
+  return result.toolCalls.some((call) => {
+    const key = securityCallKey(call);
+    return key ? prior.has(key) : false;
+  });
+}
+
+function initialRepairRequest(request: GenerateRequest, previous: GenerateResult): GenerateRequest {
   return {
     ...request,
     temperature: 0,
@@ -62,6 +104,21 @@ function repairRequest(request: GenerateRequest, previous: GenerateResult): Gene
       {
         role: "user",
         content: "Execution repair: you stated or implied that you would perform the authorized security assessment, but no executable function call was produced. Invoke exactly one exposed security_scan function now using the SECURITY TOOL CONTRACT V1 JSON shape. Choose the least-disruptive useful supported subtool for the current step. Do not print XML/tool markup and do not invent unsupported parameters."
+      }
+    ]
+  };
+}
+
+function duplicateRepairRequest(request: GenerateRequest, previous: GenerateResult): GenerateRequest {
+  return {
+    ...request,
+    temperature: 0,
+    messages: [
+      ...request.messages,
+      { role: "assistant", content: previous.content, toolCalls: previous.toolCalls },
+      {
+        role: "user",
+        content: "Decision repair: that exact security_scan tool + target + options call already ran, so do not repeat it. Use the existing tool observations. Either invoke one materially different supported security_scan check that tests a remaining hypothesis within the same authorized scope, or stop and give a concise evidence-based conclusion. After an HTTP timeout, adapt to another useful dimension such as DNS or TLS rather than retrying the identical HTTP probe. For authenticated BOLA/IDOR, JWT/session bypass, or stateful business-logic questions, after the supported passive baseline explicitly state that the current tools cannot verify the requested class and identify the missing authenticated/session/workflow capability. Do not print pseudo-tool markup."
       }
     ]
   };
@@ -91,20 +148,21 @@ export class SecurityAwareOpenAiCompatibleAdapter implements ModelAdapter {
   healthCheck(): Promise<ModelHealth> { return this.raw.healthCheck(); }
 
   async generate(request: GenerateRequest): Promise<GenerateResult> {
-    // The production-readiness harness deliberately narrows security_scan to one exact operation and
-    // one exact target, then applies its own deterministic bridge when Qwen does not honor that schema.
-    // Do not let the general compatibility repair reinterpret those harness turns.
     if (isDeterministicSecurityReadiness(request)) return this.raw.generate(request);
 
     const prepared = withSecurityContract(request);
     const first = await this.raw.generate(prepared);
     const normalizedFirst = normalizeTextualToolResult(first, prepared.tools).result;
+
+    if (duplicateSecurityCall(prepared, normalizedFirst)) {
+      const repaired = await this.raw.generate(duplicateRepairRequest(prepared, normalizedFirst));
+      const normalizedRepair = normalizeTextualToolResult(repaired, prepared.tools).result;
+      return { ...normalizedRepair, usage: mergeUsage(normalizedFirst.usage, normalizedRepair.usage) };
+    }
+
     if (normalizedFirst.finishReason === "tool_call" || !requestsSecurityExecution(prepared) || hasSecurityToolResult(prepared)) return normalizedFirst;
 
-    // One bounded model repair turn is allowed only before the first security tool result. We never
-    // fabricate arguments from the user prompt; if Qwen still cannot emit a parseable call, it fails
-    // normally and the outer agent/eval observes the failure.
-    const second = await this.raw.generate(repairRequest(prepared, normalizedFirst));
+    const second = await this.raw.generate(initialRepairRequest(prepared, normalizedFirst));
     const normalizedSecond = normalizeTextualToolResult(second, prepared.tools).result;
     return { ...normalizedSecond, usage: mergeUsage(normalizedFirst.usage, normalizedSecond.usage) };
   }
@@ -123,9 +181,6 @@ export class SecurityAwareOpenAiCompatibleAdapter implements ModelAdapter {
       return result;
     }
 
-    // Buffer security turns at this compatibility boundary so malformed pseudo-tool XML never leaks
-    // into the user-visible stream. Activity still streams from the worker; a genuine final answer is
-    // emitted after the tool-decision turn has been normalized.
     const result = await this.generate(request);
     if (result.finishReason !== "tool_call" && result.content) await onDelta(result.content);
     return result;
