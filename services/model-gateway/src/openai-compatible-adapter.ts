@@ -62,12 +62,7 @@ function combinedSignal(requestSignal: AbortSignal | undefined, watchdogControll
   return requestSignal ? AbortSignal.any([requestSignal, watchdogController.signal]) : watchdogController.signal;
 }
 
-async function raceWithWatchdog<T>(
-  operation: Promise<T>,
-  timeoutMs: number,
-  errorCode: string,
-  controller: AbortController
-): Promise<T> {
+async function raceWithWatchdog<T>(operation: Promise<T>, timeoutMs: number, errorCode: string, controller: AbortController): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -88,19 +83,9 @@ async function raceWithWatchdog<T>(
 
 function encodeMessage(message: ModelMessage): Record<string, unknown> {
   if (message.role === "assistant" && message.toolCalls?.length) {
-    return {
-      role: "assistant",
-      content: message.content || null,
-      tool_calls: message.toolCalls.map((call) => ({
-        id: call.id,
-        type: "function",
-        function: { name: call.name, arguments: JSON.stringify(call.input) }
-      }))
-    };
+    return { role: "assistant", content: message.content || null, tool_calls: message.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.input) } })) };
   }
-  if (message.role === "tool") {
-    return { role: "tool", content: message.content, tool_call_id: message.toolCallId, name: message.name };
-  }
+  if (message.role === "tool") return { role: "tool", content: message.content, tool_call_id: message.toolCallId, name: message.name };
   return { role: message.role, content: message.content };
 }
 
@@ -121,11 +106,7 @@ function parseToolCalls(message: OpenAiMessage): ModelToolCall[] {
 
 function timingObservation(timings?: LlamaTimings): ModelTimingObservation | null {
   if (!timings) return null;
-  const interTokenLatencyMs = timings.predicted_per_token_ms ?? (
-    timings.predicted_ms != null && timings.predicted_n != null && timings.predicted_n > 0
-      ? timings.predicted_ms / timings.predicted_n
-      : undefined
-  );
+  const interTokenLatencyMs = timings.predicted_per_token_ms ?? (timings.predicted_ms != null && timings.predicted_n != null && timings.predicted_n > 0 ? timings.predicted_ms / timings.predicted_n : undefined);
   if (timings.prompt_ms == null && timings.predicted_per_second == null && interTokenLatencyMs == null) return null;
   return { ttftMs: timings.prompt_ms, tokensPerSecond: timings.predicted_per_second, interTokenLatencyMs };
 }
@@ -134,58 +115,38 @@ function longestTokenPrefixSuffix(value: string, token: string): number {
   const lower = value.toLowerCase();
   const target = token.toLowerCase();
   const max = Math.min(value.length, token.length - 1);
-  for (let length = max; length > 0; length -= 1) {
-    if (lower.endsWith(target.slice(0, length))) return length;
-  }
+  for (let length = max; length > 0; length -= 1) if (lower.endsWith(target.slice(0, length))) return length;
   return 0;
 }
 
 class VisibleContentFilter {
   private pending = "";
   private hidden = false;
-
   push(chunk: string): string {
     if (!chunk) return "";
     this.pending += chunk;
     let visible = "";
-
     while (this.pending) {
       const lower = this.pending.toLowerCase();
       if (this.hidden) {
         const closeIndex = lower.indexOf(THINK_CLOSE);
-        if (closeIndex >= 0) {
-          this.pending = this.pending.slice(closeIndex + THINK_CLOSE.length);
-          this.hidden = false;
-          continue;
-        }
+        if (closeIndex >= 0) { this.pending = this.pending.slice(closeIndex + THINK_CLOSE.length); this.hidden = false; continue; }
         const keep = longestTokenPrefixSuffix(this.pending, THINK_CLOSE);
         this.pending = keep ? this.pending.slice(-keep) : "";
         return visible;
       }
-
       const openIndex = lower.indexOf(THINK_OPEN);
-      if (openIndex >= 0) {
-        visible += this.pending.slice(0, openIndex);
-        this.pending = this.pending.slice(openIndex + THINK_OPEN.length);
-        this.hidden = true;
-        continue;
-      }
-
+      if (openIndex >= 0) { visible += this.pending.slice(0, openIndex); this.pending = this.pending.slice(openIndex + THINK_OPEN.length); this.hidden = true; continue; }
       const keep = longestTokenPrefixSuffix(this.pending, THINK_OPEN);
       const emitLength = this.pending.length - keep;
       visible += this.pending.slice(0, emitLength);
       this.pending = keep ? this.pending.slice(emitLength) : "";
       return visible;
     }
-
     return visible;
   }
-
   finish(): string {
-    if (this.hidden) {
-      this.pending = "";
-      return "";
-    }
+    if (this.hidden) { this.pending = ""; return ""; }
     const visible = this.pending;
     this.pending = "";
     return visible;
@@ -196,29 +157,13 @@ function visibleContent(content: string): string {
   const filter = new VisibleContentFilter();
   return filter.push(content) + filter.finish();
 }
-
-function latestUserContent(request: GenerateRequest): string {
-  return [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
-}
-
-function isDirectClockRequest(text: string): boolean {
-  return /\b(?:klockan|vad\s+är\s+tiden|vilken\s+tid|aktuella\s+tiden|current\s+time|what\s+time|time\s+is\s+it|vilket\s+datum|dagens\s+datum|today'?s\s+date)\b/i.test(text);
-}
-
-function toolResultCount(request: GenerateRequest, name: string): number {
-  return request.messages.filter((message) => message.role === "tool" && message.name === name).length;
-}
-
-function hasTool(request: GenerateRequest, name: string): boolean {
-  return Boolean(request.tools?.some((tool) => tool.name === name));
-}
-
-function systemInstructions(request: GenerateRequest): string {
-  return request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n");
-}
+function latestUserContent(request: GenerateRequest): string { return [...request.messages].reverse().find((message) => message.role === "user")?.content ?? ""; }
+function isDirectClockRequest(text: string): boolean { return /\b(?:klockan|vad\s+är\s+tiden|vilken\s+tid|aktuella\s+tiden|current\s+time|what\s+time|time\s+is\s+it|vilket\s+datum|dagens\s+datum|today'?s\s+date)\b/i.test(text); }
+function toolResultCount(request: GenerateRequest, name: string): number { return request.messages.filter((message) => message.role === "tool" && message.name === name).length; }
+function hasTool(request: GenerateRequest, name: string): boolean { return Boolean(request.tools?.some((tool) => tool.name === name)); }
+function systemInstructions(request: GenerateRequest): string { return request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n"); }
 
 type QwenReasoningEffort = "none" | "low" | "medium" | "xhigh" | undefined;
-
 function reasoningEffort(request: GenerateRequest): QwenReasoningEffort {
   if (request.disableThinking) return "none";
   const system = systemInstructions(request);
@@ -228,7 +173,6 @@ function reasoningEffort(request: GenerateRequest): QwenReasoningEffort {
   const stable = /STABLE INFORMATION:/i.test(system);
   const freshnessRequired = /(?:CURRENT|LIVE) INFORMATION REQUIRED:/i.test(system);
   const critical = /Task risk:\s*critical\b/i.test(system);
-
   if (fast && stable && !freshnessRequired) return "none";
   if (fast) return "low";
   if (standard) return undefined;
@@ -239,23 +183,22 @@ function reasoningEffort(request: GenerateRequest): QwenReasoningEffort {
 function toolChoice(request: GenerateRequest): OpenAiToolChoice | undefined {
   if (!request.tools?.length) return undefined;
   const system = systemInstructions(request);
-  const currentRequired = system.includes("CURRENT INFORMATION REQUIRED") || system.includes("LIVE INFORMATION REQUIRED");
-  if (!currentRequired) return "auto";
-
-  const directClock = system.includes("LIVE INFORMATION REQUIRED") && isDirectClockRequest(latestUserContent(request));
-  if (directClock && hasTool(request, "current_time")) {
-    return toolResultCount(request, "current_time") === 0
-      ? { type: "function", function: { name: "current_time" } }
+  const securityReadinessRequired = system.includes("SECURITY READINESS REQUIRED");
+  if (securityReadinessRequired && hasTool(request, "security_scan")) {
+    return toolResultCount(request, "security_scan") === 0
+      ? { type: "function", function: { name: "security_scan" } }
       : "auto";
   }
-
+  const currentRequired = system.includes("CURRENT INFORMATION REQUIRED") || system.includes("LIVE INFORMATION REQUIRED");
+  if (!currentRequired) return "auto";
+  const directClock = system.includes("LIVE INFORMATION REQUIRED") && isDirectClockRequest(latestUserContent(request));
+  if (directClock && hasTool(request, "current_time")) return toolResultCount(request, "current_time") === 0 ? { type: "function", function: { name: "current_time" } } : "auto";
   if (hasTool(request, "web_search") && hasTool(request, "web_fetch")) {
     if (toolResultCount(request, "web_search") === 0) return { type: "function", function: { name: "web_search" } };
     const corroborationRequired = /Research depth:\s*deep\b/i.test(system) || /Task risk:\s*(?:high|critical)\b/i.test(system);
     const requiredFetches = corroborationRequired ? 2 : 1;
     if (toolResultCount(request, "web_fetch") < requiredFetches) return { type: "function", function: { name: "web_fetch" } };
   }
-
   return "auto";
 }
 
@@ -277,17 +220,7 @@ function requestBody(request: GenerateRequest, stream: boolean) {
 
 export class OpenAiCompatibleAdapter implements ModelAdapter {
   private readonly watchdog: ResolvedInferenceWatchdogOptions;
-
-  constructor(
-    private readonly baseUrl: string,
-    private readonly apiKey: string,
-    private readonly fetcher: Fetch = fetch,
-    private readonly admission?: AdmissionController,
-    watchdog: InferenceWatchdogOptions = {}
-  ) {
-    this.watchdog = watchdogOptions(watchdog);
-  }
-
+  constructor(private readonly baseUrl: string, private readonly apiKey: string, private readonly fetcher: Fetch = fetch, private readonly admission?: AdmissionController, watchdog: InferenceWatchdogOptions = {}) { this.watchdog = watchdogOptions(watchdog); }
   getCapabilities(): ReadonlySet<ModelCapability> { return new Set(QWEN_Q8.capabilities); }
   async estimateTokens(text: string): Promise<number> { return Math.max(1, Math.ceil(text.length / 3.5)); }
 
@@ -296,30 +229,15 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     const controller = new AbortController();
     const signal = combinedSignal(request.signal, controller);
     const operation = (async () => {
-      const response = await this.fetcher(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "x-request-id": request.requestId },
-        body: JSON.stringify(requestBody(request, false)),
-        signal
-      });
+      const response = await this.fetcher(`${this.baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "x-request-id": request.requestId }, body: JSON.stringify(requestBody(request, false)), signal });
       if (!response.ok) throw new Error(`Inference failed with status ${response.status}`);
-      const body = await response.json() as {
-        choices: Array<{ message: OpenAiMessage; finish_reason: string }>;
-        usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
-        timings?: LlamaTimings;
-      };
+      const body = await response.json() as { choices: Array<{ message: OpenAiMessage; finish_reason: string }>; usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }; timings?: LlamaTimings };
       const observation = timingObservation(body.timings);
       if (observation) this.admission?.observeTimings(observation);
       const first = body.choices[0];
       if (!first) throw new Error("Inference returned no choices");
       const toolCalls = parseToolCalls(first.message);
-      return {
-        modelVersionId: QWEN_Q8.id,
-        content: visibleContent(first.message.content ?? ""),
-        finishReason: toolCalls.length || first.finish_reason === "tool_calls" ? "tool_call" as const : first.finish_reason === "length" ? "length" as const : "stop" as const,
-        toolCalls: toolCalls.length ? toolCalls : undefined,
-        usage: { inputTokens: body.usage?.prompt_tokens ?? 0, outputTokens: body.usage?.completion_tokens ?? 0, cachedTokens: body.usage?.prompt_tokens_details?.cached_tokens ?? 0 }
-      };
+      return { modelVersionId: QWEN_Q8.id, content: visibleContent(first.message.content ?? ""), finishReason: toolCalls.length || first.finish_reason === "tool_calls" ? "tool_call" as const : first.finish_reason === "length" ? "length" as const : "stop" as const, toolCalls: toolCalls.length ? toolCalls : undefined, usage: { inputTokens: body.usage?.prompt_tokens ?? 0, outputTokens: body.usage?.completion_tokens ?? 0, cachedTokens: body.usage?.prompt_tokens_details?.cached_tokens ?? 0 } };
     })();
     return raceWithWatchdog(operation, this.watchdog.nonStreamingTimeoutMs, "inference_timeout:request", controller);
   }
@@ -331,15 +249,8 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     const signal = combinedSignal(request.signal, controller);
     let observedFirstToken = false;
     let observedUsefulOutput = false;
-
-    const response = await raceWithWatchdog(this.fetcher(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "x-request-id": request.requestId },
-      body: JSON.stringify(requestBody(request, true)),
-      signal
-    }), Math.min(this.watchdog.firstOutputTimeoutMs, this.watchdog.totalTimeoutMs), "inference_timeout:first_output", controller);
+    const response = await raceWithWatchdog(this.fetcher(`${this.baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "x-request-id": request.requestId }, body: JSON.stringify(requestBody(request, true)), signal }), Math.min(this.watchdog.firstOutputTimeoutMs, this.watchdog.totalTimeoutMs), "inference_timeout:first_output", controller);
     if (!response.ok || !response.body) throw new Error(`Inference stream failed with status ${response.status}`);
-
     const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
     let buffer = "";
     let content = "";
@@ -347,19 +258,14 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     let usage: GenerateResult["usage"] = { inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
     const toolParts = new Map<number, { id: string; name: string; arguments: string }>();
     const contentFilter = new VisibleContentFilter();
-
     const emitVisible = async (text: string) => {
       const visible = contentFilter.push(text);
       if (!visible) return;
       observedUsefulOutput = true;
-      if (!observedFirstToken) {
-        observedFirstToken = true;
-        this.admission?.observeTimings({ ttftMs: performance.now() - requestStartedAt });
-      }
+      if (!observedFirstToken) { observedFirstToken = true; this.admission?.observeTimings({ ttftMs: performance.now() - requestStartedAt }); }
       content += visible;
       await onDelta(visible);
     };
-
     try {
       while (true) {
         const elapsed = performance.now() - requestStartedAt;
@@ -368,67 +274,45 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
         const firstOutputRemaining = observedUsefulOutput ? Number.POSITIVE_INFINITY : this.watchdog.firstOutputTimeoutMs - elapsed;
         if (firstOutputRemaining <= 0) throw new Error("inference_timeout:first_output");
         const waitMs = Math.max(1, Math.min(this.watchdog.stallTimeoutMs, totalRemaining, firstOutputRemaining));
-        const code = waitMs === firstOutputRemaining
-          ? "inference_timeout:first_output"
-          : waitMs === totalRemaining
-            ? "inference_timeout:total"
-            : "inference_timeout:stall";
+        const code = waitMs === firstOutputRemaining ? "inference_timeout:first_output" : waitMs === totalRemaining ? "inference_timeout:total" : "inference_timeout:stall";
         const { done, value } = await raceWithWatchdog(reader.read(), waitMs, code, controller);
         if (done) break;
         buffer += value;
         const events = buffer.split("\n\n");
         buffer = events.pop() ?? "";
-        for (const event of events) {
-          for (const line of event.split("\n")) {
-            if (!line.startsWith("data:")) continue;
-            const data = line.slice(5).trim();
-            if (!data || data === "[DONE]") continue;
-            const payload = JSON.parse(data) as StreamPayload;
-            const choice = payload.choices?.[0];
-            if (choice?.finish_reason) finishReason = choice.finish_reason;
-            const delta = choice?.delta;
-            if (delta?.content) await emitVisible(delta.content);
-            for (const part of delta?.tool_calls ?? []) {
-              observedUsefulOutput = true;
-              const index = part.index ?? 0;
-              const current = toolParts.get(index) ?? { id: "", name: "", arguments: "" };
-              if (part.id) current.id = part.id;
-              if (part.function?.name) current.name += part.function.name;
-              if (part.function?.arguments) current.arguments += part.function.arguments;
-              toolParts.set(index, current);
-            }
-            if (payload.usage) {
-              usage = {
-                inputTokens: payload.usage.prompt_tokens ?? usage.inputTokens,
-                outputTokens: payload.usage.completion_tokens ?? usage.outputTokens,
-                cachedTokens: payload.usage.prompt_tokens_details?.cached_tokens ?? usage.cachedTokens
-              };
-            }
-            const observation = timingObservation(payload.timings);
-            if (observation) this.admission?.observeTimings(observation);
+        for (const event of events) for (const line of event.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (!data || data === "[DONE]") continue;
+          const payload = JSON.parse(data) as StreamPayload;
+          const choice = payload.choices?.[0];
+          if (choice?.finish_reason) finishReason = choice.finish_reason;
+          const delta = choice?.delta;
+          if (delta?.content) await emitVisible(delta.content);
+          for (const part of delta?.tool_calls ?? []) {
+            observedUsefulOutput = true;
+            const index = part.index ?? 0;
+            const current = toolParts.get(index) ?? { id: "", name: "", arguments: "" };
+            if (part.id) current.id = part.id;
+            if (part.function?.name) current.name += part.function.name;
+            if (part.function?.arguments) current.arguments += part.function.arguments;
+            toolParts.set(index, current);
           }
+          if (payload.usage) usage = { inputTokens: payload.usage.prompt_tokens ?? usage.inputTokens, outputTokens: payload.usage.completion_tokens ?? usage.outputTokens, cachedTokens: payload.usage.prompt_tokens_details?.cached_tokens ?? usage.cachedTokens };
+          const observation = timingObservation(payload.timings);
+          if (observation) this.admission?.observeTimings(observation);
         }
       }
     } catch (error) {
-      if (error instanceof Error && error.message.startsWith("inference_timeout:")) {
-        controller.abort(error);
-        await reader.cancel(error.message).catch(() => undefined);
-      }
+      if (error instanceof Error && error.message.startsWith("inference_timeout:")) { controller.abort(error); await reader.cancel(error.message).catch(() => undefined); }
       throw error;
-    } finally {
-      reader.releaseLock();
-    }
-
+    } finally { reader.releaseLock(); }
     const tail = contentFilter.finish();
     if (tail) {
-      if (!observedFirstToken) {
-        observedFirstToken = true;
-        this.admission?.observeTimings({ ttftMs: performance.now() - requestStartedAt });
-      }
+      if (!observedFirstToken) { observedFirstToken = true; this.admission?.observeTimings({ ttftMs: performance.now() - requestStartedAt }); }
       content += tail;
       await onDelta(tail);
     }
-
     const toolCalls: ModelToolCall[] = [...toolParts.entries()].sort(([left], [right]) => left - right).map(([index, part]) => {
       if (!part.name) throw new Error("Inference stream returned tool call without name");
       let input: Record<string, unknown> = {};
@@ -439,14 +323,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
       }
       return { id: part.id || `tool-call-${index}`, name: part.name, input };
     });
-
-    return {
-      modelVersionId: QWEN_Q8.id,
-      content,
-      finishReason: toolCalls.length || finishReason === "tool_calls" ? "tool_call" : finishReason === "length" ? "length" : "stop",
-      toolCalls: toolCalls.length ? toolCalls : undefined,
-      usage
-    };
+    return { modelVersionId: QWEN_Q8.id, content, finishReason: toolCalls.length || finishReason === "tool_calls" ? "tool_call" : finishReason === "length" ? "length" : "stop", toolCalls: toolCalls.length ? toolCalls : undefined, usage };
   }
 
   async *stream(request: GenerateRequest): AsyncIterable<string> {
@@ -461,9 +338,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     try {
       const response = await this.fetcher(`${this.baseUrl.replace(/\/v1$/, "")}/health`);
       return { ok: response.ok, latencyMs: Math.round(performance.now() - started), detail: response.ok ? undefined : `status:${response.status}` };
-    } catch (error) {
-      return { ok: false, latencyMs: Math.round(performance.now() - started), detail: error instanceof Error ? error.message : "unknown" };
-    }
+    } catch (error) { return { ok: false, latencyMs: Math.round(performance.now() - started), detail: error instanceof Error ? error.message : "unknown" }; }
   }
 
   private estimateRequestContextTokens(request: GenerateRequest): number {
