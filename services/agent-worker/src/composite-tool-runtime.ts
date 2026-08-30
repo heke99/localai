@@ -121,9 +121,10 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
       );
       if (definitions.some((definition) => definition.name === call.name)) {
         try {
+          const timeoutMs = Math.min(toolTimeoutMs(call.name, this.executeTimeoutMs), this.executeTimeoutMs);
           return await withAbortableTimeout(
             (signal) => runtime.execute(run, call, { signal, executionId: context?.executionId ?? call.id }),
-            toolTimeoutMs(call.name, this.executeTimeoutMs),
+            timeoutMs,
             `tool_runtime_timeout:execute:${call.name}`,
             context?.signal
           );
