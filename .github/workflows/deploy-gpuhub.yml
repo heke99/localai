@@ -39,9 +39,15 @@ jobs:
           bash -n infra/runtime/recover-legacy-gpuhub.sh
           bash -n infra/runtime/benchmark-legacy-gpuhub-parallel.sh
           bash -n infra/runtime/check-search-capability.sh
+          bash -n infra/runtime/provision-security-executor.sh
+          bash -n infra/runtime/e2e-security-executor.sh
+          bash -n infra/runtime/cutover-security-runtime-gpuhub.sh
 
       - name: Search runtime contract
         run: node scripts/smoke_search_runtime_contract.mjs
+
+      - name: Security executor deployment contract
+        run: node scripts/smoke_security_executor_deployment_contract.mjs
 
       - name: Native TypeScript runtime smoke test
         run: npm run test:native-runtime
@@ -59,7 +65,7 @@ jobs:
     name: Deploy exact revision to GPUHub
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     environment: production-gpuhub
     env:
       GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
@@ -152,13 +158,18 @@ jobs:
             exit 1
           }
 
+          echo "=== GPUHub security runtime live cutover ==="
+          bash "$app_dir/infra/runtime/cutover-security-runtime-gpuhub.sh"
+
           curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null
           bash "$app_dir/infra/runtime/check-search-capability.sh" 'http://127.0.0.1:8890'
+          curl --fail --silent --show-error --max-time 3 http://127.0.0.1:7319/health >/dev/null
+          systemctl is-active --quiet div3rsa-security-executor.service
           screen -list | grep -F '.localai-agent' >/dev/null
           process="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
           echo "$process"
           [[ "$process" == *"--spec-type ngram-mod"* ]] || { echo "GPUHub deploy missing tracked ngram-mod runtime" >&2; exit 1; }
-          echo "GPUHub deploy healthy: requested=${expected_sha} current=${current_sha} spec_type=ngram-mod"
+          echo "GPUHub deploy healthy: requested=${expected_sha} current=${current_sha} spec_type=ngram-mod security_runtime=live"
           REMOTE
 
   eval_benchmark:
