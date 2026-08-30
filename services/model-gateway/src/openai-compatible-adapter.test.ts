@@ -2,6 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { OpenAiCompatibleAdapter } from "./openai-compatible-adapter";
 import { QWEN_Q8, QWEN_RUNTIME_MODEL } from "./registry";
 
+function never<T>(): Promise<T> {
+  return new Promise<T>(() => undefined);
+}
+
 describe("OpenAiCompatibleAdapter", () => {
   it("uses the llama.cpp runtime model name and returns the canonical model version", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -47,11 +51,12 @@ describe("OpenAiCompatibleAdapter", () => {
     await expect(adapter.generate({ requestId: "req-2", alias: "general-prod", messages: [] })).rejects.toThrow("no choices");
   });
 
-  it("propagates the run abort signal to llama.cpp generation", async () => {
+  it("propagates the run abort through the watchdog signal", async () => {
     const controller = new AbortController();
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      expect(init?.signal).toBe(controller.signal);
+      expect(init?.signal).toBeDefined();
       controller.abort();
+      expect(init?.signal?.aborted).toBe(true);
       throw new DOMException("aborted", "AbortError");
     });
     const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
@@ -61,6 +66,25 @@ describe("OpenAiCompatibleAdapter", () => {
       messages: [{ role: "user", content: "long answer" }],
       signal: controller.signal
     })).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("bounds a non-streaming inference that never responds", async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | null = null;
+      const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        signal = init?.signal ?? null;
+        return never<Response>();
+      });
+      const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch, undefined, { nonStreamingTimeoutMs: 25 });
+      const pending = adapter.generate({ requestId: "req-timeout", alias: "general-prod", messages: [{ role: "user", content: "hello" }] });
+      const rejection = expect(pending).rejects.toThrow("inference_timeout:request");
+      await vi.advanceTimersByTimeAsync(25);
+      await rejection;
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("parses fragmented SSE streaming responses", async () => {
@@ -120,5 +144,24 @@ describe("OpenAiCompatibleAdapter", () => {
     expect(deltas).toEqual([]);
     expect(result.finishReason).toBe("tool_call");
     expect(result.toolCalls).toEqual([{ id: "call-1", name: "web_search", input: { query: "latest" } }]);
+  });
+
+  it("fails a streamed inference when the response body stalls", async () => {
+    vi.useFakeTimers();
+    try {
+      const stream = new ReadableStream<Uint8Array>({ start() {} });
+      const fetcher = vi.fn(async () => new Response(stream, { status: 200 }));
+      const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch, undefined, {
+        firstOutputTimeoutMs: 100,
+        stallTimeoutMs: 25,
+        totalTimeoutMs: 200
+      });
+      const pending = adapter.generateStreamed!({ requestId: "req-stall", alias: "general-prod", messages: [{ role: "user", content: "Hi" }] }, () => undefined);
+      const rejection = expect(pending).rejects.toThrow("inference_timeout:stall");
+      await vi.advanceTimersByTimeAsync(25);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
