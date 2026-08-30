@@ -1,5 +1,6 @@
 import type { ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import type { ClaimedRun, WorkerToolRuntime } from "./processor";
+import { runCancellationSignal } from "./run-cancellation";
 import { toolTimeoutMs } from "./tool-registry";
 
 const DEFAULT_LIST_TIMEOUT_MS = 15_000;
@@ -11,7 +12,7 @@ export interface CompositeWorkerToolRuntimeOptions {
   executeTimeoutMs?: number;
 }
 
-type ToolExecutionContext = { signal?: AbortSignal; executionId?: string };
+type ToolExecutionContext = { signal?: AbortSignal; executionId?: string; operationId?: string; attempt?: number };
 type LifecycleWorkerToolRuntime = WorkerToolRuntime & {
   execute(run: ClaimedRun, call: ModelToolCall, context?: ToolExecutionContext): Promise<unknown>;
   beginRun?(run: ClaimedRun): Promise<void> | void;
@@ -97,10 +98,12 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
   }
 
   async list(run: ClaimedRun): Promise<ModelToolDefinition[]> {
+    const signal = runCancellationSignal(run.runId);
     const definitions = (await Promise.all(this.runtimes.map((runtime, index) => withAbortableTimeout(
       () => runtime.list(run),
       this.listTimeoutMs,
-      `tool_runtime_timeout:list:${index}`
+      `tool_runtime_timeout:list:${index}`,
+      signal
     )))).flat();
     const names = new Set<string>();
     for (const definition of definitions) {
@@ -111,25 +114,31 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
   }
 
   async execute(run: ClaimedRun, call: ModelToolCall, context?: ToolExecutionContext): Promise<unknown> {
+    const parentSignal = context?.signal ?? runCancellationSignal(run.runId);
     for (let index = 0; index < this.runtimes.length; index += 1) {
       const runtime = this.runtimes[index] as LifecycleWorkerToolRuntime;
       const definitions = await withAbortableTimeout(
         () => runtime.list(run),
         this.listTimeoutMs,
         `tool_runtime_timeout:list:${index}`,
-        context?.signal
+        parentSignal
       );
       if (definitions.some((definition) => definition.name === call.name)) {
         try {
           const timeoutMs = Math.min(toolTimeoutMs(call.name, this.executeTimeoutMs), this.executeTimeoutMs);
           return await withAbortableTimeout(
-            (signal) => runtime.execute(run, call, { signal, executionId: context?.executionId ?? call.id }),
+            (signal) => runtime.execute(run, call, {
+              signal,
+              executionId: context?.executionId ?? call.id,
+              operationId: context?.operationId,
+              attempt: context?.attempt
+            }),
             timeoutMs,
             `tool_runtime_timeout:execute:${call.name}`,
-            context?.signal
+            parentSignal
           );
         } catch (error) {
-          if (context?.signal?.aborted) throw error;
+          if (parentSignal?.aborted) throw error;
           const observation = recoverableResearchFailure(call, error);
           if (observation) return observation;
           throw error;
