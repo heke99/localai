@@ -12,6 +12,8 @@ const DEFAULT_FETCH_TIMEOUT_MS = 12_000;
 const DEFAULT_SEARCH_TIMEOUT_MS = 10_000;
 const MAX_REDIRECTS = 4;
 
+type ToolExecutionContext = { signal?: AbortSignal; executionId?: string; operationId?: string; attempt?: number };
+
 export interface CoreToolRuntimeOptions {
   now?: () => Date;
   searchBaseUrl?: string | null;
@@ -80,6 +82,11 @@ const webFetchDefinition: ModelToolDefinition = {
     }
   }
 };
+
+function combinedSignal(parent: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return parent ? AbortSignal.any([parent, timeout]) : timeout;
+}
 
 function stringInput(value: unknown, name: string, maxLength: number): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`invalid_tool_input:${name}`);
@@ -318,7 +325,8 @@ export class CoreToolRuntime implements WorkerToolRuntime {
     ];
   }
 
-  async execute(_run: ClaimedRun, call: ModelToolCall): Promise<unknown> {
+  async execute(_run: ClaimedRun, call: ModelToolCall, context?: ToolExecutionContext): Promise<unknown> {
+    if (context?.signal?.aborted) throw context.signal.reason;
     if (call.name === CURRENT_TIME) {
       const timezone = stringInput(call.input.timezone, "timezone", 128);
       return { ...formatInstant(this.now(), timezone), retrievedAt: new Date().toISOString() };
@@ -328,12 +336,12 @@ export class CoreToolRuntime implements WorkerToolRuntime {
       const timestamp = stringInput(call.input.timestamp, "timestamp", 128);
       return formatInstant(instantFromInput(timestamp), timezone);
     }
-    if (call.name === WEB_SEARCH) return this.search(call.input);
-    if (call.name === WEB_FETCH) return this.fetchPage(call.input);
+    if (call.name === WEB_SEARCH) return this.search(call.input, context?.signal);
+    if (call.name === WEB_FETCH) return this.fetchPage(call.input, context?.signal);
     throw new Error("unknown_core_tool");
   }
 
-  private async search(input: Record<string, unknown>): Promise<unknown> {
+  private async search(input: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     if (!this.searchBaseUrl) throw new Error("web_search_not_configured");
     const query = stringInput(input.query, "query", 500);
     const limit = integerInput(input.limit, 8, 1, 12);
@@ -349,7 +357,7 @@ export class CoreToolRuntime implements WorkerToolRuntime {
 
     const response = await this.fetcher(url, {
       headers: { accept: "application/json", "user-agent": "DIV3RSA-Research/1.0" },
-      signal: AbortSignal.timeout(this.searchTimeoutMs)
+      signal: combinedSignal(signal, this.searchTimeoutMs)
     });
     if (!response.ok) throw new Error(`web_search_failed:${response.status}`);
     const body = await response.json() as { results?: Array<Record<string, unknown>> };
@@ -368,10 +376,11 @@ export class CoreToolRuntime implements WorkerToolRuntime {
     return { query, retrievedAt: this.now().toISOString(), results };
   }
 
-  private async fetchPage(input: Record<string, unknown>): Promise<unknown> {
+  private async fetchPage(input: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     if (!this.webFetchEnabled) throw new Error("web_fetch_disabled");
     let current = new URL(stringInput(input.url, "url", 4096));
     for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect += 1) {
+      if (signal?.aborted) throw signal.reason;
       await assertPublicUrl(current, this.resolveHost);
       const response = await this.fetcher(current, {
         redirect: "manual",
@@ -379,7 +388,7 @@ export class CoreToolRuntime implements WorkerToolRuntime {
           accept: "text/html,application/xhtml+xml,text/plain,application/json,application/xml;q=0.9,*/*;q=0.1",
           "user-agent": "DIV3RSA-Research/1.0"
         },
-        signal: AbortSignal.timeout(this.fetchTimeoutMs)
+        signal: combinedSignal(signal, this.fetchTimeoutMs)
       });
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = response.headers.get("location");
