@@ -12,7 +12,31 @@ export type ToolExecutionStatus =
   | "cancelled"
   | "blocked";
 
-const TERMINAL = new Set<ToolExecutionStatus>(["completed", "cancelled", "blocked"]);
+export interface ToolExecutionStart {
+  runId: string;
+  toolCallId: string;
+  operationId: string;
+  toolName: string;
+  inputHash: string;
+  inputRedacted: Record<string, unknown>;
+  mutating: boolean;
+  reversible: boolean;
+  scopeSnapshot?: Record<string, unknown> | null;
+}
+
+export interface ToolExecutionTransition {
+  executionId: string;
+  status: ToolExecutionStatus;
+  attempt?: number;
+  outputSummary?: unknown;
+  errorCode?: string | null;
+  retryable?: boolean | null;
+  providerResourceId?: string | null;
+  externalOperationId?: string | null;
+  rollbackStatus?: "not_required" | "pending" | "running" | "completed" | "failed" | null;
+}
+
+const TERMINAL = new Set<ToolExecutionStatus>(["completed", "failed", "cancelled", "blocked"]);
 const ACTIVE = new Set<ToolExecutionStatus>(["queued", "running", "waiting", "retrying", "cancelling"]);
 
 export function isActiveToolExecutionStatus(status: string | null | undefined): status is ToolExecutionStatus {
