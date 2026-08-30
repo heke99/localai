@@ -20,6 +20,12 @@ const webDefinition: ModelToolDefinition = {
   inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
 };
 
+const securityDefinition: ModelToolDefinition = {
+  name: "security_scan",
+  description: "Execute a security operation",
+  inputSchema: { type: "object", properties: { target: { type: "string" } }, required: ["target"] }
+};
+
 function never<T>(): Promise<T> {
   return new Promise<T>(() => undefined);
 }
@@ -42,7 +48,7 @@ describe("CompositeWorkerToolRuntime timeout hardening", () => {
     }
   });
 
-  it("bounds a runtime that hangs while executing a tool", async () => {
+  it("turns a hanging web search into a bounded observation so the agent can adapt", async () => {
     vi.useFakeTimers();
     try {
       const hanging: WorkerToolRuntime = {
@@ -51,7 +57,40 @@ describe("CompositeWorkerToolRuntime timeout hardening", () => {
       };
       const runtime = new CompositeWorkerToolRuntime([hanging], { listTimeoutMs: 25, executeTimeoutMs: 50 });
       const pending = runtime.execute(run, { id: "tool-1", name: "web_search", input: { query: "Iran latest news" } });
-      const rejection = expect(pending).rejects.toThrow("tool_runtime_timeout:execute:web_search");
+      const resolution = expect(pending).resolves.toMatchObject({
+        ok: false,
+        tool: "web_search",
+        error: "tool_runtime_timeout:execute:web_search",
+        retryable: true,
+        observation: "research_tool_unavailable"
+      });
+      await vi.advanceTimersByTimeAsync(50);
+      await resolution;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("turns an immediate web-search provider failure into an observation", async () => {
+    const failing: WorkerToolRuntime = {
+      list: async () => [webDefinition],
+      execute: async () => { throw new Error("web_search_failed:503"); }
+    };
+    const runtime = new CompositeWorkerToolRuntime([failing], { listTimeoutMs: 25, executeTimeoutMs: 50 });
+    await expect(runtime.execute(run, { id: "tool-1", name: "web_search", input: { query: "Iran latest news" } }))
+      .resolves.toMatchObject({ ok: false, tool: "web_search", error: "web_search_failed:503", retryable: true });
+  });
+
+  it("keeps execution failures fatal for non-research tools", async () => {
+    vi.useFakeTimers();
+    try {
+      const hanging: WorkerToolRuntime = {
+        list: async () => [securityDefinition],
+        execute: async () => never<unknown>()
+      };
+      const runtime = new CompositeWorkerToolRuntime([hanging], { listTimeoutMs: 25, executeTimeoutMs: 50 });
+      const pending = runtime.execute(run, { id: "tool-1", name: "security_scan", input: { target: "app.localai.test" } });
+      const rejection = expect(pending).rejects.toThrow("tool_runtime_timeout:execute:security_scan");
       await vi.advanceTimersByTimeAsync(50);
       await rejection;
     } finally {
