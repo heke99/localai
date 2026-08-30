@@ -2,6 +2,7 @@
 import { readFile } from "node:fs/promises";
 
 const wrapper = await readFile(new URL("../infra/runtime/upgrade-legacy-gpuhub.sh", import.meta.url), "utf8");
+const sync = await readFile(new URL("../infra/runtime/sync-security-skills.sh", import.meta.url), "utf8");
 const baseCall = wrapper.indexOf('bash "$BASE_SCRIPT" "$@"');
 const syncResolve = wrapper.indexOf('SECURITY_SKILL_SYNC="${REPO_DIR}/infra/runtime/sync-security-skills.sh"');
 const syncCall = wrapper.indexOf('bash "$SECURITY_SKILL_SYNC"');
@@ -15,6 +16,16 @@ if (!(baseCall < syncResolve && syncResolve < syncCall && syncCall < reconcileRe
 }
 if (!wrapper.includes('DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" DIV3RSA_LEGACY_APP_DIR="$REPO_DIR"')) {
   throw new Error("security_sync_cutover_runtime_roots_missing");
+}
+
+if (!sync.includes('DEFAULT_NODE_BIN="${ROOT_DIR}/runtime/node-current/bin/node"')) {
+  throw new Error("security_sync_missing_runtime_node_default");
+}
+if (!sync.includes('NODE_BIN="${DIV3RSA_LEGACY_NODE_BIN:-$DEFAULT_NODE_BIN}"')) {
+  throw new Error("security_sync_missing_node_override");
+}
+if (!sync.includes('"$NODE_BIN" "$REPO_DIR/scripts/validate_security_skill_snapshot.mjs"')) {
+  throw new Error("security_sync_validator_not_using_resolved_node");
 }
 
 console.log("SECURITY_SKILL_SYNC_CUTOVER_OK");
