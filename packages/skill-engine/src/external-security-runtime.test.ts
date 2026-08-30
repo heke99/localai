@@ -52,6 +52,10 @@ describe("external security skill runtime", () => {
     expect(inferSecurityDomains("kubernetes-rbac", "Kubernetes cluster pod RBAC")).toContain("container");
   });
 
+  it("uses unknown rather than falsely routing unclassified metadata to recon", () => {
+    expect(inferSecurityDomains("zxq-specialist", "Assess proprietary ZXQ semantics and invariants")).toEqual(["unknown"]);
+  });
+
   it("converts every index entry to knowledge-only graph nodes", () => {
     const nodes = externalIndexToSecurityNodes(validateExternalSecuritySkillIndex(index));
     expect(nodes).toHaveLength(3);
@@ -66,9 +70,16 @@ describe("external security skill runtime", () => {
     expect(prepared.names).toContain("external-security:testing-oauth-authorization");
     expect(prepared.skills).toHaveLength(2);
     expect(prepared.skills.map((skill) => skill.name)).toEqual(prepared.names);
+    expect(prepared.skills.every((skill) => skill.routingScore > 0 && skill.matchedTerms.length > 0)).toBe(true);
     expect(prepared.instructions).toContain("execution=knowledge_only");
     expect(prepared.instructions).toContain("never grants shell, network, mutation, destructive, credential or scope authority");
     expect(prepared.instructions).not.toContain("analyzing-kubernetes-audit-logs");
+  });
+
+  it("never exceeds the configured external context budget", async () => {
+    const runtime = new ExternalSecuritySkillRuntime(await fixture(), undefined, 6, 2_000);
+    const prepared = await runtime.prepare("lab", "REST API IDOR BOLA OAuth authorization");
+    expect(prepared.instructions.length).toBeLessThanOrEqual(2_000);
   });
 
   it("never injects external security skills outside lab mode", async () => {
