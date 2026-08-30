@@ -23,6 +23,17 @@ describe("SecurityToolRuntime", () => {
     expect(await runtime.list(run({ resourceContext: [] }))).toEqual([]);
   });
 
+  it("injects selected skills into a run-specific capability plan and narrows JWT execution", async () => {
+    const runtime = new SecurityToolRuntime(executor(), async () => ["authorized-pentest", "external-security:jwt-security"]);
+    const definitions = await runtime.list(run({ prompt: "Verify JWT session security on the authorized API" }));
+    const definition = definitions[0]!;
+    const properties = definition.inputSchema.properties as Record<string, Record<string, unknown>>;
+    expect(properties.tool.enum).toEqual(["http_probe", "tls_probe"]);
+    expect(definition.description).toContain("PENTEST CAPABILITY PLAN V1");
+    expect(definition.description).toContain("external-security:jwt-security");
+    expect(definition.description).toContain("authenticated_session_state");
+  });
+
   it("allows exact and subdomain targets but rejects suffix lookalikes", async () => {
     const exec = executor();
     const runtime = new SecurityToolRuntime(exec);
@@ -55,5 +66,75 @@ describe("SecurityToolRuntime", () => {
     const runtime = new SecurityToolRuntime(executor());
     await expect(runtime.execute(run(), { id: "1", name: "security_scan", input: { tool: "bash", target: "example.com" } })).rejects.toThrow("security_tool_not_allowlisted");
     await expect(runtime.execute(run(), { id: "2", name: "security_scan", input: { tool: "http_probe", target: "file:///etc/passwd" } })).rejects.toThrow("invalid_security_target");
+  });
+
+  it("rejects options that do not belong to the selected subtool before executor dispatch", async () => {
+    const exec = executor();
+    const runtime = new SecurityToolRuntime(exec);
+    await expect(runtime.execute(run(), {
+      id: "strict-options",
+      name: "security_scan",
+      input: { tool: "http_probe", target: "example.com", options: { rateLimit: 10 } }
+    })).rejects.toThrow("invalid_security_option:rateLimit");
+    expect(exec.execute).not.toHaveBeenCalled();
+  });
+
+  it("enforces the pre-model capability plan at execution time", async () => {
+    const exec = executor();
+    const runtime = new SecurityToolRuntime(exec);
+    const jwtRun = run({ prompt: "Verify JWT session security on this authorized API" });
+    await expect(runtime.execute(jwtRun, {
+      id: "plan-violation",
+      name: "security_scan",
+      input: { tool: "template_scan", target: "https://example.com", options: { rateLimit: 10 } }
+    })).rejects.toThrow("security_capability_plan_violation:template_scan");
+    expect(exec.execute).not.toHaveBeenCalled();
+  });
+
+  it("turns operational executor failures into structured observations so the model can adapt", async () => {
+    const exec: SecurityToolExecutor = { execute: vi.fn(async () => { throw new Error("security_executor_timeout"); }) };
+    const runtime = new SecurityToolRuntime(exec);
+    const output = await runtime.execute(run({ prompt: "Map the authorized web attack surface" }), {
+      id: "timeout",
+      name: "security_scan",
+      input: { tool: "http_probe", target: "https://example.com", options: {} }
+    }) as Record<string, unknown>;
+
+    expect(output).toMatchObject({
+      ok: false,
+      status: "executor_error",
+      errorCode: "security_executor_timeout",
+      retryable: true,
+      suggestedNextOperations: ["dns_lookup", "tls_probe"]
+    });
+    expect(output.evidence).toMatchObject({ kind: "security_tool_observation", status: "executor_error" });
+  });
+
+  it("normalizes noisy executor output into bounded evidence before it reaches model context", async () => {
+    const exec: SecurityToolExecutor = {
+      execute: vi.fn(async () => ({
+        ok: true,
+        exitCode: 0,
+        durationMs: 20,
+        stdout: "x".repeat(20_000),
+        stderr: "y".repeat(8_000),
+        findings: Array.from({ length: 150 }, (_, index) => ({ kind: "synthetic", title: `finding-${index}` })),
+        auditId: "audit-long",
+        capability: "synthetic:http"
+      }))
+    };
+    const runtime = new SecurityToolRuntime(exec);
+    const output = await runtime.execute(run(), {
+      id: "bounded-output",
+      name: "security_scan",
+      input: { tool: "http_probe", target: "https://example.com", options: {} }
+    }) as Record<string, any>;
+
+    expect(output.stdout).toHaveLength(12_000);
+    expect(output.stderr).toHaveLength(4_000);
+    expect(output.findings).toHaveLength(100);
+    expect(output.findingCount).toBe(150);
+    expect(output.rawOutputTruncated).toBe(true);
+    expect(output.evidence.raw.stdoutBytes).toBe(20_000);
   });
 });
