@@ -20,6 +20,7 @@ TARGET_REF="${DIV3RSA_RUNTIME_GIT_REF:-main}"
 EXPECTED_COMMIT_SHA="${DIV3RSA_EXPECTED_COMMIT_SHA:-}"
 GENERATED_MANIFEST="skills/runtime-manifest.json"
 SEARCH_CAPABILITY_CHECK="${REPO_DIR}/infra/runtime/check-search-capability.sh"
+SECURITY_SKILL_SYNC="${REPO_DIR}/infra/runtime/sync-security-skills.sh"
 BEFORE_COMMIT=""
 DEPLOYMENT_MUTATED=0
 
@@ -204,6 +205,10 @@ log "building and validating runtime skill manifest"
 (cd "$REPO_DIR" && node scripts/build_skill_manifest.mjs)
 (cd "$REPO_DIR" && node --experimental-transform-types --import ./infra/runpod/native-typescript-register.mjs scripts/smoke_native_ts_runtime.mjs)
 
+[[ -f "$SECURITY_SKILL_SYNC" ]] || fatal "security skill sync script missing after checkout: $SECURITY_SKILL_SYNC"
+log "syncing pinned external security skill snapshot"
+DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" bash "$SECURITY_SKILL_SYNC"
+
 log "provisioning native private SearXNG (no Docker/bridge networking)"
 provision_search
 
@@ -225,4 +230,4 @@ verify_runtime 3 || fatal "runtime health check failed after worker restart"
 DEPLOYMENT_MUTATED=0
 log "upgrade complete"
 log "commit=$(git -C "$REPO_DIR" rev-parse HEAD)"
-log "Qwen healthy on 127.0.0.1:${MODEL_PORT}; native SearXNG search-capable on 127.0.0.1:${SEARCH_PORT}; worker screen=${SCREEN_NAME}"
+log "Qwen healthy on 127.0.0.1:${MODEL_PORT}; native SearXNG search-capable on 127.0.0.1:${SEARCH_PORT}; worker screen=${SCREEN_NAME}; external security snapshot=ready"
