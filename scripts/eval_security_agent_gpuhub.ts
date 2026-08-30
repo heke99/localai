@@ -5,23 +5,14 @@ import type { ModelAlias, ModelToolCall, ModelToolDefinition } from "@div3rsa/mo
 import { AgentWorkerProcessor, type AgentQueue, type ClaimedRun, type WorkerToolRuntime } from "../services/agent-worker/src/processor";
 import { HttpSecurityToolExecutor, SecurityToolRuntime } from "../services/agent-worker/src/security-tool-runtime";
 
-interface Completion {
-  content: string;
-  modelVersionId: string;
-  usage: Record<string, number>;
-}
-
-interface SecurityExecution {
-  call: ModelToolCall;
-  output: Record<string, unknown>;
-}
+interface Completion { content: string; modelVersionId: string; usage: Record<string, number>; }
+interface SecurityExecution { call: ModelToolCall; output: Record<string, unknown>; }
 
 class EvalQueue implements AgentQueue {
   private claimed = false;
   completion: Completion | null = null;
   failure: { code: string; retryable: boolean } | null = null;
   readonly steps: Array<{ kind: string; status: string; summary: string }> = [];
-
   constructor(private readonly run: ClaimedRun) {}
   async claim(): Promise<ClaimedRun | null> { if (this.claimed) return null; this.claimed = true; return this.run; }
   async step(_runId: string, kind: string, status: string, summary: string): Promise<void> { this.steps.push({ kind, status, summary }); }
@@ -47,13 +38,9 @@ class CapturingSecurityRuntime implements WorkerToolRuntime {
 }
 
 function requiredAny(names: string[]): string {
-  for (const name of names) {
-    const value = process.env[name]?.trim();
-    if (value) return value;
-  }
+  for (const name of names) { const value = process.env[name]?.trim(); if (value) return value; }
   throw new Error(`missing_environment:${names.join("_or_")}`);
 }
-
 function numericEnvironment(name: string, fallback: number): number {
   const raw = process.env[name]?.trim();
   if (!raw) return fallback;
@@ -63,9 +50,7 @@ function numericEnvironment(name: string, fallback: number): number {
 }
 
 const modelPort = Math.floor(numericEnvironment("DIV3RSA_MODEL_PORT", 6006));
-const inferenceBaseUrl = process.env.DIV3RSA_INFERENCE_BASE_URL?.trim()
-  || process.env.QWEN_INFERENCE_BASE_URL?.trim()
-  || `http://127.0.0.1:${modelPort}/v1`;
+const inferenceBaseUrl = process.env.DIV3RSA_INFERENCE_BASE_URL?.trim() || process.env.QWEN_INFERENCE_BASE_URL?.trim() || `http://127.0.0.1:${modelPort}/v1`;
 const inferenceApiKey = requiredAny(["DIV3RSA_INFERENCE_API_KEY", "QWEN_INFERENCE_API_KEY"]);
 const executorBaseUrl = process.env.DIV3RSA_SECURITY_EXECUTOR_URL?.trim() || "http://127.0.0.1:7319";
 const executorToken = requiredAny(["DIV3RSA_SECURITY_EXECUTOR_TOKEN"]);
@@ -76,21 +61,9 @@ const tlsPort = Math.floor(numericEnvironment("DIV3RSA_SECURITY_E2E_TLS_PORT", 1
 const auditLogPath = process.env.DIV3RSA_SECURITY_AUDIT_LOG?.trim() || "/var/log/div3rsa/security-executor.jsonl";
 
 const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApiKey, {
-  contextLimit: numericEnvironment("DIV3RSA_MODEL_CONTEXT_SIZE", 32768),
-  batchSize: numericEnvironment("DIV3RSA_MODEL_BATCH_SIZE", 2048),
-  maxActiveSequences: 1,
-  maxDeferredRequests: 2,
-  maxKvCacheUsageRatio: 0.9,
-  minTokensPerSecond: 4,
-  maxTtftMs: 10_000,
-  maxInterTokenLatencyMs: 250,
-  maxGpuUtilizationRatio: 0.99,
-  maxVramUsageRatio: 0.97,
-  maxContextHighWatermarkRatio: 0.97,
-  pollIntervalMs: 250,
-  maxWaitMs: 45_000,
-  telemetryTimeoutMs: 1_000,
-  gpuMetricsUrl: process.env.DIV3RSA_GPU_METRICS_URL?.trim() || null
+  contextLimit: numericEnvironment("DIV3RSA_MODEL_CONTEXT_SIZE", 32768), batchSize: numericEnvironment("DIV3RSA_MODEL_BATCH_SIZE", 2048), maxActiveSequences: 1, maxDeferredRequests: 2,
+  maxKvCacheUsageRatio: 0.9, minTokensPerSecond: 4, maxTtftMs: 10_000, maxInterTokenLatencyMs: 250, maxGpuUtilizationRatio: 0.99, maxVramUsageRatio: 0.97,
+  maxContextHighWatermarkRatio: 0.97, pollIntervalMs: 250, maxWaitMs: 45_000, telemetryTimeoutMs: 1_000, gpuMetricsUrl: process.env.DIV3RSA_GPU_METRICS_URL?.trim() || null
 });
 const adapter = new OpenAiCompatibleAdapter(inferenceBaseUrl, inferenceApiKey, fetch, admission);
 const health = await adapter.healthCheck();
@@ -109,31 +82,16 @@ const expectedAuditIds = new Map<string, string>();
 const results: Array<Record<string, unknown>> = [];
 for (const test of cases) {
   const run: ClaimedRun = {
-    jobId: `security-readiness-${test.tool}`,
-    runId: randomUUID(),
-    mode: "lab",
-    modelAlias: (process.env.DIV3RSA_EVAL_MODEL_ALIAS?.trim() || "general-prod") as ModelAlias,
-    prompt: `Authorized production-readiness check. You MUST use the security_scan tool exactly once now. Set tool to ${test.tool}, target to ${test.target}, and options exactly to ${JSON.stringify(test.options)}. Do not substitute another tool and do not answer from memory. After the tool result, answer only SECURITY_RUNTIME_READY ${test.tool}.`,
-    requestId: `security-readiness-${test.tool}-${randomUUID()}`,
-    traceId: randomUUID(),
-    resourceContext: [{
-      resourceId: "security-readiness-scope",
-      connectionId: "security-readiness-local",
-      provider: "local",
-      resourceType: "security_scope",
-      externalResourceId: "security-readiness-owned-target",
-      displayName: "Owned ephemeral GPUHub readiness target",
-      capabilities: ["security.active"],
-      metadata: { allowHosts: [], allowIpv4Cidrs: [`${targetIp}/32`], readinessProof }
-    }]
+    jobId: `security-readiness-${test.tool}`, runId: randomUUID(), mode: "lab", modelAlias: (process.env.DIV3RSA_EVAL_MODEL_ALIAS?.trim() || "general-prod") as ModelAlias,
+    prompt: `Authorized production-readiness check. Use security_scan exactly once. Set tool to ${test.tool}, target to ${test.target}, and options exactly to ${JSON.stringify(test.options)}. After the tool result, answer only SECURITY_RUNTIME_READY ${test.tool}.`,
+    requestId: `security-readiness-${test.tool}-${randomUUID()}`, traceId: randomUUID(),
+    resourceContext: [{ resourceId: "security-readiness-scope", connectionId: "security-readiness-local", provider: "local", resourceType: "security_scope", externalResourceId: "security-readiness-owned-target", displayName: "Owned ephemeral GPUHub readiness target", capabilities: ["security.active"], metadata: { allowHosts: [], allowIpv4Cidrs: [`${targetIp}/32`], readinessProof } }]
   };
   const queue = new EvalQueue(run);
   const security = new CapturingSecurityRuntime(new SecurityToolRuntime(new HttpSecurityToolExecutor(`${executorBaseUrl}/v1/execute`, executorToken)));
   const processor = new AgentWorkerProcessor(
-    queue,
-    { resolve: () => adapter },
-    `security-readiness-worker-${process.pid}`,
-    { prepare: async () => ({ names: [], instructions: "" }) },
+    queue, { resolve: () => adapter }, `security-readiness-worker-${process.pid}`,
+    { prepare: async () => ({ names: [], instructions: `SECURITY READINESS REQUIRED: the first model turn MUST call security_scan exactly once using the exact tool, target and options supplied by the user. This marker is reserved for the production readiness harness.` }) },
     security
   );
   const started = performance.now();
@@ -153,9 +111,7 @@ for (const test of cases) {
 }
 
 const auditText = await readFile(auditLogPath, "utf8");
-const auditRows = auditText.split(/\r?\n/).filter(Boolean).flatMap((line) => {
-  try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
-});
+const auditRows = auditText.split(/\r?\n/).filter(Boolean).flatMap((line) => { try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; } });
 for (const [auditId, tool] of expectedAuditIds) {
   const row = auditRows.find((candidate) => candidate.auditId === auditId);
   const result = results.find((candidate) => candidate.tool === tool)!;
@@ -168,7 +124,6 @@ for (const [auditId, tool] of expectedAuditIds) {
   }
   result.passed = failures.length === 0;
 }
-
 const passed = results.filter((result) => result.passed === true).length;
 const summary = { schemaVersion: 1, generatedAt: new Date().toISOString(), cases: results.length, passed, failed: results.length - passed, allowed: passed === results.length, results };
 console.log(JSON.stringify(summary, null, 2));
