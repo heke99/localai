@@ -15,7 +15,7 @@ export interface SecurityExecutorRequest {
   target: string;
   timeoutMs: number;
   executionClass: SecurityExecutionClass;
-  scope: { scopeId: string; allowHosts: string[]; allowIpv4Cidrs: string[] };
+  scope: { scopeId: string; allowHosts: string[]; allowIpv4Cidrs: string[]; readinessProof?: string };
   options: Record<string, unknown>;
 }
 
@@ -49,6 +49,7 @@ export interface SecurityExecutorOptions {
   resolveHost?: (hostname: string) => Promise<string[]>;
   wordlistPath?: string | null;
   spawnProcess?: typeof spawn;
+  readinessToken?: string | null;
 }
 
 const MAX_TIMEOUT_MS = 90_000;
@@ -84,10 +85,22 @@ function hostAllowed(host: string, request: SecurityExecutorRequest): boolean {
   return request.scope.allowHosts.map(normalizeHost).some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
 }
 
-function infrastructureBlocked(address: string): boolean {
+function secretMatches(value: string | undefined, expected: string | null | undefined): boolean {
+  if (!value || !expected) return false;
+  const a = Buffer.from(value);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function readinessLoopbackAllowed(request: SecurityExecutorRequest, readinessToken: string | null | undefined): boolean {
+  return request.scope.scopeId === "security-readiness-scope"
+    && secretMatches(request.scope.readinessProof, readinessToken);
+}
+
+function infrastructureBlocked(address: string, allowReadinessLoopback = false): boolean {
   if (isIP(address) === 4) {
     const [a, b] = address.split(".").map(Number);
-    return a === 0 || a === 127 || (a === 169 && b === 254) || a >= 224;
+    return a === 0 || (a === 127 && !allowReadinessLoopback) || (a === 169 && b === 254) || a >= 224;
   }
   if (isIP(address) === 6) {
     const value = address.toLowerCase();
@@ -116,13 +129,14 @@ async function defaultResolveHost(hostname: string): Promise<string[]> {
   return (await lookup(hostname, { all: true, verbatim: true })).map((entry) => entry.address);
 }
 
-async function enforceScope(request: SecurityExecutorRequest, resolveHost: (hostname: string) => Promise<string[]>): Promise<{ host: string; url: URL | null }> {
+async function enforceScope(request: SecurityExecutorRequest, resolveHost: (hostname: string) => Promise<string[]>, readinessToken: string | null | undefined): Promise<{ host: string; url: URL | null }> {
   if (!request.scope?.scopeId) throw new Error("security_scope_required");
   if (!ALL_TOOLS.has(request.tool)) throw new Error("security_tool_not_allowlisted");
   const expectedClass: SecurityExecutionClass = ACTIVE_TOOLS.has(request.tool) ? "active" : "passive";
   if (request.executionClass !== expectedClass) throw new Error("security_execution_class_mismatch");
   const parsed = targetParts(request.target);
-  if (infrastructureBlocked(parsed.host)) throw new Error("security_target_blocked");
+  const allowReadinessLoopback = readinessLoopbackAllowed(request, readinessToken);
+  if (infrastructureBlocked(parsed.host, allowReadinessLoopback)) throw new Error("security_target_blocked");
   if (!hostAllowed(parsed.host, request)) throw new Error("security_target_out_of_scope");
 
   let addresses: string[];
@@ -133,7 +147,7 @@ async function enforceScope(request: SecurityExecutorRequest, resolveHost: (host
   }
   if (!addresses.length) throw new Error("security_target_dns_failed");
   for (const address of addresses) {
-    if (infrastructureBlocked(address)) throw new Error("security_target_blocked");
+    if (infrastructureBlocked(address, allowReadinessLoopback)) throw new Error("security_target_blocked");
     if (isIP(address) === 4 && /^10\.|^192\.168\.|^172\.(?:1[6-9]|2\d|3[01])\./.test(address)) {
       if (!request.scope.allowIpv4Cidrs.some((cidr) => ipv4InCidr(address, cidr))) throw new Error("security_private_resolution_out_of_scope");
     }
@@ -314,7 +328,7 @@ export class LinuxSecurityExecutor {
   async execute(request: SecurityExecutorRequest): Promise<SecurityExecutorResult> {
     const auditId = randomUUID();
     const startedAt = new Date().toISOString();
-    const parsed = await enforceScope(request, this.resolveHost);
+    const parsed = await enforceScope(request, this.resolveHost, this.options.readinessToken);
     const timeoutMs = boundedTimeout(request.timeoutMs);
     const command = commandFor(request, parsed, this.options.wordlistPath ?? null);
     const requestHash = createHash("sha256").update(JSON.stringify({ tool: request.tool, target: request.target, scope: request.scope, options: request.options, executionClass: request.executionClass })).digest("hex");
