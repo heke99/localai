@@ -26,3 +26,10 @@ sources:
     role: security-audit-patterns
     license_note: CC-BY-SA-4.0 upstream; LocalAI does not vendor upstream text here
     status: reviewed-reference
+  - repo: mukul975/Anthropic-Cybersecurity-Skills
+    commit: 1b3f6b2286981381a5cc0566551ef3bb6bc38383
+    role: cybersecurity-knowledge-playbooks
+    license_note: Apache-2.0
+    execution_class: knowledge_only
+    runtime_activation: lab_only
+    status: approved-pinned-source
