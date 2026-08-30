@@ -1,9 +1,0 @@
-{
-  "name": "@div3rsa/security-executor",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "start": "node --experimental-transform-types --import ../../infra/runpod/native-typescript-register.mjs src/main.ts"
-  }
-}
