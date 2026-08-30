@@ -69,7 +69,8 @@ const inferenceBaseUrl = process.env.DIV3RSA_INFERENCE_BASE_URL?.trim()
 const inferenceApiKey = requiredAny(["DIV3RSA_INFERENCE_API_KEY", "QWEN_INFERENCE_API_KEY"]);
 const executorBaseUrl = process.env.DIV3RSA_SECURITY_EXECUTOR_URL?.trim() || "http://127.0.0.1:7319";
 const executorToken = requiredAny(["DIV3RSA_SECURITY_EXECUTOR_TOKEN"]);
-const targetIp = process.env.DIV3RSA_SECURITY_E2E_IP?.trim() || "10.254.254.1";
+const readinessProof = requiredAny(["DIV3RSA_SECURITY_READINESS_TOKEN"]);
+const targetIp = process.env.DIV3RSA_SECURITY_E2E_IP?.trim() || "127.0.0.1";
 const httpPort = Math.floor(numericEnvironment("DIV3RSA_SECURITY_E2E_PORT", 18080));
 const tlsPort = Math.floor(numericEnvironment("DIV3RSA_SECURITY_E2E_TLS_PORT", 18443));
 const auditLogPath = process.env.DIV3RSA_SECURITY_AUDIT_LOG?.trim() || "/var/log/div3rsa/security-executor.jsonl";
@@ -123,7 +124,7 @@ for (const test of cases) {
       externalResourceId: "security-readiness-owned-target",
       displayName: "Owned ephemeral GPUHub readiness target",
       capabilities: ["security.active"],
-      metadata: { allowHosts: [], allowIpv4Cidrs: [`${targetIp}/32`] }
+      metadata: { allowHosts: [], allowIpv4Cidrs: [`${targetIp}/32`], readinessProof }
     }]
   };
   const queue = new EvalQueue(run);
