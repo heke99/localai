@@ -14,6 +14,10 @@ SERVICE_NAME="${DIV3RSA_SECURITY_SERVICE_NAME:-div3rsa-security-executor.service
 PORT="${DIV3RSA_SECURITY_EXECUTOR_PORT:-7319}"
 NUCLEI_VERSION="${DIV3RSA_NUCLEI_VERSION:-v3.4.10}"
 FFUF_VERSION="${DIV3RSA_FFUF_VERSION:-v2.1.0}"
+GO_VERSION="${DIV3RSA_SECURITY_GO_VERSION:-1.24.1}"
+GO_ROOT="${DIV3RSA_SECURITY_GO_ROOT:-${TOOLS_ROOT}/go-${GO_VERSION}}"
+GO_SHA256_AMD64="cb2396bae64183cdccf81a9a6df0aea3bce9511fc21469fb89a0c00470088073"
+GO_SHA256_ARM64="8df5750ffc0281017fb6070fba450f5d22b600a02081dceef47966ffaf36a3af"
 WORDLIST_SOURCE="${DIV3RSA_SECURITY_WORDLIST_SOURCE:-}"
 WORDLIST_TARGET="${DIV3RSA_SECURITY_WORDLIST_TARGET:-${TOOLS_ROOT}/wordlists/common.txt}"
 AUDIT_LOG="${DIV3RSA_SECURITY_AUDIT_LOG:-/var/log/div3rsa/security-executor.jsonl}"
@@ -29,10 +33,10 @@ if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   log "ensuring bounded security runtime dependencies"
   apt-get update -y >/dev/null
-  apt-get install -y --no-install-recommends ca-certificates curl openssl dnsutils nmap golang-go iproute2 >/dev/null
+  apt-get install -y --no-install-recommends ca-certificates curl openssl dnsutils nmap iproute2 tar >/dev/null
 fi
 
-for tool in curl openssl dig nmap go ip; do
+for tool in curl openssl dig nmap ip tar sha256sum; do
   command -v "$tool" >/dev/null 2>&1 || fatal "required provisioning dependency unavailable: ${tool}"
 done
 
@@ -58,14 +62,46 @@ install -o root -g root -m 0644 "${SOURCE_ROOT}/infra/runpod/native-typescript-r
 install -o root -g root -m 0644 "${SOURCE_ROOT}/services/security-executor/src/main.ts" "${INSTALL_ROOT}/services/security-executor/src/main.ts"
 install -o root -g root -m 0644 "${SOURCE_ROOT}/services/security-executor/src/runtime.ts" "${INSTALL_ROOT}/services/security-executor/src/runtime.ts"
 
+arch="$(uname -m)"
+case "$arch" in
+  x86_64|amd64)
+    go_arch=amd64
+    go_sha="$GO_SHA256_AMD64"
+    ;;
+  aarch64|arm64)
+    go_arch=arm64
+    go_sha="$GO_SHA256_ARM64"
+    ;;
+  *) fatal "unsupported architecture for pinned Go toolchain: $arch" ;;
+esac
+GO_BIN="${GO_ROOT}/bin/go"
+if [[ ! -x "$GO_BIN" ]] || [[ "$($GO_BIN version 2>/dev/null || true)" != "go version go${GO_VERSION} "* ]]; then
+  log "installing pinned Go ${GO_VERSION} (${go_arch})"
+  archive="$(mktemp)"
+  extract_dir="$(mktemp -d)"
+  trap 'rm -f "${archive:-}"; rm -rf "${extract_dir:-}"' RETURN
+  curl --fail --location --silent --show-error --retry 3 --max-time 180 \
+    "https://go.dev/dl/go${GO_VERSION}.linux-${go_arch}.tar.gz" -o "$archive"
+  printf '%s  %s\n' "$go_sha" "$archive" | sha256sum -c - >/dev/null || fatal "pinned Go checksum mismatch"
+  tar -C "$extract_dir" -xzf "$archive"
+  rm -rf "$GO_ROOT"
+  mv "$extract_dir/go" "$GO_ROOT"
+  chmod -R a+rX "$GO_ROOT"
+  rm -f "$archive"
+  rm -rf "$extract_dir"
+  trap - RETURN
+fi
+[[ "$($GO_BIN version)" == "go version go${GO_VERSION} "* ]] || fatal "pinned Go runtime version mismatch"
+
 export GOBIN="${TOOLS_ROOT}/bin"
+export PATH="${GO_ROOT}/bin:${PATH}"
 if [[ ! -x "${TOOLS_ROOT}/bin/nuclei" ]] || [[ "$("${TOOLS_ROOT}/bin/nuclei" -version 2>&1 | tr -d '[:space:]')" != *"${NUCLEI_VERSION#v}"* ]]; then
   log "installing pinned nuclei ${NUCLEI_VERSION}"
-  go install "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}"
+  "$GO_BIN" install "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}"
 fi
 if [[ ! -x "${TOOLS_ROOT}/bin/ffuf" ]] || [[ "$("${TOOLS_ROOT}/bin/ffuf" -V 2>&1 | tr -d '[:space:]')" != *"${FFUF_VERSION#v}"* ]]; then
   log "installing pinned ffuf ${FFUF_VERSION}"
-  go install "github.com/ffuf/ffuf/v2@${FFUF_VERSION}"
+  "$GO_BIN" install "github.com/ffuf/ffuf/v2@${FFUF_VERSION}"
 fi
 chmod 0755 "${TOOLS_ROOT}/bin/nuclei" "${TOOLS_ROOT}/bin/ffuf"
 
