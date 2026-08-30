@@ -5,8 +5,7 @@ info:
   author: div3rsa
   severity: info
   description: Safe local readiness probe for the isolated security runtime.
-
-tags: readiness,safe
+  tags: readiness,safe
 
 http:
   - method: GET
