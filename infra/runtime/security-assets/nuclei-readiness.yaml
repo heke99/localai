@@ -1,0 +1,18 @@
+id: div3rsa-security-runtime-readiness
+
+info:
+  name: DIV3RSA Security Runtime Readiness
+  author: div3rsa
+  severity: info
+  description: Safe local readiness probe for the isolated security runtime.
+
+tags: readiness,safe
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: status
+        status:
+          - 200

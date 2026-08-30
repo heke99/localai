@@ -4,6 +4,7 @@ const provision = await readFile(new URL("../infra/runtime/provision-security-ex
 const service = await readFile(new URL("../infra/runtime/div3rsa-security-executor.service", import.meta.url), "utf8");
 const e2e = await readFile(new URL("../infra/runtime/e2e-security-executor.sh", import.meta.url), "utf8");
 const cutover = await readFile(new URL("../infra/runtime/cutover-security-runtime-gpuhub.sh", import.meta.url), "utf8");
+const agentReadiness = await readFile(new URL("./eval_security_agent_gpuhub.ts", import.meta.url), "utf8");
 const workflow = await readFile(new URL("../.github/workflows/deploy-gpuhub.yml", import.meta.url), "utf8");
 
 function requireText(source, text, label) {
@@ -43,13 +44,26 @@ requireText(e2e, "port_scan", "bounded_active_probe");
 
 requireText(cutover, "type dummy", "ephemeral_owned_network_target");
 requireText(cutover, "10.254.254.1", "private_test_address");
+requireText(cutover, "18443", "owned_tls_target");
+requireText(cutover, "common-wordlist.txt", "deterministic_discovery_wordlist");
+requireText(cutover, "nuclei-readiness.yaml", "deterministic_nuclei_template");
 requireText(cutover, "DIV3RSA_SECURITY_E2E_ACTIVE=1", "live_active_gate");
 requireText(cutover, "DIV3RSA_SECURITY_TOOL_RUNTIME_ENABLED=1", "worker_environment_proof");
+requireText(cutover, "scripts/eval_security_agent_gpuhub.ts", "full_agent_readiness_eval");
+requireText(cutover, "security-runtime-readiness.json", "readiness_evidence_marker");
+requireText(cutover, "v.commit!==process.argv[2]", "stale_readiness_rejection");
 requireText(cutover, "systemctl is-active --quiet", "service_liveness_proof");
-requireText(cutover, "GPUHUB_SECURITY_RUNTIME_E2E_OK", "cutover_success_marker");
+requireText(cutover, "GPUHUB_SECURITY_RUNTIME_AGENT_E2E_OK", "full_agent_cutover_success_marker");
+
+for (const tool of ["dns_lookup", "http_probe", "tls_probe", "port_scan", "template_scan", "content_discovery"]) {
+  requireText(agentReadiness, `tool: "${tool}"`, `agent_readiness_${tool}`);
+}
+requireText(agentReadiness, "new AgentWorkerProcessor", "real_agent_processor_chain");
+requireText(agentReadiness, "new HttpSecurityToolExecutor", "real_executor_http_chain");
+requireText(agentReadiness, "audit_status_not_completed", "audit_completion_gate");
+requireText(agentReadiness, "passed === results.length", "all_capabilities_required");
 
 requireText(workflow, "cutover-security-runtime-gpuhub.sh", "production_workflow_cutover");
-requireText(workflow, "http://127.0.0.1:7319/health", "production_executor_health_gate");
 requireText(workflow, "security_runtime=live", "production_live_marker");
 
 console.log("SECURITY_EXECUTOR_DEPLOYMENT_CONTRACT_OK");
