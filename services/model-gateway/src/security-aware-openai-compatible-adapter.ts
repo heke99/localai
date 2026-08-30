@@ -14,6 +14,10 @@ import { normalizeTextualToolResult, securityToolContract } from "./textual-tool
 
 type Fetch = typeof fetch;
 
+function hasAnyTool(request: GenerateRequest): boolean {
+  return Boolean(request.tools?.length);
+}
+
 function hasSecurityTool(request: GenerateRequest): boolean {
   return Boolean(request.tools?.some((tool) => tool.name === "security_scan"));
 }
@@ -36,6 +40,14 @@ function requestsSecurityExecution(request: GenerateRequest): boolean {
     .replace(/https?:\/\/\S+/gi, " ")
     .replace(/\b(?:[a-z0-9-]+\.)+(?:test|com|net|org|se|io|dev)\b/gi, " ");
   return /\b(?:säkerhetsgranska|granska|testa|kontrollera|kör|börja|utför|pentest|penetrationstest|scan|assess|audit|test|review|check|execute|run)\b/i.test(text);
+}
+
+function signalsDeferredToolAction(content: string): boolean {
+  const text = content.replace(/\s+/g, " ").trim();
+  if (!text) return false;
+  const commitment = /(?:\bjag\s+(?:börjar|ska|kommer|behöver|tänker)\b|\blåt\s+mig\b|\bi(?:'ll|\s+will|\s+need\s+to|\s+am\s+going\s+to)\b|\blet\s+me\b)/i.test(text);
+  const toolAction = /(?:undersök|inspekter|kontroller|kolla|sök|leta|läs|öppna|hämta|granska|arbetsmilj|verktyg|inspect|examine|check|search|look|read|open|fetch|review|environment|tool)/i.test(text);
+  return commitment && toolAction;
 }
 
 function withSecurityContract(request: GenerateRequest): GenerateRequest {
@@ -109,6 +121,22 @@ function initialRepairRequest(request: GenerateRequest, previous: GenerateResult
   };
 }
 
+function genericToolRepairRequest(request: GenerateRequest, previous: GenerateResult): GenerateRequest {
+  const exposedTools = (request.tools ?? []).map((tool) => tool.name).join(", ");
+  return {
+    ...request,
+    temperature: 0,
+    messages: [
+      ...request.messages,
+      { role: "assistant", content: previous.content },
+      {
+        role: "user",
+        content: `Execution repair: your previous response deferred action (for example, saying you would inspect the environment or available tools) but produced no executable tool call. Do not narrate another future action. Either invoke exactly one currently exposed tool now, using its schema, or give the final answer now and explicitly state any capability limitation. Exposed tools: ${exposedTools}. Do not print XML, JSON pseudo-tool markup, or invent unavailable tools.`
+      }
+    ]
+  };
+}
+
 function duplicateRepairRequest(request: GenerateRequest, previous: GenerateResult): GenerateRequest {
   return {
     ...request,
@@ -160,11 +188,24 @@ export class SecurityAwareOpenAiCompatibleAdapter implements ModelAdapter {
       return { ...normalizedRepair, usage: mergeUsage(normalizedFirst.usage, normalizedRepair.usage) };
     }
 
-    if (normalizedFirst.finishReason === "tool_call" || !requestsSecurityExecution(prepared) || hasSecurityToolResult(prepared)) return normalizedFirst;
+    if (normalizedFirst.finishReason === "tool_call") return normalizedFirst;
 
-    const second = await this.raw.generate(initialRepairRequest(prepared, normalizedFirst));
-    const normalizedSecond = normalizeTextualToolResult(second, prepared.tools).result;
-    return { ...normalizedSecond, usage: mergeUsage(normalizedFirst.usage, normalizedSecond.usage) };
+    if (requestsSecurityExecution(prepared) && !hasSecurityToolResult(prepared)) {
+      const second = await this.raw.generate(initialRepairRequest(prepared, normalizedFirst));
+      const normalizedSecond = normalizeTextualToolResult(second, prepared.tools).result;
+      return { ...normalizedSecond, usage: mergeUsage(normalizedFirst.usage, normalizedSecond.usage) };
+    }
+
+    if (hasAnyTool(prepared) && signalsDeferredToolAction(normalizedFirst.content)) {
+      const second = await this.raw.generate(genericToolRepairRequest(prepared, normalizedFirst));
+      const normalizedSecond = normalizeTextualToolResult(second, prepared.tools).result;
+      if (normalizedSecond.finishReason !== "tool_call" && signalsDeferredToolAction(normalizedSecond.content)) {
+        throw new Error("model_no_progress_after_tool_repair");
+      }
+      return { ...normalizedSecond, usage: mergeUsage(normalizedFirst.usage, normalizedSecond.usage) };
+    }
+
+    return normalizedFirst;
   }
 
   async generateStreamed(request: GenerateRequest, onDelta: ModelStreamDeltaHandler): Promise<GenerateResult> {
@@ -174,7 +215,7 @@ export class SecurityAwareOpenAiCompatibleAdapter implements ModelAdapter {
       if (result.content) await onDelta(result.content);
       return result;
     }
-    if (!hasSecurityTool(request)) {
+    if (!hasAnyTool(request)) {
       if (this.raw.generateStreamed) return this.raw.generateStreamed(request, onDelta);
       const result = await this.raw.generate(request);
       if (result.content) await onDelta(result.content);
@@ -187,7 +228,7 @@ export class SecurityAwareOpenAiCompatibleAdapter implements ModelAdapter {
   }
 
   async *stream(request: GenerateRequest): AsyncIterable<string> {
-    if (isDeterministicSecurityReadiness(request) || !hasSecurityTool(request)) {
+    if (isDeterministicSecurityReadiness(request) || !hasAnyTool(request)) {
       yield* this.raw.stream(request);
       return;
     }
