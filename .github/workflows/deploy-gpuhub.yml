@@ -40,6 +40,7 @@ jobs:
           bash -n infra/runtime/benchmark-legacy-gpuhub-parallel.sh
           bash -n infra/runtime/check-search-capability.sh
           bash -n infra/runtime/provision-security-executor.sh
+          bash -n infra/runtime/security-executor-supervisor.sh
           bash -n infra/runtime/e2e-security-executor.sh
           bash -n infra/runtime/cutover-security-runtime-gpuhub.sh
 
@@ -164,12 +165,12 @@ jobs:
           curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null
           bash "$app_dir/infra/runtime/check-search-capability.sh" 'http://127.0.0.1:8890'
           curl --fail --silent --show-error --max-time 3 http://127.0.0.1:7319/health >/dev/null
-          systemctl is-active --quiet div3rsa-security-executor.service
+          bash /opt/div3rsa/localai/infra/runtime/security-executor-supervisor.sh status
           screen -list | grep -F '.localai-agent' >/dev/null
           process="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
           echo "$process"
           [[ "$process" == *"--spec-type ngram-mod"* ]] || { echo "GPUHub deploy missing tracked ngram-mod runtime" >&2; exit 1; }
-          echo "GPUHub deploy healthy: requested=${expected_sha} current=${current_sha} spec_type=ngram-mod security_runtime=live"
+          echo "GPUHub deploy healthy: requested=${expected_sha} current=${current_sha} spec_type=ngram-mod security_runtime=ready"
           REMOTE
 
   eval_benchmark:
