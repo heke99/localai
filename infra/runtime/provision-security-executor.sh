@@ -26,17 +26,18 @@ AUDIT_LOG="${DIV3RSA_SECURITY_AUDIT_LOG:-/var/log/div3rsa/security-executor.json
 [[ -f "${SOURCE_ROOT}/services/security-executor/src/main.ts" ]] || fatal "security executor source missing under ${SOURCE_ROOT}"
 [[ -f "${SOURCE_ROOT}/infra/runpod/native-typescript-register.mjs" ]] || fatal "native TypeScript register missing"
 [[ -f "${SOURCE_ROOT}/infra/runtime/div3rsa-security-executor.service" ]] || fatal "systemd unit missing"
-command -v systemctl >/dev/null 2>&1 || fatal "systemd is required"
+[[ -f "${SOURCE_ROOT}/infra/runtime/start-security-executor-portable.sh" ]] || fatal "portable supervisor missing"
+[[ -f "${SOURCE_ROOT}/infra/runtime/check-security-executor-active.sh" ]] || fatal "portable liveness check missing"
 command -v openssl >/dev/null 2>&1 || fatal "openssl is required to generate executor credentials"
 
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   log "ensuring bounded security runtime dependencies"
   apt-get update -y >/dev/null
-  apt-get install -y --no-install-recommends ca-certificates curl openssl dnsutils nmap iproute2 tar >/dev/null
+  apt-get install -y --no-install-recommends ca-certificates curl openssl dnsutils nmap iproute2 tar util-linux >/dev/null
 fi
 
-for tool in curl openssl dig nmap ip tar sha256sum; do
+for tool in curl openssl dig nmap ip tar sha256sum setpriv setsid; do
   command -v "$tool" >/dev/null 2>&1 || fatal "required provisioning dependency unavailable: ${tool}"
 done
 
@@ -58,6 +59,8 @@ chmod 0600 "${AUDIT_LOG}"
 
 log "installing minimal immutable executor snapshot"
 install -o root -g root -m 0755 "${SOURCE_ROOT}/infra/runtime/start-security-executor.sh" "${INSTALL_ROOT}/infra/runtime/start-security-executor.sh"
+install -o root -g root -m 0755 "${SOURCE_ROOT}/infra/runtime/start-security-executor-portable.sh" "${INSTALL_ROOT}/infra/runtime/start-security-executor-portable.sh"
+install -o root -g root -m 0755 "${SOURCE_ROOT}/infra/runtime/check-security-executor-active.sh" "${INSTALL_ROOT}/infra/runtime/check-security-executor-active.sh"
 install -o root -g root -m 0644 "${SOURCE_ROOT}/infra/runpod/native-typescript-register.mjs" "${INSTALL_ROOT}/infra/runpod/native-typescript-register.mjs"
 install -o root -g root -m 0644 "${SOURCE_ROOT}/services/security-executor/src/main.ts" "${INSTALL_ROOT}/services/security-executor/src/main.ts"
 install -o root -g root -m 0644 "${SOURCE_ROOT}/services/security-executor/src/runtime.ts" "${INSTALL_ROOT}/services/security-executor/src/runtime.ts"
@@ -157,20 +160,26 @@ upsert_env DIV3RSA_SECURITY_TOOL_RUNTIME_ENABLED 1 "${WORKER_ENV_FILE}"
 upsert_env DIV3RSA_SECURITY_EXECUTOR_URL "http://127.0.0.1:${PORT}" "${WORKER_ENV_FILE}"
 upsert_env DIV3RSA_SECURITY_EXECUTOR_TOKEN "${TOKEN}" "${WORKER_ENV_FILE}"
 
-systemctl daemon-reload
-systemctl enable "${SERVICE_NAME}" >/dev/null
-systemctl restart "${SERVICE_NAME}"
+log "starting executor through portable supervisor"
+DIV3RSA_SECURITY_ENV_FILE="$ENV_FILE" \
+DIV3RSA_SECURITY_SERVICE_NAME="$SERVICE_NAME" \
+  bash "${SOURCE_ROOT}/infra/runtime/start-security-executor-portable.sh"
 
 health_url="http://127.0.0.1:${PORT}/health"
 deadline=$((SECONDS + ${DIV3RSA_SECURITY_BOOT_TIMEOUT_SECONDS:-45}))
 until curl --fail --silent --show-error --max-time 2 "${health_url}" >/dev/null 2>&1; do
   if (( SECONDS >= deadline )); then
-    systemctl status "${SERVICE_NAME}" --no-pager || true
-    journalctl -u "${SERVICE_NAME}" -n 120 --no-pager || true
+    if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then
+      systemctl status "${SERVICE_NAME}" --no-pager || true
+      journalctl -u "${SERVICE_NAME}" -n 120 --no-pager || true
+    else
+      tail -n 120 /var/log/div3rsa/security-executor-process.log 2>/dev/null || true
+    fi
     fatal "security executor failed health check"
   fi
   sleep 1
 done
+bash "${SOURCE_ROOT}/infra/runtime/check-security-executor-active.sh" >/dev/null
 
 log "security executor healthy on loopback:${PORT}"
 log "worker env wired at ${WORKER_ENV_FILE}; restart the agent worker after this provisioning step"

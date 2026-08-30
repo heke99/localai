@@ -40,6 +40,8 @@ jobs:
           bash -n infra/runtime/benchmark-legacy-gpuhub-parallel.sh
           bash -n infra/runtime/check-search-capability.sh
           bash -n infra/runtime/provision-security-executor.sh
+          bash -n infra/runtime/start-security-executor-portable.sh
+          bash -n infra/runtime/check-security-executor-active.sh
           bash -n infra/runtime/e2e-security-executor.sh
           bash -n infra/runtime/cutover-security-runtime-gpuhub.sh
 
@@ -163,8 +165,7 @@ jobs:
 
           curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6006/health >/dev/null
           bash "$app_dir/infra/runtime/check-search-capability.sh" 'http://127.0.0.1:8890'
-          curl --fail --silent --show-error --max-time 3 http://127.0.0.1:7319/health >/dev/null
-          systemctl is-active --quiet div3rsa-security-executor.service
+          bash "$app_dir/infra/runtime/check-security-executor-active.sh" >/dev/null
           screen -list | grep -F '.localai-agent' >/dev/null
           process="$(pgrep -af 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf')"
           echo "$process"
