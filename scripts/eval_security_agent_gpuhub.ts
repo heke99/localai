@@ -7,6 +7,7 @@ import { HttpSecurityToolExecutor, SecurityToolRuntime } from "../services/agent
 
 interface Completion { content: string; modelVersionId: string; usage: Record<string, number>; }
 interface SecurityExecution { call: ModelToolCall; output: Record<string, unknown>; }
+interface SecurityAttempt { call: ModelToolCall; error?: string; }
 
 class EvalQueue implements AgentQueue {
   private claimed = false;
@@ -26,14 +27,52 @@ class EvalQueue implements AgentQueue {
   async isCancelled(): Promise<boolean> { return false; }
 }
 
-class CapturingSecurityRuntime implements WorkerToolRuntime {
+class ExactReadinessSecurityRuntime implements WorkerToolRuntime {
   readonly executions: SecurityExecution[] = [];
-  constructor(private readonly inner: SecurityToolRuntime) {}
-  async list(run: ClaimedRun): Promise<ModelToolDefinition[]> { return this.inner.list(run); }
+  readonly attempts: SecurityAttempt[] = [];
+  constructor(
+    private readonly inner: SecurityToolRuntime,
+    private readonly expectedTool: string,
+    private readonly expectedTarget: string
+  ) {}
+
+  async list(run: ClaimedRun): Promise<ModelToolDefinition[]> {
+    const definitions = await this.inner.list(run);
+    return definitions.map((definition) => {
+      if (definition.name !== "security_scan") return definition;
+      const schema = structuredClone(definition.inputSchema) as Record<string, unknown>;
+      const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)
+        ? schema.properties as Record<string, unknown>
+        : {};
+      properties.tool = {
+        type: "string",
+        enum: [this.expectedTool],
+        description: `Production-readiness operation. The only valid value is ${this.expectedTool}.`
+      };
+      properties.target = {
+        type: "string",
+        enum: [this.expectedTarget],
+        description: `Production-readiness target. The only valid value is ${this.expectedTarget}.`
+      };
+      schema.properties = properties;
+      return { ...definition, inputSchema: schema };
+    });
+  }
+
   async execute(run: ClaimedRun, call: ModelToolCall): Promise<unknown> {
-    const output = await this.inner.execute(run, call) as Record<string, unknown>;
-    this.executions.push({ call, output });
-    return output;
+    const attempt: SecurityAttempt = { call };
+    this.attempts.push(attempt);
+    try {
+      if (call.name !== "security_scan") throw new Error(`readiness_unexpected_tool_name:${call.name}`);
+      if (call.input.tool !== this.expectedTool) throw new Error(`readiness_unexpected_tool_id:${String(call.input.tool)}`);
+      if (call.input.target !== this.expectedTarget) throw new Error(`readiness_unexpected_target:${String(call.input.target)}`);
+      const output = await this.inner.execute(run, call) as Record<string, unknown>;
+      this.executions.push({ call, output });
+      return output;
+    } catch (error) {
+      attempt.error = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
   }
 }
 
@@ -83,20 +122,24 @@ const results: Array<Record<string, unknown>> = [];
 for (const test of cases) {
   const run: ClaimedRun = {
     jobId: `security-readiness-${test.tool}`, runId: randomUUID(), mode: "lab", modelAlias: (process.env.DIV3RSA_EVAL_MODEL_ALIAS?.trim() || "general-prod") as ModelAlias,
-    prompt: `Authorized production-readiness check. Use security_scan exactly once. Set tool to ${test.tool}, target to ${test.target}, and options exactly to ${JSON.stringify(test.options)}. After the tool result, answer only SECURITY_RUNTIME_READY ${test.tool}.`,
+    prompt: `Authorized production-readiness check. Use security_scan exactly once. The tool schema permits exactly one operation and one target. Use the supplied options exactly: ${JSON.stringify(test.options)}. After the tool result, answer only SECURITY_RUNTIME_READY ${test.tool}.`,
     requestId: `security-readiness-${test.tool}-${randomUUID()}`, traceId: randomUUID(),
     resourceContext: [{ resourceId: "security-readiness-scope", connectionId: "security-readiness-local", provider: "local", resourceType: "security_scope", externalResourceId: "security-readiness-owned-target", displayName: "Owned ephemeral GPUHub readiness target", capabilities: ["security.active"], metadata: { allowHosts: [], allowIpv4Cidrs: [`${targetIp}/32`], readinessProof } }]
   };
   const queue = new EvalQueue(run);
-  const security = new CapturingSecurityRuntime(new SecurityToolRuntime(new HttpSecurityToolExecutor(`${executorBaseUrl}/v1/execute`, executorToken)));
+  const security = new ExactReadinessSecurityRuntime(
+    new SecurityToolRuntime(new HttpSecurityToolExecutor(`${executorBaseUrl}/v1/execute`, executorToken)),
+    test.tool,
+    test.target
+  );
   const processor = new AgentWorkerProcessor(
     queue, { resolve: () => adapter }, `security-readiness-worker-${process.pid}`,
-    { prepare: async () => ({ names: [], instructions: `SECURITY READINESS REQUIRED: the first model turn MUST call security_scan exactly once using the exact tool, target and options supplied by the user. This marker is reserved for the production readiness harness.` }) },
+    { prepare: async () => ({ names: [], instructions: `SECURITY READINESS REQUIRED: the first model turn MUST call security_scan exactly once. Its JSON schema has already been narrowed to the exact production-readiness operation and target. This marker is reserved for the production readiness harness.` }) },
     security
   );
   const started = performance.now();
   await processor.processOnce();
-  const execution = security.executions.find((entry) => entry.call.input.tool === test.tool);
+  const execution = security.executions.find((entry) => entry.call.input.tool === test.tool && entry.call.input.target === test.target);
   const failures: string[] = [];
   if (!queue.completion) failures.push(`run_not_completed:${queue.failure?.code ?? "unknown"}`);
   if (!execution) failures.push(`security_operation_not_executed:${test.tool}`);
@@ -107,7 +150,18 @@ for (const test of cases) {
   if (test.tool === "template_scan" && (!Array.isArray(output.findings) || output.findings.length < 1)) failures.push("template_readiness_match_missing");
   if (test.tool === "content_discovery" && (!Array.isArray(output.findings) || output.findings.length < 1)) failures.push("content_discovery_match_missing");
   if (typeof output.auditId === "string" && output.auditId) expectedAuditIds.set(output.auditId, test.tool);
-  results.push({ tool: test.tool, passed: failures.length === 0, failures, latencyMs: Math.round(performance.now() - started), auditId: output.auditId ?? null, capability: output.capability ?? null });
+  results.push({
+    tool: test.tool,
+    target: test.target,
+    passed: failures.length === 0,
+    failures,
+    latencyMs: Math.round(performance.now() - started),
+    auditId: output.auditId ?? null,
+    capability: output.capability ?? null,
+    attempts: security.attempts.map((attempt) => ({ name: attempt.call.name, input: attempt.call.input, error: attempt.error ?? null })),
+    queueFailure: queue.failure,
+    completion: queue.completion ? { content: queue.completion.content.slice(0, 160), modelVersionId: queue.completion.modelVersionId } : null
+  });
 }
 
 const auditText = await readFile(auditLogPath, "utf8");
