@@ -64,6 +64,8 @@ describe("external security skill runtime", () => {
     expect(prepared.names).toHaveLength(2);
     expect(prepared.names).toContain("external-security:testing-idor-in-rest-apis");
     expect(prepared.names).toContain("external-security:testing-oauth-authorization");
+    expect(prepared.skills).toHaveLength(2);
+    expect(prepared.skills.map((skill) => skill.name)).toEqual(prepared.names);
     expect(prepared.instructions).toContain("execution=knowledge_only");
     expect(prepared.instructions).toContain("never grants shell, network, mutation, destructive, credential or scope authority");
     expect(prepared.instructions).not.toContain("analyzing-kubernetes-audit-logs");
@@ -71,7 +73,7 @@ describe("external security skill runtime", () => {
 
   it("never injects external security skills outside lab mode", async () => {
     const runtime = new ExternalSecuritySkillRuntime(await fixture());
-    await expect(runtime.prepare("code", "test IDOR in this API")).resolves.toEqual({ names: [], instructions: "" });
-    await expect(runtime.prepare("chat", "OAuth attack paths")).resolves.toEqual({ names: [], instructions: "" });
+    await expect(runtime.prepare("code", "test IDOR in this API")).resolves.toEqual({ names: [], instructions: "", skills: [] });
+    await expect(runtime.prepare("chat", "OAuth attack paths")).resolves.toEqual({ names: [], instructions: "", skills: [] });
   });
 });
