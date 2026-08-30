@@ -30,7 +30,6 @@ ProtectProc=invisible
 ProcSubset=pid
 RestrictSUIDSGID=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
 RestrictRealtime=true
 RestrictNamespaces=true
 CapabilityBoundingSet=
