@@ -41,12 +41,12 @@ test("forces security_scan only before readiness tool evidence exists", async ()
 });
 
 test("does not force security_scan without the reserved readiness marker", async () => {
-  let body: Record<string, unknown> | null = null;
+  const bodies: Array<Record<string, unknown>> = [];
   const fetcher: typeof fetch = async (_url, init) => {
-    body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
     return new Response(JSON.stringify({ choices: [{ message: { content: "normal" }, finish_reason: "stop" }], usage: {} }), { status: 200, headers: { "content-type": "application/json" } });
   };
   const adapter = new OpenAiCompatibleAdapter("http://example.invalid/v1", "test", fetcher);
   await adapter.generate({ requestId: "normal-lab", alias: "general-prod", messages: [{ role: "system", content: "Mode: lab." }, { role: "user", content: "Inspect the target." }], tools: [securityTool] });
-  expect(body?.tool_choice).toBe("auto");
+  expect(bodies[0]?.tool_choice).toBe("auto");
 });
