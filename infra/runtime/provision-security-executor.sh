@@ -26,17 +26,17 @@ AUDIT_LOG="${DIV3RSA_SECURITY_AUDIT_LOG:-/var/log/div3rsa/security-executor.json
 [[ -f "${SOURCE_ROOT}/services/security-executor/src/main.ts" ]] || fatal "security executor source missing under ${SOURCE_ROOT}"
 [[ -f "${SOURCE_ROOT}/infra/runpod/native-typescript-register.mjs" ]] || fatal "native TypeScript register missing"
 [[ -f "${SOURCE_ROOT}/infra/runtime/div3rsa-security-executor.service" ]] || fatal "systemd unit missing"
-command -v systemctl >/dev/null 2>&1 || fatal "systemd is required"
+[[ -f "${SOURCE_ROOT}/infra/runtime/security-executor-supervisor.sh" ]] || fatal "security supervisor missing"
 command -v openssl >/dev/null 2>&1 || fatal "openssl is required to generate executor credentials"
 
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   log "ensuring bounded security runtime dependencies"
   apt-get update -y >/dev/null
-  apt-get install -y --no-install-recommends ca-certificates curl openssl dnsutils nmap iproute2 tar >/dev/null
+  apt-get install -y --no-install-recommends ca-certificates curl openssl dnsutils nmap iproute2 tar util-linux procps >/dev/null
 fi
 
-for tool in curl openssl dig nmap ip tar sha256sum; do
+for tool in curl openssl dig nmap ip tar sha256sum runuser setsid pgrep; do
   command -v "$tool" >/dev/null 2>&1 || fatal "required provisioning dependency unavailable: ${tool}"
 done
 
@@ -58,6 +58,7 @@ chmod 0600 "${AUDIT_LOG}"
 
 log "installing minimal immutable executor snapshot"
 install -o root -g root -m 0755 "${SOURCE_ROOT}/infra/runtime/start-security-executor.sh" "${INSTALL_ROOT}/infra/runtime/start-security-executor.sh"
+install -o root -g root -m 0755 "${SOURCE_ROOT}/infra/runtime/security-executor-supervisor.sh" "${INSTALL_ROOT}/infra/runtime/security-executor-supervisor.sh"
 install -o root -g root -m 0644 "${SOURCE_ROOT}/infra/runpod/native-typescript-register.mjs" "${INSTALL_ROOT}/infra/runpod/native-typescript-register.mjs"
 install -o root -g root -m 0644 "${SOURCE_ROOT}/services/security-executor/src/main.ts" "${INSTALL_ROOT}/services/security-executor/src/main.ts"
 install -o root -g root -m 0644 "${SOURCE_ROOT}/services/security-executor/src/runtime.ts" "${INSTALL_ROOT}/services/security-executor/src/runtime.ts"
@@ -138,7 +139,9 @@ fi
 chown root:div3rsa-security "${ENV_FILE}"
 chmod 0640 "${ENV_FILE}"
 
-install -o root -g root -m 0644 "${SOURCE_ROOT}/infra/runtime/div3rsa-security-executor.service" "/etc/systemd/system/${SERVICE_NAME}"
+if [[ -d /etc/systemd/system ]]; then
+  install -o root -g root -m 0644 "${SOURCE_ROOT}/infra/runtime/div3rsa-security-executor.service" "/etc/systemd/system/${SERVICE_NAME}"
+fi
 
 upsert_env() {
   local key="$1" value="$2" file="$3" tmp
@@ -157,21 +160,28 @@ upsert_env DIV3RSA_SECURITY_TOOL_RUNTIME_ENABLED 1 "${WORKER_ENV_FILE}"
 upsert_env DIV3RSA_SECURITY_EXECUTOR_URL "http://127.0.0.1:${PORT}" "${WORKER_ENV_FILE}"
 upsert_env DIV3RSA_SECURITY_EXECUTOR_TOKEN "${TOKEN}" "${WORKER_ENV_FILE}"
 
-systemctl daemon-reload
-systemctl enable "${SERVICE_NAME}" >/dev/null
-systemctl restart "${SERVICE_NAME}"
+DIV3RSA_SECURITY_SERVICE_NAME="$SERVICE_NAME" \
+DIV3RSA_SECURITY_INSTALL_ROOT="$INSTALL_ROOT" \
+DIV3RSA_SECURITY_ENV_FILE="$ENV_FILE" \
+  bash "${INSTALL_ROOT}/infra/runtime/security-executor-supervisor.sh" restart
 
 health_url="http://127.0.0.1:${PORT}/health"
 deadline=$((SECONDS + ${DIV3RSA_SECURITY_BOOT_TIMEOUT_SECONDS:-45}))
 until curl --fail --silent --show-error --max-time 2 "${health_url}" >/dev/null 2>&1; do
   if (( SECONDS >= deadline )); then
-    systemctl status "${SERVICE_NAME}" --no-pager || true
-    journalctl -u "${SERVICE_NAME}" -n 120 --no-pager || true
+    DIV3RSA_SECURITY_SERVICE_NAME="$SERVICE_NAME" \
+    DIV3RSA_SECURITY_INSTALL_ROOT="$INSTALL_ROOT" \
+    DIV3RSA_SECURITY_ENV_FILE="$ENV_FILE" \
+      bash "${INSTALL_ROOT}/infra/runtime/security-executor-supervisor.sh" logs || true
     fatal "security executor failed health check"
   fi
   sleep 1
 done
 
+DIV3RSA_SECURITY_SERVICE_NAME="$SERVICE_NAME" \
+DIV3RSA_SECURITY_INSTALL_ROOT="$INSTALL_ROOT" \
+DIV3RSA_SECURITY_ENV_FILE="$ENV_FILE" \
+  bash "${INSTALL_ROOT}/infra/runtime/security-executor-supervisor.sh" status || fatal "security executor supervisor status failed"
 log "security executor healthy on loopback:${PORT}"
 log "worker env wired at ${WORKER_ENV_FILE}; restart the agent worker after this provisioning step"
 printf 'DIV3RSA_SECURITY_EXECUTOR_URL=http://127.0.0.1:%s\n' "${PORT}"
