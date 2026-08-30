@@ -17,6 +17,7 @@ import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
 import { CompositeWorkerToolRuntime } from "./composite-tool-runtime";
 import { DynamicToolBroker } from "./dynamic-tool-broker";
 import { CoreToolRuntime } from "./core-tool-runtime";
+import { HttpSecurityToolExecutor, SecurityToolRuntime } from "./security-tool-runtime";
 import { RemoteProviderToolExecutor } from "./remote-provider-executor";
 import { RemoteRepositoryWorkspaceRuntime } from "./repository-runtime";
 import { SandboxVerificationRuntime } from "./sandbox-verification";
@@ -149,7 +150,14 @@ const executors = new Map([
   ["vercel", remoteExecutor]
 ]);
 const integrationToolRuntime = new PermissionedIntegrationToolRuntime(supabase as unknown as ConstructorParameters<typeof PermissionedIntegrationToolRuntime>[0], executors);
-const baseToolRuntime = new CompositeWorkerToolRuntime([coreToolRuntime, integrationToolRuntime]);
+const securityToolRuntimeEnabled = booleanEnvironment("DIV3RSA_SECURITY_TOOL_RUNTIME_ENABLED", false);
+const securityExecutorUrl = process.env.DIV3RSA_SECURITY_EXECUTOR_URL?.trim() || "";
+const securityExecutorToken = process.env.DIV3RSA_SECURITY_EXECUTOR_TOKEN?.trim() || "";
+if (securityToolRuntimeEnabled && (!securityExecutorUrl || !securityExecutorToken)) throw new Error("security_executor_configuration_required");
+const securityToolRuntime = new SecurityToolRuntime(securityToolRuntimeEnabled
+  ? new HttpSecurityToolExecutor(securityExecutorUrl, securityExecutorToken)
+  : null);
+const baseToolRuntime = new CompositeWorkerToolRuntime([coreToolRuntime, integrationToolRuntime, securityToolRuntime]);
 const dynamicToolDiscoveryEnabled = booleanEnvironment("DIV3RSA_DYNAMIC_TOOL_DISCOVERY_ENABLED", false);
 const discoveredToolRuntime = new DynamicToolBroker(baseToolRuntime, {
   enabled: dynamicToolDiscoveryEnabled,
@@ -236,7 +244,7 @@ const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BAC
 const kernelStatus = agentKernelConfig.enabled
   ? `${agentKernelConfig.mode}${agentKernelConfig.mode === "active" ? `-${agentKernelConfig.activeCanaryBasisPoints}bps` : ""}`
   : "disabled";
-console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; aggregateIdlePollMs=${idlePollMs}; agentKernel=${kernelStatus}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}; dynamicToolDiscovery=${dynamicToolDiscoveryEnabled ? "enabled" : "disabled"}; checkpointRewind=${checkpointRewindEnabled ? "enabled" : "disabled"}; verifiedMemory=${verifiedMemoryEnabled ? "enabled" : "disabled"}; verifiedLearning=${verifiedLearningEnabled ? "enabled" : "disabled"}; trainingEligibility=${trainingEligibilityEnabled ? "enabled" : "disabled"}`);
+console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; aggregateIdlePollMs=${idlePollMs}; agentKernel=${kernelStatus}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}; dynamicToolDiscovery=${dynamicToolDiscoveryEnabled ? "enabled" : "disabled"}; securityToolRuntime=${securityToolRuntimeEnabled ? "scoped-remote" : "disabled"}; checkpointRewind=${checkpointRewindEnabled ? "enabled" : "disabled"}; verifiedMemory=${verifiedMemoryEnabled ? "enabled" : "disabled"}; verifiedLearning=${verifiedLearningEnabled ? "enabled" : "disabled"}; trainingEligibility=${trainingEligibilityEnabled ? "enabled" : "disabled"}`);
 
 await runWorkerLanes({
   concurrency: workerConcurrency,
