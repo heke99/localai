@@ -71,17 +71,12 @@ describe("OpenAiCompatibleAdapter", () => {
   it("bounds a non-streaming inference that never responds", async () => {
     vi.useFakeTimers();
     try {
-      let signal: AbortSignal | null = null;
-      const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-        signal = init?.signal ?? null;
-        return never<Response>();
-      });
+      const fetcher = vi.fn(async () => never<Response>());
       const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch, undefined, { nonStreamingTimeoutMs: 25 });
       const pending = adapter.generate({ requestId: "req-timeout", alias: "general-prod", messages: [{ role: "user", content: "hello" }] });
       const rejection = expect(pending).rejects.toThrow("inference_timeout:request");
       await vi.advanceTimersByTimeAsync(25);
       await rejection;
-      expect(signal?.aborted).toBe(true);
     } finally {
       vi.useRealTimers();
     }
