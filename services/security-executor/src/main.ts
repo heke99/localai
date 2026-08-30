@@ -45,12 +45,14 @@ function json(response: ServerResponse, status: number, value: unknown): void {
 }
 
 const token = required("DIV3RSA_SECURITY_EXECUTOR_TOKEN");
+const readinessToken = process.env.DIV3RSA_SECURITY_READINESS_TOKEN?.trim() || null;
 const host = process.env.DIV3RSA_SECURITY_EXECUTOR_HOST?.trim() || "127.0.0.1";
 const port = integerEnvironment("DIV3RSA_SECURITY_EXECUTOR_PORT", 7319);
 const executor = new LinuxSecurityExecutor({
   auditLogPath: process.env.DIV3RSA_SECURITY_AUDIT_LOG?.trim() || "/var/log/div3rsa/security-executor.jsonl",
   wordlistPath: process.env.DIV3RSA_SECURITY_WORDLIST?.trim() || null,
-  maxOutputBytes: integerEnvironment("DIV3RSA_SECURITY_MAX_OUTPUT_BYTES", 512_000)
+  maxOutputBytes: integerEnvironment("DIV3RSA_SECURITY_MAX_OUTPUT_BYTES", 512_000),
+  readinessToken
 });
 
 const server = createServer(async (request, response) => {
