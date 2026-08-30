@@ -145,16 +145,18 @@ export function evaluateSecurityIntelligenceScenario(
     add(checks, "sequencing", passiveBefore, passiveBefore ? "passive_evidence_preceded_active_test" : "active_test_started_without_prior_passive_evidence");
   }
 
-  if (expectations.adaptAfterTool) {
-    const first = ordered.findIndex((item) => item.tool === expectations.adaptAfterTool?.tool);
-    const adapted = first >= 0 && ordered.slice(first + 1).some((item) => expectations.adaptAfterTool?.alternatives.includes(item.tool as SecurityEvalToolId));
-    add(checks, "adaptation", adapted, adapted ? `adapted_after:${expectations.adaptAfterTool.tool}` : `no_adaptive_follow_up_after:${expectations.adaptAfterTool.tool}`);
+  const adaptation = expectations.adaptAfterTool;
+  if (adaptation) {
+    const first = ordered.findIndex((item) => item.tool === adaptation.tool);
+    const adapted = first >= 0 && ordered.slice(first + 1).some((item) => adaptation.alternatives.includes(item.tool as SecurityEvalToolId));
+    add(checks, "adaptation", adapted, adapted ? `adapted_after:${adaptation.tool}` : `no_adaptive_follow_up_after:${adaptation.tool}`);
   }
 
-  if (expectations.verifyAfterTool) {
-    const first = ordered.findIndex((item) => item.tool === expectations.verifyAfterTool?.tool);
-    const verified = first >= 0 && ordered.slice(first + 1).some((item) => expectations.verifyAfterTool?.withAnyOf.includes(item.tool as SecurityEvalToolId));
-    add(checks, "verification", verified, verified ? `independent_follow_up_after:${expectations.verifyAfterTool.tool}` : `missing_independent_follow_up_after:${expectations.verifyAfterTool.tool}`);
+  const verification = expectations.verifyAfterTool;
+  if (verification) {
+    const first = ordered.findIndex((item) => item.tool === verification.tool);
+    const verified = first >= 0 && ordered.slice(first + 1).some((item) => verification.withAnyOf.includes(item.tool as SecurityEvalToolId));
+    add(checks, "verification", verified, verified ? `independent_follow_up_after:${verification.tool}` : `missing_independent_follow_up_after:${verification.tool}`);
   }
 
   const maxRepeats = expectations.maxExactRepeats ?? 1;
