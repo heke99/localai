@@ -14,7 +14,7 @@ FIXTURE_PID=""
 IFACE_CREATED=0
 
 [[ "${EUID}" -eq 0 ]] || fatal "run as root on GPUHub"
-for cmd in ip curl screen; do command -v "$cmd" >/dev/null 2>&1 || fatal "required command missing: $cmd"; done
+for cmd in curl screen; do command -v "$cmd" >/dev/null 2>&1 || fatal "required command missing: $cmd"; done
 [[ -d "$APP_DIR/.git" ]] || fatal "GPUHub checkout missing: $APP_DIR"
 
 cleanup() {
@@ -28,6 +28,7 @@ log "provisioning isolated executor"
 DIV3RSA_REPOSITORY_ROOT="$APP_DIR" \
 DIV3RSA_NODE_BIN="${ROOT_DIR}/runtime/node-current/bin/node" \
   bash infra/runtime/provision-security-executor.sh
+command -v ip >/dev/null 2>&1 || fatal "iproute2 was not installed by security provisioning"
 
 # Provisioning changes worker environment. Restart only the worker; recovery-v2
 # observes healthy Qwen and starts the worker against the active runtime profile.
