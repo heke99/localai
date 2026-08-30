@@ -91,6 +91,23 @@ const signals: Array<[RegExp, string[]]> = [
 ];
 
 const defaultCost: SkillRoutingCost = { context: "low", latency: "low" };
+const externalSecurityQuery = Symbol("externalSecurityQuery");
+type SkillSelectionQueryCarrier = SkillSelection[] & { [externalSecurityQuery]?: { mode: string; prompt: string } };
+type ExternalSecurityRuntime = import("./external-security-runtime").ExternalSecuritySkillRuntime;
+let externalSecurityRuntimeCache: { root: string; runtime: ExternalSecurityRuntime } | null = null;
+
+async function externalSecurityRoot(): Promise<string | null> {
+  if (typeof process === "undefined") return null;
+  const explicit = process.env.DIV3RSA_SECURITY_SKILL_ROOT?.trim();
+  if (explicit) return explicit;
+  const repositoryRoot = process.env.DIV3RSA_REPOSITORY_ROOT?.trim();
+  if (!repositoryRoot) return null;
+  const [{ resolve }, { ANTHROPIC_CYBERSECURITY_SKILLS_SOURCE }] = await Promise.all([
+    import("node:path"),
+    import("./security-skill-graph")
+  ]);
+  return resolve(repositoryRoot, "..", "runtime", "security-skills", ANTHROPIC_CYBERSECURITY_SKILLS_SOURCE.commit);
+}
 
 export class SkillEngine {
   private readonly skills: Map<string, SkillMetadata>;
@@ -135,13 +152,58 @@ export class SkillEngine {
     }
     const verifier = ordered.indexOf("verification-before-completion");
     if (verifier >= 0) ordered.push(...ordered.splice(verifier, 1));
-    return ordered.map((name, index) => ({ metadata: this.skills.get(name)!, reason: requested.has(name) ? "mode_or_prompt_match" : "dependency", activationOrder: index + 1 }));
+    const result: SkillSelectionQueryCarrier = ordered.map((name, index) => ({ metadata: this.skills.get(name)!, reason: requested.has(name) ? "mode_or_prompt_match" : "dependency", activationOrder: index + 1 }));
+    Object.defineProperty(result, externalSecurityQuery, { value: { mode, prompt }, enumerable: false });
+    return result;
   }
 
   async load(selection: SkillSelection[]): Promise<Array<SkillSelection & { instructions: string }>> {
     if (!this.reader) throw new Error("skill_body_reader_unavailable");
-    return Promise.all(selection.map(async (selected) => ({ ...selected, instructions: await this.reader!.read(selected.metadata.path) })));
+    const local = await Promise.all(selection.map(async (selected) => ({ ...selected, instructions: await this.reader!.read(selected.metadata.path) })));
+    const query = (selection as SkillSelectionQueryCarrier)[externalSecurityQuery];
+    if (!query || query.mode !== "lab") return local;
+
+    const root = await externalSecurityRoot();
+    if (!root) return local;
+    const [{ access }, { resolve }, { createHash }, runtimeModule, graphModule] = await Promise.all([
+      import("node:fs/promises"),
+      import("node:path"),
+      import("node:crypto"),
+      import("./external-security-runtime"),
+      import("./security-skill-graph")
+    ]);
+    try {
+      await access(resolve(root, "index.json"));
+    } catch {
+      return local;
+    }
+
+    if (!externalSecurityRuntimeCache || externalSecurityRuntimeCache.root !== root) {
+      externalSecurityRuntimeCache = { root, runtime: new runtimeModule.ExternalSecuritySkillRuntime(root) };
+    }
+    const prepared = await externalSecurityRuntimeCache.runtime.prepare(query.mode, query.prompt);
+    if (!prepared.skills.length) return local;
+
+    const external = prepared.skills.map((skill, index) => ({
+      metadata: {
+        name: skill.name,
+        path: `external://${graphModule.ANTHROPIC_CYBERSECURITY_SKILLS_SOURCE.id}/${skill.name}`,
+        category: "security-external",
+        description: skill.description,
+        version: graphModule.ANTHROPIC_CYBERSECURITY_SKILLS_SOURCE.commit,
+        sha256: createHash("sha256").update(skill.instructions).digest("hex"),
+        modes: ["lab"]
+      },
+      reason: "external_security_top_k",
+      activationOrder: local.length + index + 1,
+      instructions: skill.instructions
+    }));
+
+    const verifier = local.findIndex((item) => item.metadata.name === "verification-before-completion");
+    if (verifier < 0) return [...local, ...external];
+    return [...local.slice(0, verifier), ...external, ...local.slice(verifier)];
   }
 }
 
 export * from "./security-skill-graph";
+export * from "./external-security-runtime";
