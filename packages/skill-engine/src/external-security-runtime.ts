@@ -29,6 +29,8 @@ export interface PreparedExternalSecuritySkill {
   name: string;
   description: string;
   instructions: string;
+  routingScore: number;
+  matchedTerms: string[];
 }
 
 export interface PreparedExternalSecuritySkills {
@@ -38,11 +40,13 @@ export interface PreparedExternalSecuritySkills {
 }
 
 const WORD = /[a-z0-9][a-z0-9+._/-]{2,}/gi;
-const MAX_BODY_CHARS = 12_000;
+const MAX_BODY_CHARS = 8_000;
 const MIN_BODY_CHARS = 600;
+const DEFAULT_MAX_SKILLS = 4;
+const DEFAULT_CONTEXT_BUDGET_CHARS = 18_000;
 
-const DOMAIN_SIGNALS: Array<[SecuritySkillDomain, RegExp]> = [
-  ["ai_security", /\b(llm|prompt injection|mcp|rag|model|agentic|ai security)\b/i],
+const DOMAIN_SIGNALS: Array<[Exclude<SecuritySkillDomain, "unknown">, RegExp]> = [
+  ["ai_security", /\b(llm|prompt injection|mcp|rag|model security|agentic|agent security|ai security)\b/i],
   ["identity", /\b(active directory|adcs|kerberos|ldap|entra|domain controller|shadow credentials|dpapi)\b/i],
   ["container", /\b(kubernetes|k8s|docker|container|helm|kube|pod|cluster)\b/i],
   ["cloud", /\b(aws|azure|gcp|cloudtrail|cloud|iam|s3|serverless|bucket)\b/i],
@@ -98,7 +102,7 @@ export function validateExternalSecuritySkillIndex(raw: unknown, source: Externa
 export function inferSecurityDomains(name: string, description: string): SecuritySkillDomain[] {
   const text = `${name.replace(/-/g, " ")} ${description}`;
   const domains = DOMAIN_SIGNALS.filter(([, pattern]) => pattern.test(text)).map(([domain]) => domain);
-  return domains.length ? [...new Set(domains)] : ["recon"];
+  return domains.length ? [...new Set(domains)] : ["unknown"];
 }
 
 function routingTags(name: string, description: string): string[] {
@@ -128,8 +132,8 @@ export class ExternalSecuritySkillRuntime {
   constructor(
     private readonly snapshotRoot: string,
     private readonly source: ExternalSkillSource = ANTHROPIC_CYBERSECURITY_SKILLS_SOURCE,
-    private readonly maxSkills = 6,
-    private readonly contextBudgetChars = 28_000
+    private readonly maxSkills = DEFAULT_MAX_SKILLS,
+    private readonly contextBudgetChars = DEFAULT_CONTEXT_BUDGET_CHARS
   ) {}
 
   private loadIndex(): Promise<ExternalSecuritySkillIndex> {
@@ -168,7 +172,7 @@ export class ExternalSecuritySkillRuntime {
       const file = safeRelativePath(this.snapshotRoot, skill.sourcePath);
       const body = (await readFile(file, "utf8")).slice(0, availableBody);
       const instructions = `${header}${body}`;
-      prepared.push({ name: `external-security:${skill.id}`, description: skill.description, instructions });
+      prepared.push({ name: `external-security:${skill.id}`, description: skill.description, instructions, routingScore: score, matchedTerms });
       remaining -= instructions.length;
       if (remaining < MIN_BODY_CHARS) break;
     }

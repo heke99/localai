@@ -11,7 +11,8 @@ export type SecuritySkillDomain =
   | "mobile"
   | "dfir"
   | "ai_security"
-  | "reporting";
+  | "reporting"
+  | "unknown";
 
 export type SkillExecutionClass =
   | "knowledge_only"
@@ -49,6 +50,7 @@ export interface SecuritySkillQuery {
   mode: string;
   maxSkills?: number;
   contextBudgetChars?: number;
+  minimumRelativeScore?: number;
 }
 
 export interface SecuritySkillMatch {
@@ -59,9 +61,10 @@ export interface SecuritySkillMatch {
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/i;
 const SAFE_SEGMENT = /^[a-z0-9][a-z0-9._/-]*$/i;
-const DEFAULT_MAX_SKILLS = 6;
+const DEFAULT_MAX_SKILLS = 4;
 const MAX_SELECTABLE_SKILLS = 8;
-const DEFAULT_CONTEXT_BUDGET_CHARS = 28_000;
+const DEFAULT_CONTEXT_BUDGET_CHARS = 18_000;
+const DEFAULT_MINIMUM_RELATIVE_SCORE = 0.3;
 
 export const ANTHROPIC_CYBERSECURITY_SKILLS_SOURCE: ExternalSkillSource = Object.freeze({
   id: "anthropic-cybersecurity-skills",
@@ -108,43 +111,62 @@ const DOMAIN_TERMS: Record<SecuritySkillDomain, string[]> = {
   web: ["web", "http", "xss", "ssrf", "csrf", "upload", "request smuggling", "cache poisoning"],
   api: ["api", "rest", "graphql", "grpc", "bola", "idor", "endpoint"],
   auth: ["auth", "authentication", "authorization", "oauth", "oidc", "jwt", "session", "login", "mfa"],
-  business_logic: ["business logic", "workflow", "race condition", "price", "coupon", "tenant", "multi-tenant"],
+  business_logic: ["business logic", "workflow", "race condition", "price", "coupon", "tenant", "multi tenant"],
   code: ["source code", "code review", "sast", "dependency", "secret", "repository"],
   cloud: ["aws", "azure", "gcp", "cloud", "iam", "bucket", "serverless"],
   identity: ["active directory", "adcs", "kerberos", "ldap", "entra", "identity", "privilege"],
   container: ["docker", "container", "kubernetes", "k8s", "helm", "rbac"],
   mobile: ["android", "ios", "mobile", "apk", "ipa", "frida"],
   dfir: ["forensics", "dfir", "incident", "malware", "memory dump", "yara", "threat hunting"],
-  ai_security: ["llm", "ai", "prompt injection", "agent", "mcp", "model", "rag"],
-  reporting: ["report", "finding", "evidence", "cvss", "bug bounty", "disclosure"]
+  ai_security: ["llm", "prompt injection", "agentic", "agent security", "mcp", "model security", "rag", "ai security"],
+  reporting: ["report", "finding", "evidence", "cvss", "bug bounty", "disclosure"],
+  unknown: []
 };
 
+const GENERIC_ROUTING_TERMS = new Set(["api", "web", "http", "endpoint", "cloud", "container", "identity", "report", "finding", "evidence"]);
+
 function normalize(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9åäö._/-]+/g, " ").replace(/\s+/g, " ").trim();
+  return value.toLowerCase().replace(/[^a-z0-9åäö]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function scoreNode(node: SecuritySkillNode, prompt: string): SecuritySkillMatch {
-  const haystack = normalize(`${node.name} ${node.description} ${node.tags.join(" ")}`);
+function includesTerm(normalizedText: string, rawTerm: string): boolean {
+  const term = normalize(rawTerm);
+  if (!term) return false;
+  return ` ${normalizedText} `.includes(` ${term} `);
+}
+
+export function inferPromptSecurityDomains(prompt: string): SecuritySkillDomain[] {
   const normalizedPrompt = normalize(prompt);
+  return (Object.entries(DOMAIN_TERMS) as Array<[SecuritySkillDomain, string[]]>)
+    .filter(([domain, terms]) => domain !== "unknown" && terms.some((term) => includesTerm(normalizedPrompt, term)))
+    .map(([domain]) => domain);
+}
+
+function scoreNode(node: SecuritySkillNode, prompt: string, promptDomains: ReadonlySet<SecuritySkillDomain>): SecuritySkillMatch {
+  const normalizedPrompt = normalize(prompt);
+  const normalizedSkill = normalize(`${node.id} ${node.name} ${node.description} ${node.tags.join(" ")}`);
   const matchedTerms = new Set<string>();
   let score = 0;
 
   for (const tag of node.tags) {
     const term = normalize(tag);
-    if (term && normalizedPrompt.includes(term)) {
+    if (term && includesTerm(normalizedPrompt, term)) {
       matchedTerms.add(term);
-      score += 5;
+      score += GENERIC_ROUTING_TERMS.has(term) ? 2 : 6;
     }
   }
   for (const domain of node.domains) {
+    if (domain !== "unknown" && promptDomains.has(domain)) {
+      matchedTerms.add(`domain:${domain}`);
+      score += 8;
+    }
     for (const rawTerm of DOMAIN_TERMS[domain]) {
       const term = normalize(rawTerm);
-      if (normalizedPrompt.includes(term)) {
+      if (term && includesTerm(normalizedPrompt, term) && includesTerm(normalizedSkill, term)) {
         matchedTerms.add(term);
-        score += 3;
+        score += GENERIC_ROUTING_TERMS.has(term) ? 1 : 3;
       }
     }
-    if (haystack.includes(normalizedPrompt) && normalizedPrompt.length >= 4) score += 1;
   }
   return { skill: node, score, matchedTerms: [...matchedTerms].sort() };
 }
@@ -153,13 +175,19 @@ export function selectSecuritySkills(nodes: readonly SecuritySkillNode[], source
   if (query.mode !== "lab") return [];
   const maxSkills = Math.min(Math.max(query.maxSkills ?? DEFAULT_MAX_SKILLS, 1), MAX_SELECTABLE_SKILLS);
   const budget = Math.max(query.contextBudgetChars ?? DEFAULT_CONTEXT_BUDGET_CHARS, 1_000);
+  const relativeFloor = Math.min(1, Math.max(0, query.minimumRelativeScore ?? DEFAULT_MINIMUM_RELATIVE_SCORE));
   const validated = nodes.map((node) => validateSecuritySkillNode(node, sources));
+  const promptDomains = new Set(inferPromptSecurityDomains(query.prompt));
+  const ranked = validated
+    .map((node) => scoreNode(node, query.prompt, promptDomains))
+    .filter((match) => match.score > 0)
+    .sort((a, b) => b.score - a.score || a.skill.id.localeCompare(b.skill.id));
+  const topScore = ranked[0]?.score ?? 0;
+  const minimumScore = topScore > 0 ? Math.max(1, Math.ceil(topScore * relativeFloor)) : 0;
   let estimatedChars = 0;
 
-  return validated
-    .map((node) => scoreNode(node, query.prompt))
-    .filter((match) => match.score > 0)
-    .sort((a, b) => b.score - a.score || a.skill.id.localeCompare(b.skill.id))
+  return ranked
+    .filter((match) => match.score >= minimumScore)
     .filter((match) => {
       if (estimatedChars >= budget) return false;
       estimatedChars += Math.min(match.skill.description.length + match.skill.tags.join(" ").length + 800, 6_000);
