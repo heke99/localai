@@ -72,6 +72,15 @@ export interface SecurityToolExecutor {
 
 export type SecuritySelectedSkillsResolver = (run: ClaimedRun) => Promise<readonly string[]>;
 
+function remoteExecutorError(text: string): string | null {
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown };
+    return typeof parsed?.error === "string" && parsed.error.trim() ? parsed.error.trim().slice(0, 180) : null;
+  } catch {
+    return null;
+  }
+}
+
 export class HttpSecurityToolExecutor implements SecurityToolExecutor {
   constructor(
     private readonly endpoint: string,
@@ -96,9 +105,12 @@ export class HttpSecurityToolExecutor implements SecurityToolExecutor {
         if (controller.signal.aborted || (error instanceof Error && /abort|timeout/i.test(error.message))) throw new Error("security_executor_timeout");
         throw new Error("security_executor_transport_error");
       }
-      if (!response.ok) throw new Error(`security_executor_http_${response.status}`);
       const text = await response.text();
       if (Buffer.byteLength(text, "utf8") > MAX_RESULT_BYTES) throw new Error("security_executor_result_too_large");
+      if (!response.ok) {
+        const remoteError = remoteExecutorError(text);
+        throw new Error(remoteError ?? `security_executor_http_${response.status}`);
+      }
       let parsed: SecurityExecutorResult;
       try {
         parsed = JSON.parse(text) as SecurityExecutorResult;
@@ -238,6 +250,10 @@ function failureCode(error: unknown): string {
   return message.replace(/[^a-zA-Z0-9_:-]+/g, "_").slice(0, 160) || "security_executor_failed";
 }
 
+function hardExecutorFailure(code: string): boolean {
+  return /^(?:invalid_security_target|invalid_security_option:|security_scope_required|security_target_blocked|security_target_out_of_scope|security_private_resolution_out_of_scope|security_tool_not_allowlisted|security_execution_class_mismatch|security_active_capability_required|security_passive_capability_required|security_capability_plan_violation:|unauthorized$)/.test(code);
+}
+
 function retryableExecutorFailure(code: string): boolean {
   return /timeout|transport|http_429|http_502|http_503|http_504|unavailable/i.test(code);
 }
@@ -353,6 +369,7 @@ export class SecurityToolRuntime implements WorkerToolRuntime {
       });
     } catch (error) {
       const errorCode = failureCode(error);
+      if (hardExecutorFailure(errorCode)) throw error instanceof Error ? error : new Error(errorCode);
       return {
         schemaVersion: 1,
         tool: spec.id,
