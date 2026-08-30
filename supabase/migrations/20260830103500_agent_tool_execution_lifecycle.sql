@@ -1,9 +1,10 @@
--- Canonical, same-row lifecycle for every model tool call.
--- Generic agent_run_steps remain an append-only trace; UI activity is driven from this table.
+begin;
 
-create table if not exists public.agent_tool_executions (
+-- Canonical, same-row lifecycle for every model tool call.
+-- Generic internal.agent_steps stay append-only; terminal/active tool state lives here.
+create table if not exists internal.agent_tool_executions (
   id uuid primary key default gen_random_uuid(),
-  run_id uuid not null references public.agent_runs(id) on delete cascade,
+  run_id uuid not null references internal.agent_runs(id) on delete cascade,
   tool_call_id text not null,
   operation_id text not null,
   tool_name text not null,
@@ -29,27 +30,10 @@ create table if not exists public.agent_tool_executions (
 );
 
 create index if not exists agent_tool_executions_run_status_idx
-  on public.agent_tool_executions(run_id, status, created_at);
+  on internal.agent_tool_executions(run_id, status, created_at);
 
-alter table public.agent_tool_executions enable row level security;
-
--- Direct client mutation is deliberately denied. Workers use SECURITY DEFINER RPCs.
-revoke all on public.agent_tool_executions from anon, authenticated;
-
-grant select on public.agent_tool_executions to authenticated;
-
-create policy agent_tool_executions_select_own_run
-  on public.agent_tool_executions
-  for select
-  to authenticated
-  using (
-    exists (
-      select 1
-      from public.agent_runs r
-      where r.id = agent_tool_executions.run_id
-        and r.user_id = auth.uid()
-    )
-  );
+revoke all on internal.agent_tool_executions from public, anon, authenticated;
+grant select, insert, update on internal.agent_tool_executions to service_role;
 
 create or replace function public.worker_begin_agent_tool_execution(
   target_run_id uuid,
@@ -62,14 +46,11 @@ create or replace function public.worker_begin_agent_tool_execution(
   target_reversible boolean default false,
   target_scope_snapshot jsonb default null
 ) returns uuid
-language plpgsql
-security definer
-set search_path = public
+language plpgsql security definer set search_path = ''
 as $$
-declare
-  execution_id uuid;
+declare execution_id uuid;
 begin
-  insert into public.agent_tool_executions (
+  insert into internal.agent_tool_executions (
     run_id, tool_call_id, operation_id, tool_name, status, input_hash,
     input_redacted, mutating, reversible, scope_snapshot
   ) values (
@@ -77,13 +58,10 @@ begin
     'queued', target_input_hash, coalesce(target_input_redacted, '{}'::jsonb),
     target_mutating, target_reversible, target_scope_snapshot
   )
-  on conflict (run_id, tool_call_id) do update
-    set updated_at = now()
+  on conflict (run_id, tool_call_id) do update set updated_at = now()
   returning id into execution_id;
-
   return execution_id;
-end;
-$$;
+end $$;
 
 create or replace function public.worker_transition_agent_tool_execution(
   target_execution_id uuid,
@@ -96,31 +74,25 @@ create or replace function public.worker_transition_agent_tool_execution(
   target_external_operation_id text default null,
   target_rollback_status text default null
 ) returns void
-language plpgsql
-security definer
-set search_path = public
+language plpgsql security definer set search_path = ''
 as $$
-declare
-  previous_status text;
+declare previous_status text;
 begin
   if target_status not in ('created','queued','running','waiting','retrying','cancelling','completed','failed','cancelled','blocked') then
     raise exception 'invalid_tool_execution_status';
   end if;
 
   select status into previous_status
-  from public.agent_tool_executions
+  from internal.agent_tool_executions
   where id = target_execution_id
   for update;
 
-  if previous_status is null then
-    raise exception 'tool_execution_not_found';
-  end if;
-
-  if previous_status in ('completed','cancelled','blocked') and target_status <> previous_status then
+  if previous_status is null then raise exception 'tool_execution_not_found'; end if;
+  if previous_status in ('completed','failed','cancelled','blocked') and target_status <> previous_status then
     raise exception 'terminal_tool_execution_transition';
   end if;
 
-  update public.agent_tool_executions
+  update internal.agent_tool_executions
   set status = target_status,
       attempt = coalesce(target_attempt, attempt),
       started_at = case when target_status = 'running' then coalesce(started_at, now()) else started_at end,
@@ -133,10 +105,27 @@ begin
       rollback_status = coalesce(target_rollback_status, rollback_status),
       updated_at = now()
   where id = target_execution_id;
-end;
+end $$;
+
+-- Server-side stream/read helper. Access is checked against the canonical run owner.
+create or replace function public.get_agent_tool_activity(target_run_id uuid)
+returns table (execution_id uuid, tool_name text, activity_status text, attempt integer, started_at timestamptz, updated_at timestamptz)
+language sql security definer set search_path = '' stable
+as $$
+  select e.id, e.tool_name, e.status, e.attempt, e.started_at, e.updated_at
+  from internal.agent_tool_executions e
+  join internal.agent_runs r on r.id = e.run_id
+  where e.run_id = target_run_id
+    and r.requested_by = auth.uid()
+    and e.status in ('queued','running','waiting','retrying','cancelling')
+  order by e.created_at asc;
 $$;
 
-revoke all on function public.worker_begin_agent_tool_execution(uuid,text,text,text,text,jsonb,boolean,boolean,jsonb) from public;
-revoke all on function public.worker_transition_agent_tool_execution(uuid,text,integer,jsonb,text,boolean,text,text,text) from public;
+revoke all on function public.worker_begin_agent_tool_execution(uuid,text,text,text,text,jsonb,boolean,boolean,jsonb) from public, anon, authenticated;
+revoke all on function public.worker_transition_agent_tool_execution(uuid,text,integer,jsonb,text,boolean,text,text,text) from public, anon, authenticated;
 grant execute on function public.worker_begin_agent_tool_execution(uuid,text,text,text,text,jsonb,boolean,boolean,jsonb) to service_role;
 grant execute on function public.worker_transition_agent_tool_execution(uuid,text,integer,jsonb,text,boolean,text,text,text) to service_role;
+revoke all on function public.get_agent_tool_activity(uuid) from public, anon;
+grant execute on function public.get_agent_tool_activity(uuid) to authenticated, service_role;
+
+commit;
