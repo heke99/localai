@@ -8,6 +8,13 @@ REPOSITORY="mukul975/Anthropic-Cybersecurity-Skills"
 BASE_DIR="${DIV3RSA_SECURITY_SKILL_BASE_DIR:-${ROOT_DIR}/runtime/security-skills}"
 FINAL_DIR="${DIV3RSA_SECURITY_SKILL_ROOT:-${BASE_DIR}/${COMMIT}}"
 ARCHIVE_URL="https://github.com/${REPOSITORY}/archive/${COMMIT}.tar.gz"
+DEFAULT_NODE_BIN="${ROOT_DIR}/runtime/node-current/bin/node"
+NODE_BIN="${DIV3RSA_LEGACY_NODE_BIN:-$DEFAULT_NODE_BIN}"
+
+if [[ ! -x "$NODE_BIN" ]]; then
+  NODE_BIN="$(command -v node || true)"
+fi
+[[ -n "$NODE_BIN" && -x "$NODE_BIN" ]] || { echo "Node.js is required for security skill sync" >&2; exit 1; }
 
 mkdir -p "$BASE_DIR"
 TMP_DIR="$(mktemp -d "${BASE_DIR}/.sync-${COMMIT}.XXXXXX")"
@@ -21,7 +28,7 @@ trap cleanup EXIT
 mkdir -p "$EXTRACTED" "$SNAPSHOT/skills"
 
 if [[ -f "$FINAL_DIR/source.json" && -f "$FINAL_DIR/index.json" ]]; then
-  if node "$REPO_DIR/scripts/validate_security_skill_snapshot.mjs" "$FINAL_DIR" >/dev/null; then
+  if "$NODE_BIN" "$REPO_DIR/scripts/validate_security_skill_snapshot.mjs" "$FINAL_DIR" >/dev/null; then
     printf '[security-skills] snapshot already valid commit=%s root=%s\n' "$COMMIT" "$FINAL_DIR"
     exit 0
   fi
@@ -50,7 +57,7 @@ while IFS= read -r skill_file; do
   cp "$skill_file" "$destination"
 done < <(find "$UPSTREAM_ROOT/skills" -mindepth 2 -maxdepth 2 -type f -name SKILL.md -print | sort)
 
-node "$REPO_DIR/scripts/validate_security_skill_snapshot.mjs" "$SNAPSHOT"
+"$NODE_BIN" "$REPO_DIR/scripts/validate_security_skill_snapshot.mjs" "$SNAPSHOT"
 
 rm -rf "${FINAL_DIR}.new"
 mv "$SNAPSHOT" "${FINAL_DIR}.new"
