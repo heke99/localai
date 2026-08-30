@@ -34,8 +34,9 @@ describe("CompositeWorkerToolRuntime timeout hardening", () => {
       };
       const runtime = new CompositeWorkerToolRuntime([hanging], { listTimeoutMs: 25, executeTimeoutMs: 50 });
       const pending = runtime.list(run);
+      const rejection = expect(pending).rejects.toThrow("tool_runtime_timeout:list:0");
       await vi.advanceTimersByTimeAsync(25);
-      await expect(pending).rejects.toThrow("tool_runtime_timeout:list:0");
+      await rejection;
     } finally {
       vi.useRealTimers();
     }
@@ -50,8 +51,9 @@ describe("CompositeWorkerToolRuntime timeout hardening", () => {
       };
       const runtime = new CompositeWorkerToolRuntime([hanging], { listTimeoutMs: 25, executeTimeoutMs: 50 });
       const pending = runtime.execute(run, { id: "tool-1", name: "web_search", input: { query: "Iran latest news" } });
+      const rejection = expect(pending).rejects.toThrow("tool_runtime_timeout:execute:web_search");
       await vi.advanceTimersByTimeAsync(50);
-      await expect(pending).rejects.toThrow("tool_runtime_timeout:execute:web_search");
+      await rejection;
     } finally {
       vi.useRealTimers();
     }
