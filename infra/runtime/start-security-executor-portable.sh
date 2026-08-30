@@ -27,7 +27,7 @@ if [[ "$systemd_live" == "1" ]]; then
 fi
 
 command -v setpriv >/dev/null 2>&1 || fatal "setpriv is required on non-systemd hosts"
-command -v setsid >/dev/null 2>&1 || fatal "setsid is required on non-systemd hosts"
+command -v nohup >/dev/null 2>&1 || fatal "nohup is required on non-systemd hosts"
 
 if [[ -s "$PID_FILE" ]]; then
   old_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
@@ -61,35 +61,38 @@ touch "$LOG_FILE"
 chown root:div3rsa-security "$LOG_FILE"
 chmod 0640 "$LOG_FILE"
 
-(
-  umask 077
-  exec setsid setpriv \
-    --reuid "$uid" \
-    --regid "$gid" \
-    --init-groups \
-    --no-new-privs \
-    --bounding-set=-all \
-    env -i \
-      NODE_ENV="${NODE_ENV:-production}" \
-      PATH="${PATH}" \
-      LANG="${LANG:-C.UTF-8}" \
-      LC_ALL="${LC_ALL:-C.UTF-8}" \
-      DIV3RSA_REPOSITORY_ROOT="$DIV3RSA_REPOSITORY_ROOT" \
-      DIV3RSA_NODE_BIN="$DIV3RSA_NODE_BIN" \
-      DIV3RSA_SECURITY_EXECUTOR_HOST="${DIV3RSA_SECURITY_EXECUTOR_HOST:-127.0.0.1}" \
-      DIV3RSA_SECURITY_EXECUTOR_PORT="${DIV3RSA_SECURITY_EXECUTOR_PORT:-7319}" \
-      DIV3RSA_SECURITY_EXECUTOR_TOKEN="$DIV3RSA_SECURITY_EXECUTOR_TOKEN" \
-      DIV3RSA_SECURITY_AUDIT_LOG="${DIV3RSA_SECURITY_AUDIT_LOG:-/var/log/div3rsa/security-executor.jsonl}" \
-      DIV3RSA_SECURITY_MAX_OUTPUT_BYTES="${DIV3RSA_SECURITY_MAX_OUTPUT_BYTES:-512000}" \
-      DIV3RSA_SECURITY_WORDLIST="${DIV3RSA_SECURITY_WORDLIST:-}" \
-      "$DIV3RSA_REPOSITORY_ROOT/infra/runtime/start-security-executor.sh"
-) >>"$LOG_FILE" 2>&1 &
+umask 077
+nohup setpriv \
+  --reuid "$uid" \
+  --regid "$gid" \
+  --init-groups \
+  --no-new-privs \
+  --bounding-set=-all \
+  env -i \
+    NODE_ENV="${NODE_ENV:-production}" \
+    PATH="${PATH}" \
+    LANG="${LANG:-C.UTF-8}" \
+    LC_ALL="${LC_ALL:-C.UTF-8}" \
+    DIV3RSA_REPOSITORY_ROOT="$DIV3RSA_REPOSITORY_ROOT" \
+    DIV3RSA_NODE_BIN="$DIV3RSA_NODE_BIN" \
+    DIV3RSA_SECURITY_EXECUTOR_HOST="${DIV3RSA_SECURITY_EXECUTOR_HOST:-127.0.0.1}" \
+    DIV3RSA_SECURITY_EXECUTOR_PORT="${DIV3RSA_SECURITY_EXECUTOR_PORT:-7319}" \
+    DIV3RSA_SECURITY_EXECUTOR_TOKEN="$DIV3RSA_SECURITY_EXECUTOR_TOKEN" \
+    DIV3RSA_SECURITY_AUDIT_LOG="${DIV3RSA_SECURITY_AUDIT_LOG:-/var/log/div3rsa/security-executor.jsonl}" \
+    DIV3RSA_SECURITY_MAX_OUTPUT_BYTES="${DIV3RSA_SECURITY_MAX_OUTPUT_BYTES:-512000}" \
+    DIV3RSA_SECURITY_WORDLIST="${DIV3RSA_SECURITY_WORDLIST:-}" \
+    "$DIV3RSA_REPOSITORY_ROOT/infra/runtime/start-security-executor.sh" \
+    >>"$LOG_FILE" 2>&1 </dev/null &
 pid=$!
 printf '%s\n' "$pid" >"$PID_FILE"
 chmod 0644 "$PID_FILE"
 
-sleep 0.2
+sleep 0.3
 kill -0 "$pid" >/dev/null 2>&1 || { tail -n 80 "$LOG_FILE" >&2 || true; fatal "executor process exited during startup"; }
+cmdline="$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true)"
+[[ "$cmdline" == *"services/security-executor/src/main.ts"* ]] || fatal "executor PID identity mismatch after startup"
 actual_uid="$(awk '/^Uid:/{print $2}' "/proc/${pid}/status" 2>/dev/null || true)"
 [[ "$actual_uid" == "$uid" ]] || fatal "executor did not drop to div3rsa-security uid"
+grep -Eq '^NoNewPrivs:[[:space:]]+1$' "/proc/${pid}/status" || fatal "executor no-new-privileges missing"
+grep -Eq '^CapBnd:[[:space:]]+0+$' "/proc/${pid}/status" || fatal "executor capability bounding set is not empty"
 log "started through portable supervisor pid=$pid uid=$uid no_new_privileges=1 bounding_set=empty"
