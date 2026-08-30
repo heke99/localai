@@ -1,5 +1,6 @@
 import type { ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import type { ClaimedRun, WorkerToolRuntime } from "./processor";
+import { isDirectTool, toolPolicy } from "./tool-registry";
 
 const SEARCH_TOOL: ModelToolDefinition = {
   name: "search_tool",
@@ -29,6 +30,8 @@ const USE_TOOL: ModelToolDefinition = {
   }
 };
 
+const UNREGISTERED_WRITE_PATTERN = /(?:create|update|delete|write|apply|merge|deploy|rollback|cancel|archive|send|execute_sql|run_sql|mutation)/i;
+
 function tokens(value: string): string[] {
   return value.toLowerCase().split(/[^a-z0-9_.-]+/g).filter((part) => part.length >= 2);
 }
@@ -45,14 +48,17 @@ function toolScore(definition: ModelToolDefinition, query: string): number {
 }
 
 function isWriteLike(definition: ModelToolDefinition): boolean {
-  return /(?:create|update|delete|write|apply|merge|deploy|rollback|cancel|archive|send|execute_sql|run_sql|mutation)/i.test(`${definition.name} ${definition.description ?? ""}`);
+  const policy = toolPolicy(definition.name);
+  if (policy) return policy.mutating;
+  // Transitional fail-closed fallback until every integration tool is registered.
+  return UNREGISTERED_WRITE_PATTERN.test(`${definition.name} ${definition.description ?? ""}`);
 }
 
-function immediateTool(definition: ModelToolDefinition, prompt: string): boolean {
+function immediateTool(definition: ModelToolDefinition, run: ClaimedRun): boolean {
+  if (isDirectTool(definition.name, run.mode)) return true;
   const name = definition.name.toLowerCase();
-  const value = prompt.toLowerCase();
+  const value = run.prompt.toLowerCase();
   if (name === "current_time" && /\b(time|date|today|now|clock|tid|datum|idag|nu)\b/i.test(value)) return true;
-  if ((name === "web_search" || name === "web_fetch") && /\b(latest|current|today|news|price|rule|regulation|visa|senaste|aktu|nyhet|pris|regel|visum)\b/i.test(value)) return true;
   if (/github|repository|repo|pull request|commit|branch|kod|code/i.test(value) && /github|repo|repository/i.test(name)) return true;
   if (/database|postgres|supabase|sql|table|databas/i.test(value) && /supabase|postgres|sql|database/i.test(name)) return true;
   if (/vercel|deploy|deployment|domain/i.test(value) && /vercel|deploy|domain/i.test(name)) return true;
@@ -81,8 +87,14 @@ export class DynamicToolBroker implements WorkerToolRuntime {
     const definitions = await this.inner.list(run);
     if (!this.enabled || definitions.length <= this.maxImmediateTools) return definitions;
 
-    const immediate = definitions.filter((definition) => immediateTool(definition, run.prompt)).slice(0, this.maxImmediateTools);
-    const unique = new Map(immediate.map((definition) => [definition.name, definition]));
+    const immediate = definitions.filter((definition) => immediateTool(definition, run));
+    const direct = immediate.filter((definition) => isDirectTool(definition.name, run.mode));
+    const optional = immediate.filter((definition) => !isDirectTool(definition.name, run.mode));
+    const unique = new Map(
+      [...direct, ...optional]
+        .slice(0, Math.max(this.maxImmediateTools, direct.length))
+        .map((definition) => [definition.name, definition])
+    );
     return [SEARCH_TOOL, USE_TOOL, ...unique.values()];
   }
 
@@ -112,7 +124,7 @@ export class DynamicToolBroker implements WorkerToolRuntime {
           name: definition.name,
           description: definition.description ?? "",
           inputSchema: definition.inputSchema,
-          delegatedExecutionAllowed: !isWriteLike(definition)
+          delegatedExecutionAllowed: !isWriteLike(definition) && !isDirectTool(definition.name, run.mode)
         }))
       };
     }
@@ -125,11 +137,19 @@ export class DynamicToolBroker implements WorkerToolRuntime {
     const definitions = await this.inner.list(run);
     const definition = definitions.find((candidate) => candidate.name === requestedName);
     if (!definition) throw new Error(`dynamic_tool_unavailable:${requestedName}`);
-    if (isWriteLike(definition)) throw new Error(`dynamic_tool_write_requires_direct_schema:${requestedName}`);
+    if (isWriteLike(definition) || isDirectTool(requestedName, run.mode)) {
+      throw new Error(`dynamic_tool_write_requires_direct_schema:${requestedName}`);
+    }
     return this.inner.execute(run, { id: `${call.id}:delegated`, name: requestedName, input: args as Record<string, unknown> });
   }
 
   release(runId: string): void {
     this.discovered.delete(runId);
+  }
+
+  async beginRun(_run: ClaimedRun): Promise<void> {}
+
+  async endRun(run: ClaimedRun): Promise<void> {
+    this.release(run.runId);
   }
 }
