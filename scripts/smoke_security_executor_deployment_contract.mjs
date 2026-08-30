@@ -50,9 +50,12 @@ requireText(e2e, "DIV3RSA_SECURITY_E2E_ACTIVE", "active_opt_in");
 requireText(e2e, "DIV3RSA_SECURITY_E2E_ACTIVE_PORTS", "bounded_active_ports");
 requireText(e2e, "port_scan", "bounded_active_probe");
 
-requireText(cutover, "ip -o -4 addr show scope global", "owned_existing_network_target");
-requireText(cutover, "security E2E target must be an owned RFC1918 address", "private_test_address");
-requireText(cutover, "security E2E address is not assigned to this GPUHub node", "owned_address_proof");
+requireText(cutover, "ip -o -4 addr show", "assigned_address_discovery");
+requireText(cutover, "ip -4 route get 1.1.1.1", "route_source_discovery");
+requireText(cutover, "hostname -I", "hostname_address_discovery");
+requireText(cutover, "net.isIPv4", "ipv4_candidate_validation");
+requireText(cutover, "controlled fixture bind proved the readiness address is locally owned", "owned_address_bind_proof");
+requireText(cutover, "controlled fixture could not bind selected GPUHub address", "owned_address_fail_closed");
 if (cutover.includes("ip link add")) throw new Error("security_deploy_contract_forbids_cap_net_admin_dependency");
 requireText(cutover, "18443", "owned_tls_target");
 requireText(cutover, "common-wordlist.txt", "deterministic_discovery_wordlist");
