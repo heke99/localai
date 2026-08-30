@@ -46,7 +46,7 @@ const DEFAULT_MAX_SKILLS = 4;
 const DEFAULT_CONTEXT_BUDGET_CHARS = 18_000;
 
 const DOMAIN_SIGNALS: Array<[Exclude<SecuritySkillDomain, "unknown">, RegExp]> = [
-  ["ai_security", /\b(llm|prompt injection|mcp|rag|model|agentic|ai security)\b/i],
+  ["ai_security", /\b(llm|prompt injection|mcp|rag|model security|agentic|agent security|ai security)\b/i],
   ["identity", /\b(active directory|adcs|kerberos|ldap|entra|domain controller|shadow credentials|dpapi)\b/i],
   ["container", /\b(kubernetes|k8s|docker|container|helm|kube|pod|cluster)\b/i],
   ["cloud", /\b(aws|azure|gcp|cloudtrail|cloud|iam|s3|serverless|bucket)\b/i],
