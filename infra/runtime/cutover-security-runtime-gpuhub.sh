@@ -8,8 +8,7 @@ ROOT_DIR="${DIV3RSA_LEGACY_ROOT_DIR:-/root/autodl-tmp/localai}"
 APP_DIR="${DIV3RSA_LEGACY_APP_DIR:-${ROOT_DIR}/app}"
 WORKER_SCREEN="${DIV3RSA_LEGACY_WORKER_SCREEN:-localai-agent}"
 WORKER_ENV_FILE="${DIV3RSA_AGENT_WORKER_ENV_FILE:-${ROOT_DIR}/secrets/gpuhub-worker.env}"
-TEST_IFACE="${DIV3RSA_SECURITY_E2E_IFACE:-div3rsae2e0}"
-TEST_IP="${DIV3RSA_SECURITY_E2E_IP:-10.254.254.1}"
+TEST_IP="${DIV3RSA_SECURITY_E2E_IP:-}"
 TEST_PORT="${DIV3RSA_SECURITY_E2E_PORT:-18080}"
 TEST_TLS_PORT="${DIV3RSA_SECURITY_E2E_TLS_PORT:-18443}"
 TOOLS_ROOT="${DIV3RSA_SECURITY_TOOLS_ROOT:-/opt/div3rsa/security-tools}"
@@ -18,7 +17,6 @@ ENV_FILE="${DIV3RSA_SECURITY_ENV_FILE:-/etc/div3rsa/security-executor.env}"
 READINESS_DIR="${DIV3RSA_SECURITY_READINESS_DIR:-/var/lib/div3rsa}"
 READINESS_FILE="${DIV3RSA_SECURITY_READINESS_FILE:-${READINESS_DIR}/security-runtime-readiness.json}"
 FIXTURE_PID=""
-IFACE_CREATED=0
 TLS_DIR=""
 
 [[ "${EUID}" -eq 0 ]] || fatal "run as root on GPUHub"
@@ -34,7 +32,6 @@ security_supervisor() {
 
 cleanup() {
   if [[ -n "$FIXTURE_PID" ]]; then kill "$FIXTURE_PID" >/dev/null 2>&1 || true; fi
-  if [[ "$IFACE_CREATED" == "1" ]]; then ip link del "$TEST_IFACE" >/dev/null 2>&1 || true; fi
   if [[ -n "$TLS_DIR" ]]; then rm -rf "$TLS_DIR"; fi
 }
 trap cleanup EXIT
@@ -82,15 +79,24 @@ screen -list | grep -F ".${WORKER_SCREEN}" >/dev/null || fatal "agent worker una
 log "running mandatory negative executor gates"
 bash infra/runtime/e2e-security-executor.sh
 
-# Build owned ephemeral HTTP + TLS targets inside the GPUHub host. No third-party
-# system is touched by active readiness probes.
-if ip link show "$TEST_IFACE" >/dev/null 2>&1; then
-  ip link del "$TEST_IFACE"
+# GPUHub containers do not grant CAP_NET_ADMIN, so readiness must not depend on
+# creating an extra interface. Bind ephemeral fixtures to an IPv4 address that
+# is already assigned to this GPUHub node and is private/non-loopback.
+if [[ -z "$TEST_IP" ]]; then
+  while read -r cidr; do
+    candidate="${cidr%/*}"
+    case "$candidate" in
+      10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) TEST_IP="$candidate"; break ;;
+    esac
+  done < <(ip -o -4 addr show scope global | awk '{print $4}')
 fi
-ip link add "$TEST_IFACE" type dummy
-IFACE_CREATED=1
-ip addr add "${TEST_IP}/32" dev "$TEST_IFACE"
-ip link set "$TEST_IFACE" up
+[[ -n "$TEST_IP" ]] || fatal "no owned private non-loopback IPv4 address available for security E2E"
+case "$TEST_IP" in
+  10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) ;;
+  *) fatal "security E2E target must be an owned RFC1918 address" ;;
+esac
+ip -o -4 addr show scope global | awk '{print $4}' | grep -Eq "^${TEST_IP//./\\.}/" || fatal "security E2E address is not assigned to this GPUHub node"
+log "using owned GPUHub readiness address ${TEST_IP}"
 
 NODE_BIN="${ROOT_DIR}/runtime/node-current/bin/node"
 [[ -x "$NODE_BIN" ]] || fatal "GPUHub Node runtime unavailable"

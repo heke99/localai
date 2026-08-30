@@ -50,8 +50,10 @@ requireText(e2e, "DIV3RSA_SECURITY_E2E_ACTIVE", "active_opt_in");
 requireText(e2e, "DIV3RSA_SECURITY_E2E_ACTIVE_PORTS", "bounded_active_ports");
 requireText(e2e, "port_scan", "bounded_active_probe");
 
-requireText(cutover, "type dummy", "ephemeral_owned_network_target");
-requireText(cutover, "10.254.254.1", "private_test_address");
+requireText(cutover, "ip -o -4 addr show scope global", "owned_existing_network_target");
+requireText(cutover, "security E2E target must be an owned RFC1918 address", "private_test_address");
+requireText(cutover, "security E2E address is not assigned to this GPUHub node", "owned_address_proof");
+if (cutover.includes("ip link add")) throw new Error("security_deploy_contract_forbids_cap_net_admin_dependency");
 requireText(cutover, "18443", "owned_tls_target");
 requireText(cutover, "common-wordlist.txt", "deterministic_discovery_wordlist");
 requireText(cutover, "nuclei-readiness.yaml", "deterministic_nuclei_template");
