@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ANTHROPIC_CYBERSECURITY_SKILLS_SOURCE,
+  inferPromptSecurityDomains,
   selectSecuritySkills,
   validateExternalSkillSource,
   validateSecuritySkillNode,
@@ -74,11 +75,34 @@ describe("security skill graph", () => {
     expect(selected.map((match) => match.skill.id)).toContain("bug-bounty-reporting");
   });
 
+  it("infers explicit intent domains using token boundaries instead of arbitrary substrings", () => {
+    expect(inferPromptSecurityDomains("Verify JWT/OAuth authorization on this REST API"))
+      .toEqual(expect.arrayContaining(["api", "auth"]));
+    expect(inferPromptSecurityDomains("Create a model of the pricing table")).not.toContain("ai_security");
+  });
+
+  it("filters weak cross-domain matches when a strong specialist intent exists", () => {
+    const weak: SecuritySkillNode = {
+      ...nodes[2],
+      id: "generic-api-reporting",
+      name: "Generic API reporting",
+      tags: ["api"],
+      sourcePath: "skills/generic-api-reporting/SKILL.md"
+    };
+    const selected = selectSecuritySkills([...nodes, weak], [source], {
+      mode: "lab",
+      prompt: "Verify API tenant IDOR BOLA authorization",
+      maxSkills: 8
+    });
+    expect(selected[0].skill.id).toBe("api-authorization-review");
+    expect(selected.map((match) => match.skill.id)).not.toContain("generic-api-reporting");
+  });
+
   it("does not activate offensive security knowledge outside lab mode", () => {
     expect(selectSecuritySkills(nodes, [source], { mode: "chat", prompt: "find IDOR" })).toEqual([]);
   });
 
-  it("hard caps selection at eight skills", () => {
+  it("hard caps explicitly requested selection at eight skills", () => {
     const expanded = Array.from({ length: 20 }, (_, index): SecuritySkillNode => ({
       ...nodes[0],
       id: `api-review-${String(index).padStart(2, "0")}`,
