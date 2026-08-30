@@ -123,6 +123,8 @@ const DOMAIN_TERMS: Record<SecuritySkillDomain, string[]> = {
   unknown: []
 };
 
+const GENERIC_ROUTING_TERMS = new Set(["api", "web", "http", "endpoint", "cloud", "container", "identity", "report", "finding", "evidence"]);
+
 function normalize(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9åäö]+/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -142,6 +144,7 @@ export function inferPromptSecurityDomains(prompt: string): SecuritySkillDomain[
 
 function scoreNode(node: SecuritySkillNode, prompt: string, promptDomains: ReadonlySet<SecuritySkillDomain>): SecuritySkillMatch {
   const normalizedPrompt = normalize(prompt);
+  const normalizedSkill = normalize(`${node.id} ${node.name} ${node.description} ${node.tags.join(" ")}`);
   const matchedTerms = new Set<string>();
   let score = 0;
 
@@ -149,7 +152,7 @@ function scoreNode(node: SecuritySkillNode, prompt: string, promptDomains: Reado
     const term = normalize(tag);
     if (term && includesTerm(normalizedPrompt, term)) {
       matchedTerms.add(term);
-      score += 6;
+      score += GENERIC_ROUTING_TERMS.has(term) ? 2 : 6;
     }
   }
   for (const domain of node.domains) {
@@ -159,9 +162,9 @@ function scoreNode(node: SecuritySkillNode, prompt: string, promptDomains: Reado
     }
     for (const rawTerm of DOMAIN_TERMS[domain]) {
       const term = normalize(rawTerm);
-      if (term && includesTerm(normalizedPrompt, term)) {
+      if (term && includesTerm(normalizedPrompt, term) && includesTerm(normalizedSkill, term)) {
         matchedTerms.add(term);
-        score += 3;
+        score += GENERIC_ROUTING_TERMS.has(term) ? 1 : 3;
       }
     }
   }
