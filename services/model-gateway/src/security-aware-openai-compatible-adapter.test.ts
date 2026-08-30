@@ -82,6 +82,59 @@ describe("SecurityAwareOpenAiCompatibleAdapter", () => {
     expect(output.usage).toEqual({ inputTokens: 20, outputTokens: 8, cachedTokens: 0 });
   });
 
+  it("repairs an identical retry after a timeout into a materially different check", async () => {
+    const fetcher = vi.fn()
+      .mockImplementationOnce(async () => completion(`<tool_call><function=security_scan><parameter=tool>http_probe</parameter><parameter=target>https://timeout.localai.test</parameter></function></tool_call>`))
+      .mockImplementationOnce(async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+        expect(body.messages.some((message) => message.content.includes("Decision repair"))).toBe(true);
+        expect(body.messages.some((message) => message.content.includes("do not repeat"))).toBe(true);
+        return completion(`<tool_call><function=security_scan><parameter=tool>dns_lookup</parameter><parameter=target>timeout.localai.test</parameter></function></tool_call>`);
+      });
+    const adapter = new SecurityAwareOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
+    const output = await adapter.generate({
+      requestId: "security-duplicate-timeout",
+      alias: "lab-prod",
+      messages: [
+        { role: "user", content: "Säkerhetsgranska https://timeout.localai.test" },
+        { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "security_scan", input: { tool: "http_probe", target: "https://timeout.localai.test", options: {} } }] },
+        { role: "tool", name: "security_scan", toolCallId: "c1", content: "{\"ok\":false,\"error\":\"timeout\"}" }
+      ],
+      tools: [securityTool]
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(output.finishReason).toBe("tool_call");
+    expect(output.toolCalls?.[0]).toMatchObject({ name: "security_scan", input: { tool: "dns_lookup", target: "timeout.localai.test", options: {} } });
+    expect(output.usage).toEqual({ inputTokens: 20, outputTokens: 8, cachedTokens: 0 });
+  });
+
+  it("repairs a duplicate capability loop into an explicit evidence-based stop", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(completion(`<tool_call><function=security_scan><parameter=tool>http_probe</parameter><parameter=target>https://api.localai.test</parameter></function></tool_call>`))
+      .mockImplementationOnce(async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+        expect(body.messages.some((message) => message.content.includes("authenticated BOLA/IDOR"))).toBe(true);
+        return completion("Den passiva baslinjen är klar. Nuvarande verktyg kan inte verifiera autentiserad BOLA/IDOR eftersom session-/identitetsväxling och stateful workflow-stöd saknas; därför stoppar jag här utan att påstå en sårbarhet.");
+      });
+    const adapter = new SecurityAwareOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
+    const output = await adapter.generate({
+      requestId: "security-capability-stop",
+      alias: "lab-prod",
+      messages: [
+        { role: "user", content: "Testa API:t för BOLA/IDOR på https://api.localai.test" },
+        { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "security_scan", input: { tool: "http_probe", target: "https://api.localai.test", options: {} } }] },
+        { role: "tool", name: "security_scan", toolCallId: "c1", content: "{\"ok\":true,\"status\":200}" }
+      ],
+      tools: [securityTool]
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(output.finishReason).toBe("stop");
+    expect(output.toolCalls).toBeUndefined();
+    expect(output.content).toContain("kan inte verifiera autentiserad BOLA/IDOR");
+    expect(output.content).toContain("utan att påstå en sårbarhet");
+    expect(output.usage).toEqual({ inputTokens: 20, outputTokens: 8, cachedTokens: 0 });
+  });
+
   it("does not force a tool for a conceptual security question", async () => {
     const fetcher = vi.fn(async () => completion("BOLA är en objektnivå-behörighetsbrist."));
     const adapter = new SecurityAwareOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
