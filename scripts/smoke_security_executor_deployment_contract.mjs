@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 const provision = await readFile(new URL("../infra/runtime/provision-security-executor.sh", import.meta.url), "utf8");
 const service = await readFile(new URL("../infra/runtime/div3rsa-security-executor.service", import.meta.url), "utf8");
+const supervisor = await readFile(new URL("../infra/runtime/security-executor-supervisor.sh", import.meta.url), "utf8");
 const e2e = await readFile(new URL("../infra/runtime/e2e-security-executor.sh", import.meta.url), "utf8");
 const cutover = await readFile(new URL("../infra/runtime/cutover-security-runtime-gpuhub.sh", import.meta.url), "utf8");
 const agentReadiness = await readFile(new URL("./eval_security_agent_gpuhub.ts", import.meta.url), "utf8");
@@ -20,10 +21,11 @@ if (/apt-get install[^\n]*golang-go/.test(provision)) throw new Error("security_
 requireText(provision, "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}", "pinned_nuclei_install");
 requireText(provision, "github.com/ffuf/ffuf/v2@${FFUF_VERSION}", "pinned_ffuf_install");
 requireText(provision, "iproute2", "controlled_e2e_network_dependency");
+requireText(provision, "util-linux procps", "portable_supervisor_dependencies");
 requireText(provision, "DIV3RSA_SECURITY_TOOL_RUNTIME_ENABLED", "worker_runtime_enable");
 requireText(provision, "DIV3RSA_SECURITY_EXECUTOR_URL", "worker_executor_url");
 requireText(provision, "DIV3RSA_SECURITY_EXECUTOR_TOKEN", "worker_executor_token");
-requireText(provision, "systemctl restart", "service_restart");
+requireText(provision, "security-executor-supervisor.sh\" restart", "portable_service_restart");
 requireText(provision, "/health", "health_gate");
 
 requireText(service, "User=div3rsa-security", "systemd_user");
@@ -34,6 +36,12 @@ requireText(service, "CapabilityBoundingSet=", "empty_capability_bounding_set");
 requireText(service, "AmbientCapabilities=", "empty_ambient_capabilities");
 requireText(service, "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6", "address_family_restriction");
 if (/MemoryDenyWriteExecute=true/.test(service)) throw new Error("security_deploy_contract_node_jit_incompatible_hardening");
+
+requireText(supervisor, "cat /proc/1/comm", "systemd_pid1_detection");
+requireText(supervisor, "runuser -u \"$SERVICE_USER\"", "locked_user_fallback");
+requireText(supervisor, "setsid bash -c", "detached_fallback_runtime");
+requireText(supervisor, "pid_alive", "fallback_pid_validation");
+requireText(supervisor, "services/security-executor/src/main\\.ts", "fallback_process_identity");
 
 requireText(e2e, "unauthorized gate expected 401", "auth_negative_gate");
 requireText(e2e, "security_target_blocked", "loopback_negative_gate");
@@ -52,7 +60,7 @@ requireText(cutover, "DIV3RSA_SECURITY_TOOL_RUNTIME_ENABLED=1", "worker_environm
 requireText(cutover, "scripts/eval_security_agent_gpuhub.ts", "full_agent_readiness_eval");
 requireText(cutover, "security-runtime-readiness.json", "readiness_evidence_marker");
 requireText(cutover, "v.commit!==process.argv[2]", "stale_readiness_rejection");
-requireText(cutover, "systemctl is-active --quiet", "service_liveness_proof");
+requireText(cutover, "security_supervisor status", "portable_service_liveness_proof");
 requireText(cutover, "GPUHUB_SECURITY_RUNTIME_AGENT_E2E_OK", "full_agent_cutover_success_marker");
 
 for (const tool of ["dns_lookup", "http_probe", "tls_probe", "port_scan", "template_scan", "content_discovery"]) {
@@ -63,7 +71,9 @@ requireText(agentReadiness, "new HttpSecurityToolExecutor", "real_executor_http_
 requireText(agentReadiness, "audit_status_not_completed", "audit_completion_gate");
 requireText(agentReadiness, "passed === results.length", "all_capabilities_required");
 
+requireText(workflow, "bash -n infra/runtime/security-executor-supervisor.sh", "supervisor_shell_validation");
 requireText(workflow, "cutover-security-runtime-gpuhub.sh", "production_workflow_cutover");
-requireText(workflow, "security_runtime=live", "production_live_marker");
+requireText(workflow, "security-executor-supervisor.sh status", "production_supervisor_gate");
+requireText(workflow, "security_runtime=ready", "production_ready_marker");
 
 console.log("SECURITY_EXECUTOR_DEPLOYMENT_CONTRACT_OK");
