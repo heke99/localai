@@ -27,7 +27,9 @@ function latestUserContent(request: GenerateRequest): string {
 
 function requestsSecurityExecution(request: GenerateRequest): boolean {
   if (!hasSecurityTool(request)) return false;
-  const text = latestUserContent(request);
+  const text = latestUserContent(request)
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\b(?:[a-z0-9-]+\.)+(?:test|com|net|org|se|io|dev)\b/gi, " ");
   return /\b(?:säkerhetsgranska|granska|testa|kontrollera|kör|börja|utför|pentest|penetrationstest|scan|assess|audit|test|review|check|execute|run)\b/i.test(text);
 }
 
