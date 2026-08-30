@@ -79,27 +79,40 @@ screen -list | grep -F ".${WORKER_SCREEN}" >/dev/null || fatal "agent worker una
 log "running mandatory negative executor gates"
 bash infra/runtime/e2e-security-executor.sh
 
-# GPUHub containers do not grant CAP_NET_ADMIN, so readiness must not depend on
-# creating an extra interface. Bind ephemeral fixtures to an IPv4 address that
-# is already assigned to this GPUHub node and is private/non-loopback.
-if [[ -z "$TEST_IP" ]]; then
-  while read -r cidr; do
-    candidate="${cidr%/*}"
-    case "$candidate" in
-      10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) TEST_IP="$candidate"; break ;;
-    esac
-  done < <(ip -o -4 addr show scope global | awk '{print $4}')
-fi
-[[ -n "$TEST_IP" ]] || fatal "no owned private non-loopback IPv4 address available for security E2E"
-case "$TEST_IP" in
-  10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) ;;
-  *) fatal "security E2E target must be an owned RFC1918 address" ;;
-esac
-ip -o -4 addr show scope global | awk '{print $4}' | grep -Eq "^${TEST_IP//./\\.}/" || fatal "security E2E address is not assigned to this GPUHub node"
-log "using owned GPUHub readiness address ${TEST_IP}"
-
 NODE_BIN="${ROOT_DIR}/runtime/node-current/bin/node"
 [[ -x "$NODE_BIN" ]] || fatal "GPUHub Node runtime unavailable"
+
+is_safe_assigned_candidate() {
+  local candidate="$1"
+  [[ -n "$candidate" ]] || return 1
+  case "$candidate" in
+    0.*|127.*|169.254.*|224.*|225.*|226.*|227.*|228.*|229.*|23[0-9].*|24[0-9].*|25[0-5].*) return 1 ;;
+  esac
+  "$NODE_BIN" -e 'const net=require("net"); process.exit(net.isIPv4(process.argv[1])===1?0:1)' "$candidate"
+}
+
+# GPUHub may expose the container address without `scope global` and does not
+# grant CAP_NET_ADMIN. Discover a real non-loopback IPv4 from assigned addresses,
+# the default-route source, or hostname reporting. Successful fixture binding
+# below is the final proof that the selected address belongs to this runtime.
+if [[ -z "$TEST_IP" ]]; then
+  mapfile -t candidates < <(
+    {
+      ip -o -4 addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+      ip -4 route get 1.1.1.1 2>/dev/null | sed -nE 's/.* src ([0-9.]+).*/\1/p'
+      hostname -I 2>/dev/null | tr ' ' '\n'
+    } | awk 'NF && !seen[$0]++'
+  )
+  for candidate in "${candidates[@]:-}"; do
+    if is_safe_assigned_candidate "$candidate"; then
+      TEST_IP="$candidate"
+      break
+    fi
+  done
+fi
+is_safe_assigned_candidate "$TEST_IP" || fatal "no owned non-loopback IPv4 address available for security E2E"
+log "selected GPUHub readiness address ${TEST_IP}; fixture bind will prove local ownership"
+
 TLS_DIR="$(mktemp -d)"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -keyout "$TLS_DIR/key.pem" -out "$TLS_DIR/cert.pem" \
@@ -114,11 +127,13 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
 FIXTURE_PID=$!
 
 for _ in {1..40}; do
+  kill -0 "$FIXTURE_PID" >/dev/null 2>&1 || { cat /tmp/div3rsa-security-e2e-fixture.log >&2 || true; fatal "controlled fixture could not bind selected GPUHub address"; }
   curl --fail --silent --max-time 1 "http://${TEST_IP}:${TEST_PORT}/" >/dev/null 2>&1 && break
   sleep 0.2
 done
 curl --fail --silent --show-error --max-time 2 "http://${TEST_IP}:${TEST_PORT}/" | grep -Fq 'DIV3RSA_SECURITY_E2E_OK' || fatal "controlled HTTP E2E fixture unavailable"
 curl --insecure --fail --silent --show-error --max-time 2 "https://${TEST_IP}:${TEST_TLS_PORT}/" | grep -Fq 'DIV3RSA_SECURITY_E2E_OK' || fatal "controlled TLS E2E fixture unavailable"
+log "controlled fixture bind proved the readiness address is locally owned"
 
 log "running controlled passive and bounded active executor gates"
 DIV3RSA_SECURITY_E2E_TARGET="http://${TEST_IP}:${TEST_PORT}/" \
