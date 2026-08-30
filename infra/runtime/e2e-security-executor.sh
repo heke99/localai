@@ -9,6 +9,7 @@ BASE_URL="${DIV3RSA_SECURITY_EXECUTOR_URL:-http://127.0.0.1:${PORT}}"
 ENV_FILE="${DIV3RSA_SECURITY_ENV_FILE:-/etc/div3rsa/security-executor.env}"
 TARGET="${DIV3RSA_SECURITY_E2E_TARGET:-}"
 ACTIVE="${DIV3RSA_SECURITY_E2E_ACTIVE:-0}"
+ACTIVE_PORTS="${DIV3RSA_SECURITY_E2E_ACTIVE_PORTS:-80,443,8080,8443}"
 TOKEN="${DIV3RSA_SECURITY_EXECUTOR_TOKEN:-}"
 
 if [[ -z "${TOKEN}" && -r "${ENV_FILE}" ]]; then
@@ -66,7 +67,8 @@ execute_probe dns_lookup passive 8000 '{}'
 execute_probe http_probe passive 12000 '{}'
 
 if [[ "${ACTIVE}" == "1" ]]; then
-  execute_probe port_scan active 15000 '{"ports":[80,443,8080,8443],"maxRate":50}'
+  active_options="$(node -e 'const raw=process.argv[1]; const ports=raw.split(",").map(v=>Number(v.trim())).filter(Number.isInteger); if(!ports.length||ports.some(v=>v<1||v>65535)||ports.length>128) process.exit(1); process.stdout.write(JSON.stringify({ports,maxRate:50}))' "$ACTIVE_PORTS")" || fatal "invalid active E2E port list"
+  execute_probe port_scan active 15000 "$active_options"
   log "active bounded scan gate passed"
 else
   log "active live probe skipped; set DIV3RSA_SECURITY_E2E_ACTIVE=1 only for an explicitly authorized test target"
