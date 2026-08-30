@@ -164,6 +164,9 @@ function numericEnvironment(name: string, fallback: number): number {
   if (!Number.isFinite(value)) throw new Error(`invalid_environment_number:${name}`);
   return value;
 }
+function excerpt(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, 1200) : null;
+}
 
 const modelPort = Math.floor(numericEnvironment("DIV3RSA_MODEL_PORT", 6006));
 const inferenceBaseUrl = process.env.DIV3RSA_INFERENCE_BASE_URL?.trim() || process.env.QWEN_INFERENCE_BASE_URL?.trim() || `http://127.0.0.1:${modelPort}/v1`;
@@ -240,7 +243,8 @@ for (const test of cases) {
     qwen: readinessAdapter.observations,
     attempts: security.attempts.map((attempt) => ({ name: attempt.call.name, input: attempt.call.input, error: attempt.error ?? null })),
     queueFailure: queue.failure,
-    completion: queue.completion ? { content: queue.completion.content.slice(0, 160), modelVersionId: queue.completion.modelVersionId } : null
+    completion: queue.completion ? { content: queue.completion.content.slice(0, 160), modelVersionId: queue.completion.modelVersionId } : null,
+    cli: output.ok === true ? null : { exitCode: output.exitCode ?? null, stdout: excerpt(output.stdout), stderr: excerpt(output.stderr) }
   });
 }
 
@@ -259,6 +263,6 @@ for (const [auditId, tool] of expectedAuditIds) {
   result.passed = failures.length === 0;
 }
 const passed = results.filter((result) => result.passed === true).length;
-const summary = { schemaVersion: 2, generatedAt: new Date().toISOString(), cases: results.length, passed, failed: results.length - passed, allowed: passed === results.length, results };
+const summary = { schemaVersion: 3, generatedAt: new Date().toISOString(), cases: results.length, passed, failed: results.length - passed, allowed: passed === results.length, results };
 console.log(JSON.stringify(summary, null, 2));
 if (!summary.allowed) process.exitCode = 2;
