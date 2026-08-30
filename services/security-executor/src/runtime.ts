@@ -163,7 +163,7 @@ function portsOption(options: Record<string, unknown>): string {
   return [...new Set(ports)].join(",");
 }
 
-function targetUrl(parsed: { host: string; url: URL | null }, request: SecurityExecutorRequest): string {
+function targetUrl(parsed: { host: string; url: URL | null }): string {
   return parsed.url?.toString() ?? `https://${parsed.host}/`;
 }
 
@@ -173,7 +173,7 @@ function commandFor(request: SecurityExecutorRequest, parsed: { host: string; ur
     case "http_probe":
       return {
         command: "curl",
-        args: ["--silent", "--show-error", "--dump-header", "-", "--output", "/dev/null", "--max-redirs", "0", "--max-time", String(timeoutSeconds), "--proto", "=http,https", targetUrl(parsed, request)],
+        args: ["--silent", "--show-error", "--dump-header", "-", "--output", "/dev/null", "--max-redirs", "0", "--max-time", String(timeoutSeconds), "--proto", "=http,https", targetUrl(parsed)],
         capability: "curl:http_probe"
       };
     case "tls_probe": {
@@ -199,14 +199,14 @@ function commandFor(request: SecurityExecutorRequest, parsed: { host: string; ur
     case "template_scan":
       return {
         command: "nuclei",
-        args: ["-u", targetUrl(parsed, request), "-jsonl", "-silent", "-no-interactsh", "-disable-update-check", "-rate-limit", String(numberOption(request.options, "rateLimit", 20, 1, 50)), "-bulk-size", "5", "-concurrency", "5", "-timeout", "5", "-retries", "0", "-exclude-tags", "dos,fuzz,intrusive"],
+        args: ["-u", targetUrl(parsed), "-jsonl", "-silent", "-no-interactsh", "-disable-update-check", "-rate-limit", String(numberOption(request.options, "rateLimit", 20, 1, 50)), "-bulk-size", "5", "-concurrency", "5", "-timeout", "5", "-retries", "0", "-exclude-tags", "dos,fuzz,intrusive"],
         capability: "nuclei:bounded_templates"
       };
     case "content_discovery":
       if (!wordlistPath) throw new Error("security_content_wordlist_required");
       return {
         command: "ffuf",
-        args: ["-s", "-w", wordlistPath, "-u", `${targetUrl(parsed, request).replace(/\/$/, "")}/FUZZ`, "-rate", String(numberOption(request.options, "rateLimit", 20, 1, 50)), "-t", "5", "-maxtime", String(timeoutSeconds), "-mc", "all", "-fc", "404", "-of", "json", "-o", "/dev/stdout"],
+        args: ["-s", "-w", wordlistPath, "-u", `${targetUrl(parsed).replace(/\/$/, "")}/FUZZ`, "-rate", String(numberOption(request.options, "rateLimit", 20, 1, 50)), "-t", "5", "-maxtime", String(timeoutSeconds), "-mc", "all", "-fc", "404", "-of", "json", "-o", "/dev/stdout"],
         capability: "ffuf:bounded_content_discovery"
       };
     default:
@@ -215,7 +215,7 @@ function commandFor(request: SecurityExecutorRequest, parsed: { host: string; ur
 }
 
 function safeEnvironment(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
+  const env: NodeJS.ProcessEnv = { NODE_ENV: process.env.NODE_ENV ?? "production" };
   for (const key of SAFE_ENV_KEYS) if (process.env[key]) env[key] = process.env[key];
   env.HOME = "/nonexistent";
   env.NO_COLOR = "1";
@@ -232,20 +232,22 @@ async function executeProcess(command: ToolCommand, timeoutMs: number, maxBytes:
       stdio: ["ignore", "pipe", "pipe"],
       env: safeEnvironment()
     });
-    let stdout = Buffer.alloc(0);
-    let stderr = Buffer.alloc(0);
+    let stdout = "";
+    let stderr = "";
+    let totalBytes = 0;
     let overflow = false;
-    const collect = (current: Buffer, chunk: Buffer): Buffer => {
-      if (overflow) return current;
-      const next = Buffer.concat([current, chunk]);
-      if (next.length > maxBytes) {
+    const collect = (chunk: Buffer, stream: "stdout" | "stderr") => {
+      if (overflow) return;
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
         overflow = true;
-        return next.subarray(0, maxBytes);
+        return;
       }
-      return next;
+      if (stream === "stdout") stdout += chunk.toString("utf8");
+      else stderr += chunk.toString("utf8");
     };
-    child.stdout?.on("data", (chunk: Buffer) => { stdout = collect(stdout, chunk); });
-    child.stderr?.on("data", (chunk: Buffer) => { stderr = collect(stderr, chunk); });
+    child.stdout?.on("data", (chunk: Buffer) => collect(chunk, "stdout"));
+    child.stderr?.on("data", (chunk: Buffer) => collect(chunk, "stderr"));
     const timer = setTimeout(() => {
       try {
         if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
@@ -257,13 +259,12 @@ async function executeProcess(command: ToolCommand, timeoutMs: number, maxBytes:
     child.once("close", (code) => {
       clearTimeout(timer);
       if (overflow) return reject(new Error("security_executor_output_limit"));
-      resolve({ exitCode: code, durationMs: Math.round(performance.now() - started), stdout: stdout.toString("utf8"), stderr: stderr.toString("utf8") });
+      resolve({ exitCode: code, durationMs: Math.round(performance.now() - started), stdout, stderr });
     });
   });
 }
 
 function parseFindings(tool: string, stdout: string): SecurityFinding[] {
-  if (tool === "nuclei") return [];
   if (tool === "template_scan") {
     const findings: SecurityFinding[] = [];
     for (const line of stdout.split(/\r?\n/)) {
