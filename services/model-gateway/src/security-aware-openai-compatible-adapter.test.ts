@@ -43,6 +43,28 @@ describe("SecurityAwareOpenAiCompatibleAdapter", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
+  it("keeps deterministic production-readiness turns on the raw adapter path", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+      expect(body.messages.some((message) => message.content.includes("SECURITY TOOL CONTRACT V1"))).toBe(false);
+      return completion(`<tool_call><function=security_scan><parameter=tool>http_probe</parameter><parameter=target>gpuhub.ai</parameter></function></tool_call>`);
+    });
+    const adapter = new SecurityAwareOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
+    const output = await adapter.generate({
+      requestId: "security-readiness",
+      alias: "lab-prod",
+      messages: [
+        { role: "system", content: "SECURITY READINESS REQUIRED: exact harness schema is authoritative." },
+        { role: "user", content: "Authorized production-readiness check." }
+      ],
+      tools: [securityTool]
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(output.finishReason).toBe("stop");
+    expect(output.toolCalls).toBeUndefined();
+    expect(output.content).toContain("<tool_call>");
+  });
+
   it("allows one bounded repair turn when Qwen says it will execute but emits no call", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(completion("Jag påbörjar säkerhetsgranskningen med låg påverkan."))
