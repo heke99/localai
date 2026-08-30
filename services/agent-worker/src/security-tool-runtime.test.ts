@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SecurityToolRuntime, type SecurityToolExecutor } from "./security-tool-runtime";
+import { HttpSecurityToolExecutor, SecurityToolRuntime, type SecurityToolExecutor } from "./security-tool-runtime";
 import type { ClaimedRun } from "./processor";
 
 function run(overrides: Partial<ClaimedRun> = {}, capabilities = ["security.passive", "security.active"], metadata: Record<string, unknown> = { allowHosts: ["example.com"], allowIpv4Cidrs: ["203.0.113.0/24"] }): ClaimedRun {
@@ -108,6 +108,20 @@ describe("SecurityToolRuntime", () => {
       suggestedNextOperations: ["dns_lookup", "tls_probe"]
     });
     expect(output.evidence).toMatchObject({ kind: "security_tool_observation", status: "executor_error" });
+  });
+
+  it("preserves remote scope and policy denials as hard fail-closed errors", async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: "security_private_resolution_out_of_scope" }), {
+      status: 400,
+      headers: { "content-type": "application/json" }
+    }));
+    const runtime = new SecurityToolRuntime(new HttpSecurityToolExecutor("http://executor/v1/execute", "token", fetcher as typeof fetch));
+
+    await expect(runtime.execute(run(), {
+      id: "remote-scope-denial",
+      name: "security_scan",
+      input: { tool: "http_probe", target: "https://example.com", options: {} }
+    })).rejects.toThrow("security_private_resolution_out_of_scope");
   });
 
   it("normalizes noisy executor output into bounded evidence before it reaches model context", async () => {
