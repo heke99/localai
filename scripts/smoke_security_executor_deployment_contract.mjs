@@ -6,6 +6,9 @@ const supervisor = await readFile(new URL("../infra/runtime/security-executor-su
 const e2e = await readFile(new URL("../infra/runtime/e2e-security-executor.sh", import.meta.url), "utf8");
 const cutover = await readFile(new URL("../infra/runtime/cutover-security-runtime-gpuhub.sh", import.meta.url), "utf8");
 const agentReadiness = await readFile(new URL("./eval_security_agent_gpuhub.ts", import.meta.url), "utf8");
+const workerSecurity = await readFile(new URL("../services/agent-worker/src/security-tool-runtime.ts", import.meta.url), "utf8");
+const executorRuntime = await readFile(new URL("../services/security-executor/src/runtime.ts", import.meta.url), "utf8");
+const executorMain = await readFile(new URL("../services/security-executor/src/main.ts", import.meta.url), "utf8");
 const workflow = await readFile(new URL("../.github/workflows/deploy-gpuhub.yml", import.meta.url), "utf8");
 
 function requireText(source, text, label) {
@@ -20,11 +23,12 @@ requireText(provision, "sha256sum -c -", "go_checksum_verification");
 if (/apt-get install[^\n]*golang-go/.test(provision)) throw new Error("security_deploy_contract_forbids_unpinned_distro_go");
 requireText(provision, "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}", "pinned_nuclei_install");
 requireText(provision, "github.com/ffuf/ffuf/v2@${FFUF_VERSION}", "pinned_ffuf_install");
-requireText(provision, "iproute2", "controlled_e2e_network_dependency");
 requireText(provision, "util-linux procps", "portable_supervisor_dependencies");
 requireText(provision, "DIV3RSA_SECURITY_TOOL_RUNTIME_ENABLED", "worker_runtime_enable");
 requireText(provision, "DIV3RSA_SECURITY_EXECUTOR_URL", "worker_executor_url");
 requireText(provision, "DIV3RSA_SECURITY_EXECUTOR_TOKEN", "worker_executor_token");
+requireText(provision, "DIV3RSA_SECURITY_READINESS_TOKEN", "deploy_readiness_token");
+requireText(provision, "openssl rand -hex 32", "random_runtime_credentials");
 requireText(provision, "security-executor-supervisor.sh\" restart", "portable_service_restart");
 requireText(provision, "/health", "health_gate");
 
@@ -44,35 +48,36 @@ requireText(supervisor, "pid_alive", "fallback_pid_validation");
 requireText(supervisor, "services/security-executor/src/main\\.ts", "fallback_process_identity");
 
 requireText(e2e, "unauthorized gate expected 401", "auth_negative_gate");
-requireText(e2e, "security_target_blocked", "loopback_negative_gate");
-requireText(e2e, "DIV3RSA_SECURITY_E2E_TARGET", "controlled_target_gate");
-requireText(e2e, "DIV3RSA_SECURITY_E2E_ACTIVE", "active_opt_in");
-requireText(e2e, "DIV3RSA_SECURITY_E2E_ACTIVE_PORTS", "bounded_active_ports");
-requireText(e2e, "port_scan", "bounded_active_probe");
+requireText(e2e, "security_target_blocked", "ordinary_loopback_negative_gate");
 
-requireText(cutover, "ip -o -4 addr show", "assigned_address_discovery");
-requireText(cutover, "ip -4 route get 1.1.1.1", "route_source_discovery");
-requireText(cutover, "hostname -I", "hostname_address_discovery");
-requireText(cutover, "net.isIPv4", "ipv4_candidate_validation");
-requireText(cutover, "controlled fixture bind proved the readiness address is locally owned", "owned_address_bind_proof");
-requireText(cutover, "controlled fixture could not bind selected GPUHub address", "owned_address_fail_closed");
-if (cutover.includes("ip link add")) throw new Error("security_deploy_contract_forbids_cap_net_admin_dependency");
+requireText(cutover, "TEST_IP=\"127.0.0.1\"", "isolated_gpu_loopback_fixture");
+requireText(cutover, "deploy-only cryptographic readiness proof", "readiness_proof_comment");
+requireText(cutover, "DIV3RSA_SECURITY_READINESS_TOKEN=[0-9a-f]{64}", "worker_readiness_env_proof");
 requireText(cutover, "18443", "owned_tls_target");
 requireText(cutover, "common-wordlist.txt", "deterministic_discovery_wordlist");
 requireText(cutover, "nuclei-readiness.yaml", "deterministic_nuclei_template");
-requireText(cutover, "DIV3RSA_SECURITY_E2E_ACTIVE=1", "live_active_gate");
 requireText(cutover, "DIV3RSA_SECURITY_TOOL_RUNTIME_ENABLED=1", "worker_environment_proof");
 requireText(cutover, "scripts/eval_security_agent_gpuhub.ts", "full_agent_readiness_eval");
 requireText(cutover, "security-runtime-readiness.json", "readiness_evidence_marker");
 requireText(cutover, "v.commit!==process.argv[2]", "stale_readiness_rejection");
 requireText(cutover, "security_supervisor status", "portable_service_liveness_proof");
 requireText(cutover, "GPUHUB_SECURITY_RUNTIME_AGENT_E2E_OK", "full_agent_cutover_success_marker");
+if (cutover.includes("ip link add")) throw new Error("security_deploy_contract_forbids_cap_net_admin_dependency");
+
+requireText(workerSecurity, "readinessLoopbackAllowed", "worker_readiness_gate");
+requireText(workerSecurity, "timingSafeEqual", "worker_constant_time_proof_check");
+requireText(workerSecurity, "security-readiness-scope", "worker_readiness_scope_lock");
+requireText(executorRuntime, "readinessLoopbackAllowed", "executor_readiness_gate");
+requireText(executorRuntime, "security-readiness-scope", "executor_readiness_scope_lock");
+requireText(executorRuntime, "a === 127 && !allowReadinessLoopback", "executor_loopback_exception_is_narrow");
+requireText(executorMain, "DIV3RSA_SECURITY_READINESS_TOKEN", "executor_loads_readiness_token");
 
 for (const tool of ["dns_lookup", "http_probe", "tls_probe", "port_scan", "template_scan", "content_discovery"]) {
   requireText(agentReadiness, `tool: "${tool}"`, `agent_readiness_${tool}`);
 }
 requireText(agentReadiness, "new AgentWorkerProcessor", "real_agent_processor_chain");
 requireText(agentReadiness, "new HttpSecurityToolExecutor", "real_executor_http_chain");
+requireText(agentReadiness, "readinessProof", "agent_readiness_proof_propagation");
 requireText(agentReadiness, "audit_status_not_completed", "audit_completion_gate");
 requireText(agentReadiness, "passed === results.length", "all_capabilities_required");
 

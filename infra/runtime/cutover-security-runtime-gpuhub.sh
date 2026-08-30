@@ -8,7 +8,7 @@ ROOT_DIR="${DIV3RSA_LEGACY_ROOT_DIR:-/root/autodl-tmp/localai}"
 APP_DIR="${DIV3RSA_LEGACY_APP_DIR:-${ROOT_DIR}/app}"
 WORKER_SCREEN="${DIV3RSA_LEGACY_WORKER_SCREEN:-localai-agent}"
 WORKER_ENV_FILE="${DIV3RSA_AGENT_WORKER_ENV_FILE:-${ROOT_DIR}/secrets/gpuhub-worker.env}"
-TEST_IP="${DIV3RSA_SECURITY_E2E_IP:-}"
+TEST_IP="127.0.0.1"
 TEST_PORT="${DIV3RSA_SECURITY_E2E_PORT:-18080}"
 TEST_TLS_PORT="${DIV3RSA_SECURITY_E2E_TLS_PORT:-18443}"
 TOOLS_ROOT="${DIV3RSA_SECURITY_TOOLS_ROOT:-/opt/div3rsa/security-tools}"
@@ -42,11 +42,7 @@ DIV3RSA_REPOSITORY_ROOT="$APP_DIR" \
 DIV3RSA_NODE_BIN="${ROOT_DIR}/runtime/node-current/bin/node" \
 DIV3RSA_SECURITY_WORDLIST_SOURCE="$APP_DIR/infra/runtime/security-assets/common-wordlist.txt" \
   bash infra/runtime/provision-security-executor.sh
-command -v ip >/dev/null 2>&1 || fatal "iproute2 was not installed by security provisioning"
 
-# Nuclei runs under a locked service account with HOME=/nonexistent. Keep its
-# production template root explicit and immutable instead of relying on a user
-# home download. Additional reviewed templates can be installed into this root.
 install -d -o root -g div3rsa-security -m 0750 "$TOOLS_ROOT/nuclei-templates"
 install -o root -g div3rsa-security -m 0640 \
   "$APP_DIR/infra/runtime/security-assets/nuclei-readiness.yaml" \
@@ -70,8 +66,6 @@ chmod 0755 "$TOOLS_ROOT/bin/nuclei"
 security_supervisor restart
 curl --fail --silent --show-error --max-time 3 http://127.0.0.1:7319/health >/dev/null
 
-# Provisioning changes worker environment. Restart only the worker; recovery-v2
-# observes healthy Qwen and starts the worker against the active runtime profile.
 screen -S "$WORKER_SCREEN" -X quit >/dev/null 2>&1 || true
 bash infra/runtime/recover-legacy-gpuhub.sh
 screen -list | grep -F ".${WORKER_SCREEN}" >/dev/null || fatal "agent worker unavailable after security cutover"
@@ -82,37 +76,9 @@ bash infra/runtime/e2e-security-executor.sh
 NODE_BIN="${ROOT_DIR}/runtime/node-current/bin/node"
 [[ -x "$NODE_BIN" ]] || fatal "GPUHub Node runtime unavailable"
 
-is_safe_assigned_candidate() {
-  local candidate="$1"
-  [[ -n "$candidate" ]] || return 1
-  case "$candidate" in
-    0.*|127.*|169.254.*|224.*|225.*|226.*|227.*|228.*|229.*|23[0-9].*|24[0-9].*|25[0-5].*) return 1 ;;
-  esac
-  "$NODE_BIN" -e 'const net=require("net"); process.exit(net.isIPv4(process.argv[1])===1?0:1)' "$candidate"
-}
-
-# GPUHub may expose the container address without `scope global` and does not
-# grant CAP_NET_ADMIN. Discover a real non-loopback IPv4 from assigned addresses,
-# the default-route source, or hostname reporting. Successful fixture binding
-# below is the final proof that the selected address belongs to this runtime.
-if [[ -z "$TEST_IP" ]]; then
-  mapfile -t candidates < <(
-    {
-      ip -o -4 addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1
-      ip -4 route get 1.1.1.1 2>/dev/null | sed -nE 's/.* src ([0-9.]+).*/\1/p'
-      hostname -I 2>/dev/null | tr ' ' '\n'
-    } | awk 'NF && !seen[$0]++'
-  )
-  for candidate in "${candidates[@]:-}"; do
-    if is_safe_assigned_candidate "$candidate"; then
-      TEST_IP="$candidate"
-      break
-    fi
-  done
-fi
-is_safe_assigned_candidate "$TEST_IP" || fatal "no owned non-loopback IPv4 address available for security E2E"
-log "selected GPUHub readiness address ${TEST_IP}; fixture bind will prove local ownership"
-
+# GPUHub's isolated namespace may expose only loopback. The normal security path
+# continues to reject loopback. This fixture is reachable only through the
+# deploy-only cryptographic readiness proof provisioned into executor + worker.
 TLS_DIR="$(mktemp -d)"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -keyout "$TLS_DIR/key.pem" -out "$TLS_DIR/cert.pem" \
@@ -127,25 +93,19 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
 FIXTURE_PID=$!
 
 for _ in {1..40}; do
-  kill -0 "$FIXTURE_PID" >/dev/null 2>&1 || { cat /tmp/div3rsa-security-e2e-fixture.log >&2 || true; fatal "controlled fixture could not bind selected GPUHub address"; }
+  kill -0 "$FIXTURE_PID" >/dev/null 2>&1 || { cat /tmp/div3rsa-security-e2e-fixture.log >&2 || true; fatal "controlled loopback fixture failed to bind"; }
   curl --fail --silent --max-time 1 "http://${TEST_IP}:${TEST_PORT}/" >/dev/null 2>&1 && break
   sleep 0.2
 done
 curl --fail --silent --show-error --max-time 2 "http://${TEST_IP}:${TEST_PORT}/" | grep -Fq 'DIV3RSA_SECURITY_E2E_OK' || fatal "controlled HTTP E2E fixture unavailable"
 curl --insecure --fail --silent --show-error --max-time 2 "https://${TEST_IP}:${TEST_TLS_PORT}/" | grep -Fq 'DIV3RSA_SECURITY_E2E_OK' || fatal "controlled TLS E2E fixture unavailable"
-log "controlled fixture bind proved the readiness address is locally owned"
+log "controlled proof-gated loopback fixture ready"
 
-log "running controlled passive and bounded active executor gates"
-DIV3RSA_SECURITY_E2E_TARGET="http://${TEST_IP}:${TEST_PORT}/" \
-DIV3RSA_SECURITY_E2E_ACTIVE=1 \
-DIV3RSA_SECURITY_E2E_ACTIVE_PORTS="$TEST_PORT,$TEST_TLS_PORT" \
-  bash infra/runtime/e2e-security-executor.sh
-
-# Prove the real worker loaded the newly written executor configuration.
 worker_pid="$(pgrep -f 'services/agent-worker/src/main\.ts' | head -n1 || true)"
 [[ -n "$worker_pid" ]] || fatal "agent worker PID unavailable"
 tr '\0' '\n' <"/proc/${worker_pid}/environ" | grep -Fxq 'DIV3RSA_SECURITY_TOOL_RUNTIME_ENABLED=1' || fatal "worker did not load security runtime enablement"
 tr '\0' '\n' <"/proc/${worker_pid}/environ" | grep -Fxq 'DIV3RSA_SECURITY_EXECUTOR_URL=http://127.0.0.1:7319' || fatal "worker did not load executor URL"
+tr '\0' '\n' <"/proc/${worker_pid}/environ" | grep -Eq '^DIV3RSA_SECURITY_READINESS_TOKEN=[0-9a-f]{64}$' || fatal "worker did not load readiness proof"
 
 log "running mandatory Qwen -> agent -> executor -> audit readiness gate"
 set -a

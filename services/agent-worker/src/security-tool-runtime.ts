@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import type { ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import type { ClaimedRun, WorkerToolRuntime } from "./processor";
@@ -29,6 +30,7 @@ interface SecurityScope {
   allowHosts: string[];
   allowIpv4Cidrs: string[];
   capabilities: Set<string>;
+  readinessProof?: string;
 }
 
 export interface SecurityExecutorRequest {
@@ -39,7 +41,7 @@ export interface SecurityExecutorRequest {
   target: string;
   timeoutMs: number;
   executionClass: SecurityExecutionClass;
-  scope: { scopeId: string; allowHosts: string[]; allowIpv4Cidrs: string[] };
+  scope: { scopeId: string; allowHosts: string[]; allowIpv4Cidrs: string[]; readinessProof?: string };
   options: Record<string, unknown>;
 }
 
@@ -126,11 +128,23 @@ function hostAllowed(host: string, scope: SecurityScope): boolean {
   return scope.allowHosts.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
 }
 
-function blockedInfrastructureHost(host: string): boolean {
+function secretMatches(value: string | undefined, expected: string | undefined): boolean {
+  if (!value || !expected) return false;
+  const a = Buffer.from(value);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function readinessLoopbackAllowed(scope: SecurityScope): boolean {
+  return scope.scopeId === "security-readiness-scope"
+    && secretMatches(scope.readinessProof, process.env.DIV3RSA_SECURITY_READINESS_TOKEN?.trim());
+}
+
+function blockedInfrastructureHost(host: string, allowReadinessLoopback = false): boolean {
   const ip = ipv4Number(host);
   if (ip != null) {
     const [a, b] = host.split(".").map(Number);
-    return a === 0 || a === 127 || (a === 169 && b === 254);
+    return a === 0 || (a === 127 && !allowReadinessLoopback) || (a === 169 && b === 254);
   }
   return host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host === "metadata.google.internal";
 }
@@ -145,7 +159,8 @@ function scopeFromRun(run: ClaimedRun): SecurityScope | null {
   const allowIpv4Cidrs = Array.isArray(metadata.allowIpv4Cidrs)
     ? metadata.allowIpv4Cidrs.filter((value): value is string => typeof value === "string" && /^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/.test(value))
     : [];
-  return { scopeId: resource.resourceId, allowHosts, allowIpv4Cidrs, capabilities: new Set(resource.capabilities) };
+  const readinessProof = typeof metadata.readinessProof === "string" ? metadata.readinessProof : undefined;
+  return { scopeId: resource.resourceId, allowHosts, allowIpv4Cidrs, capabilities: new Set(resource.capabilities), readinessProof };
 }
 
 function toolDefinition(scope: SecurityScope): ModelToolDefinition {
@@ -191,7 +206,8 @@ export class SecurityToolRuntime implements WorkerToolRuntime {
     if (spec.executionClass === "passive" && !scope.capabilities.has("security.passive") && !scope.capabilities.has("security.active")) throw new Error("security_passive_capability_required");
     const target = typeof call.input.target === "string" ? call.input.target.trim() : "";
     const host = targetHost(target);
-    if (blockedInfrastructureHost(host)) throw new Error("security_target_blocked");
+    const allowReadinessLoopback = readinessLoopbackAllowed(scope);
+    if (blockedInfrastructureHost(host, allowReadinessLoopback)) throw new Error("security_target_blocked");
     if (!hostAllowed(host, scope)) throw new Error("security_target_out_of_scope");
     const options = call.input.options && typeof call.input.options === "object" && !Array.isArray(call.input.options)
       ? call.input.options as Record<string, unknown>
@@ -204,7 +220,7 @@ export class SecurityToolRuntime implements WorkerToolRuntime {
       target,
       timeoutMs: spec.timeoutMs,
       executionClass: spec.executionClass,
-      scope: { scopeId: scope.scopeId, allowHosts: scope.allowHosts, allowIpv4Cidrs: scope.allowIpv4Cidrs },
+      scope: { scopeId: scope.scopeId, allowHosts: scope.allowHosts, allowIpv4Cidrs: scope.allowIpv4Cidrs, ...(allowReadinessLoopback ? { readinessProof: scope.readinessProof } : {}) },
       options
     });
     return {
