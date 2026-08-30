@@ -11,7 +11,7 @@ const STREAM_RETRY_MS = 250;
 const MAX_CONNECTION_MS = 240_000;
 const SAFE_TEXT_MAX = 120;
 
-export type RunActivity = {
+type RunActivity = {
   kind: string;
   label: string;
   target?: string;
