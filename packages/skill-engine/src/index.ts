@@ -143,3 +143,5 @@ export class SkillEngine {
     return Promise.all(selection.map(async (selected) => ({ ...selected, instructions: await this.reader!.read(selected.metadata.path) })));
   }
 }
+
+export * from "./security-skill-graph";
