@@ -144,11 +144,15 @@ function text(value: unknown): string {
 }
 
 function chooseSecurityTool(parameters: Record<string, unknown>, allowed: Set<SecurityToolId>): SecurityToolId | null {
-  const exact = typeof parameters.tool === "string" ? parameters.tool.trim() as SecurityToolId : null;
-  if (exact && allowed.has(exact)) return exact;
   const nested = parameters.options && typeof parameters.options === "object" && !Array.isArray(parameters.options)
     ? parameters.options as Record<string, unknown>
     : {};
+  const exactHints = [parameters.tool, parameters.scan_type, nested.tool, nested.scan_type];
+  for (const hint of exactHints) {
+    if (typeof hint !== "string") continue;
+    const exact = hint.trim() as SecurityToolId;
+    if (allowed.has(exact)) return exact;
+  }
   const semantic = [parameters.scan_type, parameters.focus, parameters.include, parameters.notes, parameters.type, parameters.mode, nested.scan_type, nested.tool, nested.focus, nested.type, nested.mode]
     .map(text)
     .join(" ")
