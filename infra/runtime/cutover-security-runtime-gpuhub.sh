@@ -75,10 +75,11 @@ exec "\$REAL" -t "\$TEMPLATES" "\$@"
 EOF
 chmod 0755 "$TOOLS_ROOT/bin/nuclei"
 
-# ffuf's -o option is a file-output API. /dev/stdout is not a normal output file
-# under the locked runtime and produced exit=1 live. Redirect that one output
-# destination to an executor-owned temp file, then copy the finished JSON to
-# stdout so the existing structured parser receives the same JSON document.
+# ffuf has a dedicated JSONL stdout mode for automation. The executor still
+# requests its historical -of json -o /dev/stdout contract, so this wrapper
+# removes only that output-file pair, switches the real pinned binary to JSONL
+# stdout, then normalizes the matched rows back to {results:[...]} for the
+# existing executor parser. No target or scan option is changed.
 if [[ ! -x "$TOOLS_ROOT/bin/ffuf-real" ]]; then
   mv "$TOOLS_ROOT/bin/ffuf" "$TOOLS_ROOT/bin/ffuf-real"
 fi
@@ -86,31 +87,40 @@ cat >"$TOOLS_ROOT/bin/ffuf" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
 REAL="$TOOLS_ROOT/bin/ffuf-real"
+NODE="$TOOLS_ROOT/node/bin/node"
 export HOME="$CLI_HOME"
 export XDG_CONFIG_HOME="$CLI_HOME/.config"
 export XDG_CACHE_HOME="$CLI_HOME/.cache"
 export TMPDIR="$CLI_HOME/tmp"
 args=()
-out=""
+jsonl="\$(mktemp "$CLI_HOME/tmp/ffuf-output.XXXXXX.jsonl")"
+cleanup_ffuf() { rm -f "\$jsonl"; }
+trap cleanup_ffuf EXIT
 while (( \$# )); do
   if [[ "\$1" == "-o" && "\${2:-}" == "/dev/stdout" ]]; then
-    out="\$(mktemp "$CLI_HOME/tmp/ffuf-output.XXXXXX.json")"
-    args+=("-o" "\$out")
+    shift 2
+    continue
+  fi
+  if [[ "\$1" == "-of" && "\${2:-}" == "json" ]]; then
     shift 2
     continue
   fi
   args+=("\$1")
   shift
 done
-if [[ -z "\$out" ]]; then
-  exec "\$REAL" "\${args[@]}"
-fi
 set +e
-"\$REAL" "\${args[@]}"
+"\$REAL" "\${args[@]}" -json -noninteractive >"\$jsonl"
 status=\$?
 set -e
-if [[ -s "\$out" ]]; then cat "\$out"; fi
-rm -f "\$out"
+if [[ -s "\$jsonl" ]]; then
+  "\$NODE" -e '
+    const fs=require("fs");
+    const rows=fs.readFileSync(process.argv[1],"utf8").split(/\r?\n/).filter(Boolean).map((line)=>JSON.parse(line));
+    process.stdout.write(JSON.stringify({results:rows}));
+  ' "\$jsonl"
+else
+  printf '{"results":[]}'
+fi
 exit "\$status"
 EOF
 chmod 0755 "$TOOLS_ROOT/bin/ffuf"
