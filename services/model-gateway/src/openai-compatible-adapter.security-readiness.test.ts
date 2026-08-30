@@ -1,5 +1,4 @@
-import test from "node:test";
-import assert from "node:assert/strict";
+import { expect, test } from "vitest";
 import { OpenAiCompatibleAdapter } from "./openai-compatible-adapter";
 
 const securityTool = {
@@ -24,7 +23,7 @@ test("forces security_scan only before readiness tool evidence exists", async ()
     ],
     tools: [securityTool]
   });
-  assert.deepEqual(bodies[0]?.tool_choice, { type: "function", function: { name: "security_scan" } });
+  expect(bodies[0]?.tool_choice).toEqual({ type: "function", function: { name: "security_scan" } });
 
   bodies.length = 0;
   await adapter.generate({
@@ -38,7 +37,7 @@ test("forces security_scan only before readiness tool evidence exists", async ()
     ],
     tools: [securityTool]
   });
-  assert.equal(bodies[0]?.tool_choice, "auto");
+  expect(bodies[0]?.tool_choice).toBe("auto");
 });
 
 test("does not force security_scan without the reserved readiness marker", async () => {
@@ -49,5 +48,5 @@ test("does not force security_scan without the reserved readiness marker", async
   };
   const adapter = new OpenAiCompatibleAdapter("http://example.invalid/v1", "test", fetcher);
   await adapter.generate({ requestId: "normal-lab", alias: "general-prod", messages: [{ role: "system", content: "Mode: lab." }, { role: "user", content: "Inspect the target." }], tools: [securityTool] });
-  assert.equal(body?.tool_choice, "auto");
+  expect(body?.tool_choice).toBe("auto");
 });
