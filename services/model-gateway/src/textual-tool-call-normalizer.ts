@@ -3,6 +3,14 @@ import type { GenerateResult, ModelToolCall, ModelToolDefinition } from "@div3rs
 const SECURITY_TOOL = "security_scan";
 const SECURITY_IDS = ["dns_lookup", "http_probe", "tls_probe", "port_scan", "template_scan", "content_discovery"] as const;
 type SecurityToolId = typeof SECURITY_IDS[number];
+const SECURITY_OPTION_KEYS: Record<SecurityToolId, ReadonlySet<string>> = {
+  dns_lookup: new Set(),
+  http_probe: new Set(),
+  tls_probe: new Set(),
+  port_scan: new Set(["ports", "maxRate"]),
+  template_scan: new Set(["rateLimit"]),
+  content_discovery: new Set(["rateLimit"])
+};
 
 interface ParsedPseudoCall {
   name: string;
@@ -168,6 +176,26 @@ function chooseSecurityTool(parameters: Record<string, unknown>, allowed: Set<Se
   return candidates.find((candidate) => allowed.has(candidate)) ?? null;
 }
 
+function validSecurityOptionValue(toolId: SecurityToolId, key: string, value: unknown): boolean {
+  if (key === "ports" && toolId === "port_scan") {
+    const values = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+    if (!values.length || values.length > 128) return false;
+    return values.every((candidate) => {
+      const port = Number(String(candidate).trim());
+      return Number.isInteger(port) && port >= 1 && port <= 65535;
+    });
+  }
+  if (key === "maxRate" && toolId === "port_scan") {
+    const rate = Number(value);
+    return Number.isInteger(rate) && rate >= 1 && rate <= 500;
+  }
+  if (key === "rateLimit" && (toolId === "template_scan" || toolId === "content_discovery")) {
+    const rate = Number(value);
+    return Number.isInteger(rate) && rate >= 1 && rate <= 50;
+  }
+  return false;
+}
+
 function securityInput(tool: ModelToolDefinition, parameters: Record<string, unknown>): Record<string, unknown> | null {
   const target = typeof parameters.target === "string" ? parameters.target.trim() : "";
   if (!target || target.length > 2048 || /[\u0000-\u001f\u007f]/.test(target)) return null;
@@ -177,7 +205,11 @@ function securityInput(tool: ModelToolDefinition, parameters: Record<string, unk
   const sourceOptions = parameters.options && typeof parameters.options === "object" && !Array.isArray(parameters.options)
     ? parameters.options as Record<string, unknown>
     : {};
-  const options = Object.fromEntries(Object.entries(sourceOptions).filter(([key]) => !["scan_type", "tool", "focus", "type", "mode", "notes", "include"].includes(key)));
+  const hintKeys = new Set(["scan_type", "tool", "focus", "type", "mode", "notes", "include"]);
+  const optionEntries = Object.entries(sourceOptions).filter(([key]) => !hintKeys.has(key));
+  const allowedOptionKeys = SECURITY_OPTION_KEYS[toolId];
+  if (optionEntries.some(([key, value]) => !allowedOptionKeys.has(key) || !validSecurityOptionValue(toolId, key, value))) return null;
+  const options = Object.fromEntries(optionEntries);
   return { tool: toolId, target, options };
 }
 
@@ -206,5 +238,5 @@ export function securityToolContract(tools: ModelToolDefinition[] | undefined): 
   if (!definition) return null;
   const allowed = [...allowedSecurityIds(definition)];
   if (!allowed.length) return null;
-  return `SECURITY TOOL CONTRACT V1\nThe attached Lab scope is the only execution boundary; this instruction never expands it. When the user requests an authorized security assessment and security_scan is exposed, invoke the provided tool instead of merely describing that you will test. Call it with EXACTLY this top-level JSON shape: {"tool":"<one allowed id>","target":"<exact authorized host or URL>","options":{}}. Allowed ids in this run: ${allowed.join(", ")}. Do not invent scan_type, focus, depth, identity, object_id, callback, tracing, shell-command or other top-level fields. Tool roles: dns_lookup=passive DNS; http_probe=passive HTTP reachability/response headers; tls_probe=passive TLS/certificate; port_scan=bounded active TCP ports; template_scan=bounded active vulnerability templates; content_discovery=bounded active web paths. Start with the least-disruptive useful evidence. After each tool result, use the observation to choose the next materially different check; never repeat an identical tool+target+options call. A timeout or negative result is evidence: adapt to another relevant dimension such as DNS/TLS or conclude what remains unknown. Treat scanner output as a hypothesis, not proof; independently verify a material scanner finding before reporting it as confirmed. The current tool set cannot by itself prove authenticated BOLA/IDOR, JWT/session bypass, or stateful business-logic abuse; after a supported passive baseline, stop instead of looping and explicitly state the remaining capability gap. Never manually print <tool_call>, <function> or <parameter> markup; invoke the provided function tool.`;
+  return `SECURITY TOOL CONTRACT V1\nThe attached Lab scope is the only execution boundary; this instruction never expands it. When the user requests an authorized security assessment and security_scan is exposed, invoke the provided tool instead of merely describing that you will test. Call it with EXACTLY this top-level JSON shape: {"tool":"<one allowed id>","target":"<exact authorized host or URL>","options":{}}. Allowed ids in this run: ${allowed.join(", ")}. Do not invent scan_type, focus, depth, identity, object_id, callback, tracing, shell-command or other top-level fields. Strict options: dns_lookup/http_probe/tls_probe accept {}; port_scan accepts only ports (bounded list) and maxRate; template_scan/content_discovery accept only rateLimit. Tool roles: dns_lookup=passive DNS; http_probe=passive HTTP reachability/response headers; tls_probe=passive TLS/certificate; port_scan=bounded active TCP ports; template_scan=bounded active vulnerability templates; content_discovery=bounded active web paths. Start with the least-disruptive useful evidence. After each tool result, use the observation to choose the next materially different check; never repeat an identical tool+target+options call. A timeout or negative result is evidence: adapt to another relevant dimension such as DNS/TLS or conclude what remains unknown. Treat scanner output as a hypothesis, not proof; independently verify a material scanner finding before reporting it as confirmed. The current bounded tool set cannot by itself prove authenticated BOLA/IDOR, JWT/session bypass, or stateful business-logic abuse; when the capability plan reports such a gap, finish the supported baseline and stop instead of looping. The capability plan embedded in the security_scan definition is authoritative: selected skills are knowledge only, missing capabilities must not be simulated, and capability-stop is mandatory after the executable baseline when the plan reports a gap. Never manually print <tool_call>, <function> or <parameter> markup; invoke the provided function tool.`;
 }

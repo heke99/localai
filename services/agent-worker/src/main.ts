@@ -134,6 +134,13 @@ const runtimeRegistration = runtimeConfig
 const repositoryRoot = process.env.DIV3RSA_REPOSITORY_ROOT ?? process.cwd();
 const manifest = JSON.parse(await readFile(resolve(repositoryRoot, "skills/runtime-manifest.json"), "utf8")) as SkillManifest;
 const skillEngine = new SkillEngine(manifest, { read: (path) => readFile(resolve(repositoryRoot, path), "utf8") });
+const prepareSkills = async (mode: Parameters<typeof skillEngine.select>[0], prompt: string) => {
+  const loaded = await skillEngine.load(skillEngine.select(mode, prompt));
+  return {
+    names: loaded.map((skill) => skill.metadata.name),
+    instructions: loaded.map((skill) => `## ${skill.metadata.name}@${skill.metadata.version}\n${skill.instructions}`).join("\n\n")
+  };
+};
 
 const coreToolRuntime = new CoreToolRuntime({
   searchBaseUrl: process.env.DIV3RSA_SEARCH_BASE_URL?.trim() || null,
@@ -154,9 +161,10 @@ const securityToolRuntimeEnabled = booleanEnvironment("DIV3RSA_SECURITY_TOOL_RUN
 const securityExecutorUrl = process.env.DIV3RSA_SECURITY_EXECUTOR_URL?.trim() || "";
 const securityExecutorToken = process.env.DIV3RSA_SECURITY_EXECUTOR_TOKEN?.trim() || "";
 if (securityToolRuntimeEnabled && (!securityExecutorUrl || !securityExecutorToken)) throw new Error("security_executor_configuration_required");
-const securityToolRuntime = new SecurityToolRuntime(securityToolRuntimeEnabled
-  ? new HttpSecurityToolExecutor(securityExecutorUrl, securityExecutorToken)
-  : null);
+const securityToolRuntime = new SecurityToolRuntime(
+  securityToolRuntimeEnabled ? new HttpSecurityToolExecutor(securityExecutorUrl, securityExecutorToken) : null,
+  async (run) => (await prepareSkills(run.mode, run.prompt)).names
+);
 const baseToolRuntime = new CompositeWorkerToolRuntime([coreToolRuntime, integrationToolRuntime, securityToolRuntime]);
 const dynamicToolDiscoveryEnabled = booleanEnvironment("DIV3RSA_DYNAMIC_TOOL_DISCOVERY_ENABLED", false);
 const discoveredToolRuntime = new DynamicToolBroker(baseToolRuntime, {
@@ -171,12 +179,7 @@ const toolRuntime = new RewindAwareToolRuntime(discoveredToolRuntime, rewindCoor
 const rewindQueue = new RewindAwareAgentQueue(shadowQueue, rewindCoordinator, checkpointRewindEnabled);
 const queue = new VerifiedLearningAgentQueue(rewindQueue, kernelStore, verifiedLearningEnabled, trainingEligibilityEnabled);
 const sandboxRuntime = new SandboxVerificationRuntime(process.env.DIV3RSA_SANDBOX_IMAGE_DIGEST?.trim() || null);
-const skillRuntime = {
-  prepare: async (mode: Parameters<typeof skillEngine.select>[0], prompt: string) => {
-    const loaded = await skillEngine.load(skillEngine.select(mode, prompt));
-    return { names: loaded.map((skill) => skill.metadata.name), instructions: loaded.map((skill) => `## ${skill.metadata.name}@${skill.metadata.version}\n${skill.instructions}`).join("\n\n") };
-  }
-};
+const skillRuntime = { prepare: prepareSkills };
 const processors = Array.from({ length: workerConcurrency }, (_, lane) => new AgentWorkerProcessor(
   queue,
   { resolve: () => adapter },
