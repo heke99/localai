@@ -29,10 +29,10 @@ if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   log "ensuring bounded security runtime dependencies"
   apt-get update -y >/dev/null
-  apt-get install -y --no-install-recommends ca-certificates curl openssl dnsutils nmap golang-go >/dev/null
+  apt-get install -y --no-install-recommends ca-certificates curl openssl dnsutils nmap golang-go iproute2 >/dev/null
 fi
 
-for tool in curl openssl dig nmap go; do
+for tool in curl openssl dig nmap go ip; do
   command -v "$tool" >/dev/null 2>&1 || fatal "required provisioning dependency unavailable: ${tool}"
 done
 
