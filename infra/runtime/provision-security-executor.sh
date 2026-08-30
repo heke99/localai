@@ -46,7 +46,7 @@ if ! id -u div3rsa-security >/dev/null 2>&1; then
 fi
 
 install -d -o root -g root -m 0755 "${INSTALL_ROOT}/infra/runtime" "${INSTALL_ROOT}/infra/runpod" "${INSTALL_ROOT}/services/security-executor/src"
-install -d -o root -g root -m 0755 "${TOOLS_ROOT}/bin" "${TOOLS_ROOT}/wordlists"
+install -d -o root -g root -m 0755 "${TOOLS_ROOT}/bin" "${TOOLS_ROOT}/wordlists" "${TOOLS_ROOT}/node/bin"
 install -d -o root -g div3rsa-security -m 0750 "${ENV_DIR}"
 install -d -o div3rsa-security -g div3rsa-security -m 0700 "$(dirname "${AUDIT_LOG}")"
 
@@ -62,6 +62,16 @@ install -o root -g root -m 0755 "${SOURCE_ROOT}/infra/runtime/security-executor-
 install -o root -g root -m 0644 "${SOURCE_ROOT}/infra/runpod/native-typescript-register.mjs" "${INSTALL_ROOT}/infra/runpod/native-typescript-register.mjs"
 install -o root -g root -m 0644 "${SOURCE_ROOT}/services/security-executor/src/main.ts" "${INSTALL_ROOT}/services/security-executor/src/main.ts"
 install -o root -g root -m 0644 "${SOURCE_ROOT}/services/security-executor/src/runtime.ts" "${INSTALL_ROOT}/services/security-executor/src/runtime.ts"
+
+# GPUHub keeps the production Node runtime below /root, which is deliberately not
+# traversable by the locked executor account. Install only the Node executable
+# into the read-only security tools root instead of weakening /root permissions
+# or running the security executor as root.
+NODE_SOURCE="${DIV3RSA_NODE_BIN:-$(command -v node || true)}"
+[[ -n "${NODE_SOURCE}" && -x "${NODE_SOURCE}" ]] || fatal "Node runtime is required"
+NODE_BIN="${TOOLS_ROOT}/node/bin/node"
+install -o root -g root -m 0755 "${NODE_SOURCE}" "${NODE_BIN}"
+"${NODE_BIN}" --version >/dev/null 2>&1 || fatal "isolated Node runtime copy is not executable"
 
 arch="$(uname -m)"
 case "$arch" in
@@ -118,9 +128,6 @@ fi
 if [[ -z "${TOKEN}" ]]; then
   TOKEN="$(openssl rand -hex 32)"
 fi
-
-NODE_BIN="${DIV3RSA_NODE_BIN:-$(command -v node || true)}"
-[[ -n "${NODE_BIN}" && -x "${NODE_BIN}" ]] || fatal "Node runtime is required"
 
 umask 077
 cat >"${ENV_FILE}" <<EOF
