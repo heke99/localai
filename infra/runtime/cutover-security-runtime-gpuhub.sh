@@ -77,7 +77,6 @@ worker_pid="$(pgrep -f 'services/agent-worker/src/main\.ts' | head -n1 || true)"
 tr '\0' '\n' <"/proc/${worker_pid}/environ" | grep -Fxq 'DIV3RSA_SECURITY_TOOL_RUNTIME_ENABLED=1' || fatal "worker did not load security runtime enablement"
 tr '\0' '\n' <"/proc/${worker_pid}/environ" | grep -Fxq 'DIV3RSA_SECURITY_EXECUTOR_URL=http://127.0.0.1:7319' || fatal "worker did not load executor URL"
 
-systemctl is-active --quiet div3rsa-security-executor.service || fatal "security executor service not active"
-curl --fail --silent --show-error --max-time 3 http://127.0.0.1:7319/health >/dev/null
+bash infra/runtime/check-security-executor-active.sh >/dev/null || fatal "security executor supervisor not active"
 log "GPUHub security runtime live cutover passed"
 printf 'GPUHUB_SECURITY_RUNTIME_E2E_OK\n'
