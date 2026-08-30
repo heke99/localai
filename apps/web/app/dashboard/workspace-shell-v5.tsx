@@ -216,12 +216,10 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
     .${styles.runBar} > span:not(.${styles.runDot}):not(.${styles.runError}) {
       display: none !important;
     }
-    .${styles.runBar}:not(:has(.${styles.runDotIdle}))::before {
-      content: "Arbetar…";
-      color: #d8dadd;
-      font-weight: 700;
-    }
     .${styles.runBar}:has(.${styles.runDotIdle}):not(:has(.${styles.runError})) {
+      display: none !important;
+    }
+    .${styles.runBar}:not(:has(.${styles.runDotIdle})) .${styles.runDot} {
       display: none !important;
     }
     .div3rsa-mobile-history-toggle {
