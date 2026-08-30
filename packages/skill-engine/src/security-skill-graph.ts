@@ -118,7 +118,7 @@ const DOMAIN_TERMS: Record<SecuritySkillDomain, string[]> = {
   container: ["docker", "container", "kubernetes", "k8s", "helm", "rbac"],
   mobile: ["android", "ios", "mobile", "apk", "ipa", "frida"],
   dfir: ["forensics", "dfir", "incident", "malware", "memory dump", "yara", "threat hunting"],
-  ai_security: ["llm", "ai", "prompt injection", "agent", "mcp", "model", "rag"],
+  ai_security: ["llm", "prompt injection", "agentic", "agent security", "mcp", "model security", "rag", "ai security"],
   reporting: ["report", "finding", "evidence", "cvss", "bug bounty", "disclosure"],
   unknown: []
 };
