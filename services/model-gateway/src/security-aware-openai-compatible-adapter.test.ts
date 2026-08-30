@@ -86,9 +86,9 @@ describe("SecurityAwareOpenAiCompatibleAdapter", () => {
     const fetcher = vi.fn()
       .mockImplementationOnce(async () => completion(`<tool_call><function=security_scan><parameter=tool>http_probe</parameter><parameter=target>https://timeout.localai.test</parameter></function></tool_call>`))
       .mockImplementationOnce(async (_url: string | URL | Request, init?: RequestInit) => {
-        const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
-        expect(body.messages.some((message) => message.content.includes("Decision repair"))).toBe(true);
-        expect(body.messages.some((message) => message.content.includes("do not repeat"))).toBe(true);
+        const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string | null }> };
+        expect(body.messages.some((message) => typeof message.content === "string" && message.content.includes("Decision repair"))).toBe(true);
+        expect(body.messages.some((message) => typeof message.content === "string" && message.content.includes("do not repeat"))).toBe(true);
         return completion(`<tool_call><function=security_scan><parameter=tool>dns_lookup</parameter><parameter=target>timeout.localai.test</parameter></function></tool_call>`);
       });
     const adapter = new SecurityAwareOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
@@ -112,8 +112,8 @@ describe("SecurityAwareOpenAiCompatibleAdapter", () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(completion(`<tool_call><function=security_scan><parameter=tool>http_probe</parameter><parameter=target>https://api.localai.test</parameter></function></tool_call>`))
       .mockImplementationOnce(async (_url: string | URL | Request, init?: RequestInit) => {
-        const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
-        expect(body.messages.some((message) => message.content.includes("authenticated BOLA/IDOR"))).toBe(true);
+        const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string | null }> };
+        expect(body.messages.some((message) => typeof message.content === "string" && message.content.includes("authenticated BOLA/IDOR"))).toBe(true);
         return completion("Den passiva baslinjen är klar. Nuvarande verktyg kan inte verifiera autentiserad BOLA/IDOR eftersom session-/identitetsväxling och stateful workflow-stöd saknas; därför stoppar jag här utan att påstå en sårbarhet.");
       });
     const adapter = new SecurityAwareOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
