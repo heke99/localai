@@ -2,7 +2,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ImpactAnalysis, TaskAnalysis, VerificationPlan, VerificationReport } from "@div3rsa/agent-runtime";
 import type { Database, Json } from "@div3rsa/db";
 import type { PreparedRepositoryWorkspace } from "./repository-runtime";
-import type { AgentQueue, AgentResourceContext, ClaimedRun, ToolExecutionStart, ToolExecutionTransition } from "./processor";
+import type { AgentQueue, AgentResourceContext, ClaimedRun } from "./processor";
+import type { ToolExecutionStart, ToolExecutionTransition } from "./tool-execution-lifecycle";
 import { chunk, impactNodePayload, repositoryGraph, verificationResultPayload } from "./observability";
 
 type UntypedRpcClient = { rpc: (name: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { message: string } | null }> };
