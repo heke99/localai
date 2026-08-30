@@ -19,7 +19,7 @@ function request(overrides: Partial<SecurityExecutorRequest> = {}): SecurityExec
 }
 
 function successfulSpawn(stdoutText = "HTTP/1.1 200 OK\n") {
-  return vi.fn((_command: string, _args: readonly string[]) => {
+  return vi.fn((_command: string, _args: readonly string[], _options?: unknown) => {
     const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; pid: number; kill: ReturnType<typeof vi.fn> };
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
