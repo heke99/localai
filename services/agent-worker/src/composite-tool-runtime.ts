@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import type { ClaimedRun, WorkerToolRuntime } from "./processor";
 import { runCancellationSignal } from "./run-cancellation";
@@ -18,6 +19,12 @@ type LifecycleWorkerToolRuntime = WorkerToolRuntime & {
   beginRun?(run: ClaimedRun): Promise<void> | void;
   endRun?(run: ClaimedRun, outcome?: string): Promise<void> | void;
 };
+
+function stableOperationId(run: ClaimedRun, call: ModelToolCall): string {
+  return createHash("sha256")
+    .update(`${run.runId}\u0000${call.id}\u0000${call.name}`)
+    .digest("hex");
+}
 
 function positiveTimeout(value: number | undefined, fallback: number): number {
   if (value == null) return fallback;
@@ -115,6 +122,8 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
 
   async execute(run: ClaimedRun, call: ModelToolCall, context?: ToolExecutionContext): Promise<unknown> {
     const parentSignal = context?.signal ?? runCancellationSignal(run.runId);
+    const operationId = context?.operationId ?? stableOperationId(run, call);
+    const attempt = Math.max(1, context?.attempt ?? 1);
     for (let index = 0; index < this.runtimes.length; index += 1) {
       const runtime = this.runtimes[index] as LifecycleWorkerToolRuntime;
       const definitions = await withAbortableTimeout(
@@ -130,8 +139,8 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
             (signal) => runtime.execute(run, call, {
               signal,
               executionId: context?.executionId ?? call.id,
-              operationId: context?.operationId,
-              attempt: context?.attempt
+              operationId,
+              attempt
             }),
             timeoutMs,
             `tool_runtime_timeout:execute:${call.name}`,
