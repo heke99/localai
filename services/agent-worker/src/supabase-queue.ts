@@ -4,6 +4,7 @@ import type { Database, Json } from "@div3rsa/db";
 import type { PreparedRepositoryWorkspace } from "./repository-runtime";
 import type { AgentQueue, AgentResourceContext, ClaimedRun } from "./processor";
 import { chunk, impactNodePayload, repositoryGraph, verificationResultPayload } from "./observability";
+import { registerRunCancellation, unregisterRunCancellation } from "./run-cancellation";
 
 type UntypedRpcClient = { rpc: (name: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { message: string } | null }> };
 type StreamState = {
@@ -16,6 +17,7 @@ type StreamState = {
 const STREAM_COALESCE_MS = 120;
 const STREAM_COALESCE_CHARS = 2_048;
 const CANCELLATION_CACHE_MS = 400;
+const CANCELLATION_WATCH_MS = 150;
 
 function parseResourceContext(value: Json | undefined): AgentResourceContext[] {
   if (!Array.isArray(value)) return [];
@@ -105,6 +107,13 @@ export class SupabaseAgentQueue implements AgentQueue {
     this.streamStates.delete(runId);
     this.cancellationCache.delete(runId);
     this.cancellationInFlight.delete(runId);
+    unregisterRunCancellation(runId);
+  }
+
+  private async cancellationState(runId: string): Promise<boolean> {
+    const { data, error } = await this.client.rpc("worker_is_agent_run_cancelled", { target_run_id: runId });
+    if (error) throw error;
+    return data === true;
   }
 
   async claim(workerId: string): Promise<ClaimedRun | null> {
@@ -113,6 +122,7 @@ export class SupabaseAgentQueue implements AgentQueue {
     const row = data?.[0];
     if (!row) return null;
     const extended = row as typeof row & { resource_context?: Json };
+    registerRunCancellation(row.run_id, () => this.cancellationState(row.run_id), CANCELLATION_WATCH_MS);
     return { jobId: row.job_id, runId: row.run_id, mode: row.mode as ClaimedRun["mode"], modelAlias: row.model_alias as ClaimedRun["modelAlias"], prompt: row.prompt, requestId: row.request_id, traceId: row.trace_id, resourceContext: parseResourceContext(extended.resource_context) };
   }
 
@@ -248,9 +258,7 @@ export class SupabaseAgentQueue implements AgentQueue {
     if (existing) return existing;
 
     const check = (async () => {
-      const { data, error } = await this.client.rpc("worker_is_agent_run_cancelled", { target_run_id: runId });
-      if (error) throw error;
-      const cancelled = data === true;
+      const cancelled = await this.cancellationState(runId);
       this.cancellationCache.set(runId, { checkedAt: Date.now(), cancelled });
       if (cancelled) {
         await this.drainStream(runId).catch(() => undefined);
