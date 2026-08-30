@@ -21,6 +21,8 @@ const localNames = [
   "policy-access-control",
   "sandbox-execution",
   "network-egress-control",
+  "audit-context-building",
+  "differential-security-review",
   "verification-before-completion"
 ];
 
