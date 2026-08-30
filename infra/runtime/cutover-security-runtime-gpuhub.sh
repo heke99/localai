@@ -16,6 +16,7 @@ INSTALL_ROOT="${DIV3RSA_SECURITY_INSTALL_ROOT:-/opt/div3rsa/localai}"
 ENV_FILE="${DIV3RSA_SECURITY_ENV_FILE:-/etc/div3rsa/security-executor.env}"
 READINESS_DIR="${DIV3RSA_SECURITY_READINESS_DIR:-/var/lib/div3rsa}"
 READINESS_FILE="${DIV3RSA_SECURITY_READINESS_FILE:-${READINESS_DIR}/security-runtime-readiness.json}"
+CLI_HOME="${DIV3RSA_SECURITY_CLI_HOME:-${TOOLS_ROOT}/runtime-home}"
 FIXTURE_PID=""
 TLS_DIR=""
 
@@ -43,6 +44,12 @@ DIV3RSA_NODE_BIN="${ROOT_DIR}/runtime/node-current/bin/node" \
 DIV3RSA_SECURITY_WORDLIST_SOURCE="$APP_DIR/infra/runtime/security-assets/common-wordlist.txt" \
   bash infra/runtime/provision-security-executor.sh
 
+# ProjectDiscovery and other Go CLIs may need a writable per-user config/cache
+# location even when update/network features are disabled. Keep that state inside
+# a dedicated directory owned only by the locked executor account.
+install -d -o div3rsa-security -g div3rsa-security -m 0700 "$CLI_HOME"
+install -d -o div3rsa-security -g div3rsa-security -m 0700 "$CLI_HOME/.config" "$CLI_HOME/.cache" "$CLI_HOME/tmp"
+
 install -d -o root -g div3rsa-security -m 0750 "$TOOLS_ROOT/nuclei-templates"
 install -o root -g div3rsa-security -m 0640 \
   "$APP_DIR/infra/runtime/security-assets/nuclei-readiness.yaml" \
@@ -55,6 +62,10 @@ cat >"$TOOLS_ROOT/bin/nuclei" <<EOF
 set -Eeuo pipefail
 REAL="$TOOLS_ROOT/bin/nuclei-real"
 TEMPLATES="$TOOLS_ROOT/nuclei-templates"
+export HOME="$CLI_HOME"
+export XDG_CONFIG_HOME="$CLI_HOME/.config"
+export XDG_CACHE_HOME="$CLI_HOME/.cache"
+export TMPDIR="$CLI_HOME/tmp"
 for arg in "\$@"; do
   case "\$arg" in
     -version|-h|-help|--help) exec "\$REAL" "\$@" ;;
@@ -63,6 +74,47 @@ done
 exec "\$REAL" -t "\$TEMPLATES" "\$@"
 EOF
 chmod 0755 "$TOOLS_ROOT/bin/nuclei"
+
+# ffuf's -o option is a file-output API. /dev/stdout is not a normal output file
+# under the locked runtime and produced exit=1 live. Redirect that one output
+# destination to an executor-owned temp file, then copy the finished JSON to
+# stdout so the existing structured parser receives the same JSON document.
+if [[ ! -x "$TOOLS_ROOT/bin/ffuf-real" ]]; then
+  mv "$TOOLS_ROOT/bin/ffuf" "$TOOLS_ROOT/bin/ffuf-real"
+fi
+cat >"$TOOLS_ROOT/bin/ffuf" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+REAL="$TOOLS_ROOT/bin/ffuf-real"
+export HOME="$CLI_HOME"
+export XDG_CONFIG_HOME="$CLI_HOME/.config"
+export XDG_CACHE_HOME="$CLI_HOME/.cache"
+export TMPDIR="$CLI_HOME/tmp"
+args=()
+out=""
+while (( \$# )); do
+  if [[ "\$1" == "-o" && "\${2:-}" == "/dev/stdout" ]]; then
+    out="\$(mktemp "$CLI_HOME/tmp/ffuf-output.XXXXXX.json")"
+    args+=("-o" "\$out")
+    shift 2
+    continue
+  fi
+  args+=("\$1")
+  shift
+done
+if [[ -z "\$out" ]]; then
+  exec "\$REAL" "\${args[@]}"
+fi
+set +e
+"\$REAL" "\${args[@]}"
+status=\$?
+set -e
+if [[ -s "\$out" ]]; then cat "\$out"; fi
+rm -f "\$out"
+exit "\$status"
+EOF
+chmod 0755 "$TOOLS_ROOT/bin/ffuf"
+
 security_supervisor restart
 curl --fail --silent --show-error --max-time 3 http://127.0.0.1:7319/health >/dev/null
 
