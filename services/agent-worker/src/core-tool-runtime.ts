@@ -2,6 +2,8 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type { ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import type { ClaimedRun, WorkerToolRuntime } from "./processor";
+import type { ToolExecutionContext } from "./tool-execution-context";
+import { linkedAbortController, throwIfAborted } from "./tool-execution-context";
 
 const CURRENT_TIME = "current_time";
 const CONVERT_TIME = "convert_time";
@@ -318,7 +320,8 @@ export class CoreToolRuntime implements WorkerToolRuntime {
     ];
   }
 
-  async execute(_run: ClaimedRun, call: ModelToolCall): Promise<unknown> {
+  async execute(_run: ClaimedRun, call: ModelToolCall, context?: ToolExecutionContext): Promise<unknown> {
+    throwIfAborted(context?.signal);
     if (call.name === CURRENT_TIME) {
       const timezone = stringInput(call.input.timezone, "timezone", 128);
       return { ...formatInstant(this.now(), timezone), retrievedAt: new Date().toISOString() };
@@ -328,12 +331,12 @@ export class CoreToolRuntime implements WorkerToolRuntime {
       const timestamp = stringInput(call.input.timestamp, "timestamp", 128);
       return formatInstant(instantFromInput(timestamp), timezone);
     }
-    if (call.name === WEB_SEARCH) return this.search(call.input);
-    if (call.name === WEB_FETCH) return this.fetchPage(call.input);
+    if (call.name === WEB_SEARCH) return this.search(call.input, context?.signal);
+    if (call.name === WEB_FETCH) return this.fetchPage(call.input, context?.signal);
     throw new Error("unknown_core_tool");
   }
 
-  private async search(input: Record<string, unknown>): Promise<unknown> {
+  private async search(input: Record<string, unknown>, parent?: AbortSignal): Promise<unknown> {
     if (!this.searchBaseUrl) throw new Error("web_search_not_configured");
     const query = stringInput(input.query, "query", 500);
     const limit = integerInput(input.limit, 8, 1, 12);
@@ -347,69 +350,81 @@ export class CoreToolRuntime implements WorkerToolRuntime {
       if (categories.length) url.searchParams.set("categories", categories.join(","));
     }
 
-    const response = await this.fetcher(url, {
-      headers: { accept: "application/json", "user-agent": "DIV3RSA-Research/1.0" },
-      signal: AbortSignal.timeout(this.searchTimeoutMs)
-    });
-    if (!response.ok) throw new Error(`web_search_failed:${response.status}`);
-    const body = await response.json() as { results?: Array<Record<string, unknown>> };
-    const results = (body.results ?? []).slice(0, limit).flatMap((item) => {
-      const resultUrl = typeof item.url === "string" ? item.url : "";
-      if (!/^https?:\/\//i.test(resultUrl)) return [];
-      return [{
-        title: typeof item.title === "string" ? item.title.slice(0, 1000) : "",
-        url: resultUrl,
-        snippet: typeof item.content === "string" ? item.content.slice(0, 5000) : "",
-        engine: typeof item.engine === "string" ? item.engine : null,
-        score: typeof item.score === "number" ? item.score : null,
-        publishedAt: typeof item.publishedDate === "string" ? item.publishedDate : typeof item.published_at === "string" ? item.published_at : null
-      }];
-    });
-    return { query, retrievedAt: this.now().toISOString(), results };
+    const linked = linkedAbortController(parent, this.searchTimeoutMs, "web_search_timeout");
+    try {
+      const response = await this.fetcher(url, {
+        headers: { accept: "application/json", "user-agent": "DIV3RSA-Research/1.0" },
+        signal: linked.controller.signal
+      });
+      if (!response.ok) throw new Error(`web_search_failed:${response.status}`);
+      const body = await response.json() as { results?: Array<Record<string, unknown>> };
+      const results = (body.results ?? []).slice(0, limit).flatMap((item) => {
+        const resultUrl = typeof item.url === "string" ? item.url : "";
+        if (!/^https?:\/\//i.test(resultUrl)) return [];
+        return [{
+          title: typeof item.title === "string" ? item.title.slice(0, 1000) : "",
+          url: resultUrl,
+          snippet: typeof item.content === "string" ? item.content.slice(0, 5000) : "",
+          engine: typeof item.engine === "string" ? item.engine : null,
+          score: typeof item.score === "number" ? item.score : null,
+          publishedAt: typeof item.publishedDate === "string" ? item.publishedDate : typeof item.published_at === "string" ? item.published_at : null
+        }];
+      });
+      return { query, retrievedAt: this.now().toISOString(), results };
+    } finally {
+      linked.dispose();
+    }
   }
 
-  private async fetchPage(input: Record<string, unknown>): Promise<unknown> {
+  private async fetchPage(input: Record<string, unknown>, parent?: AbortSignal): Promise<unknown> {
     if (!this.webFetchEnabled) throw new Error("web_fetch_disabled");
     let current = new URL(stringInput(input.url, "url", 4096));
     for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect += 1) {
+      throwIfAborted(parent);
       await assertPublicUrl(current, this.resolveHost);
-      const response = await this.fetcher(current, {
-        redirect: "manual",
-        headers: {
-          accept: "text/html,application/xhtml+xml,text/plain,application/json,application/xml;q=0.9,*/*;q=0.1",
-          "user-agent": "DIV3RSA-Research/1.0"
-        },
-        signal: AbortSignal.timeout(this.fetchTimeoutMs)
-      });
-      if ([301, 302, 303, 307, 308].includes(response.status)) {
-        const location = response.headers.get("location");
-        if (!location) throw new Error("web_fetch_redirect_without_location");
-        if (redirect === MAX_REDIRECTS) throw new Error("web_fetch_too_many_redirects");
-        current = new URL(location, current);
-        continue;
+      throwIfAborted(parent);
+      const linked = linkedAbortController(parent, this.fetchTimeoutMs, "web_fetch_timeout");
+      try {
+        const response = await this.fetcher(current, {
+          redirect: "manual",
+          headers: {
+            accept: "text/html,application/xhtml+xml,text/plain,application/json,application/xml;q=0.9,*/*;q=0.1",
+            "user-agent": "DIV3RSA-Research/1.0"
+          },
+          signal: linked.controller.signal
+        });
+        if ([301, 302, 303, 307, 308].includes(response.status)) {
+          const location = response.headers.get("location");
+          if (!location) throw new Error("web_fetch_redirect_without_location");
+          if (redirect === MAX_REDIRECTS) throw new Error("web_fetch_too_many_redirects");
+          current = new URL(location, current);
+          continue;
+        }
+        if (!response.ok) throw new Error(`web_fetch_failed:${response.status}`);
+        const contentType = normalizedContentType(response.headers.get("content-type"));
+        if (!isReadableContentType(contentType)) throw new Error(`web_fetch_unsupported_content_type:${contentType || "unknown"}`);
+        const declaredLengthHeader = response.headers.get("content-length");
+        const declaredLength = declaredLengthHeader == null ? null : Number(declaredLengthHeader);
+        const declaredBytes = declaredLength !== null && Number.isFinite(declaredLength) && declaredLength >= 0 ? declaredLength : null;
+        const bounded = await readBoundedResponseBody(response, this.maxFetchBytes);
+        const bytes = bounded.bytes;
+        const truncated = bounded.truncated || (declaredBytes !== null && declaredBytes > bytes.byteLength);
+        const raw = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+        const html = contentType === "text/html" || contentType === "application/xhtml+xml";
+        const text = html ? htmlToText(raw) : raw.trim();
+        return {
+          url: current.toString(),
+          title: html ? htmlTitle(raw) : null,
+          contentType,
+          text: text.slice(0, 120_000),
+          bytes: bytes.byteLength,
+          declaredBytes,
+          truncated,
+          retrievedAt: this.now().toISOString()
+        };
+      } finally {
+        linked.dispose();
       }
-      if (!response.ok) throw new Error(`web_fetch_failed:${response.status}`);
-      const contentType = normalizedContentType(response.headers.get("content-type"));
-      if (!isReadableContentType(contentType)) throw new Error(`web_fetch_unsupported_content_type:${contentType || "unknown"}`);
-      const declaredLengthHeader = response.headers.get("content-length");
-      const declaredLength = declaredLengthHeader == null ? null : Number(declaredLengthHeader);
-      const declaredBytes = declaredLength !== null && Number.isFinite(declaredLength) && declaredLength >= 0 ? declaredLength : null;
-      const bounded = await readBoundedResponseBody(response, this.maxFetchBytes);
-      const bytes = bounded.bytes;
-      const truncated = bounded.truncated || (declaredBytes !== null && declaredBytes > bytes.byteLength);
-      const raw = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-      const html = contentType === "text/html" || contentType === "application/xhtml+xml";
-      const text = html ? htmlToText(raw) : raw.trim();
-      return {
-        url: current.toString(),
-        title: html ? htmlTitle(raw) : null,
-        contentType,
-        text: text.slice(0, 120_000),
-        bytes: bytes.byteLength,
-        declaredBytes,
-        truncated,
-        retrievedAt: this.now().toISOString()
-      };
     }
     throw new Error("web_fetch_too_many_redirects");
   }
