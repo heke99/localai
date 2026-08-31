@@ -91,6 +91,34 @@ describe("LinuxSecurityExecutor", () => {
     await expect(executor.execute(request({ tool: "port_scan", executionClass: "active", options: { ports: [22, 0] } }))).rejects.toThrow("invalid_security_option:ports");
   });
 
+  it("reports verified operation readiness instead of treating process liveness as tool readiness", async () => {
+    const executor = new LinuxSecurityExecutor({
+      wordlistPath: "/opt/wordlists/common.txt",
+      commandAvailable: async (command) => command !== "nmap" && command !== "ffuf",
+      fileReadable: async () => false
+    });
+    const capabilities = await executor.capabilities();
+    expect(capabilities.ready).toBe(true);
+    expect(capabilities.complete).toBe(false);
+    expect(capabilities.operations).toEqual(["http_probe", "tls_probe", "dns_lookup", "template_scan"]);
+    expect(capabilities.unavailable).toEqual([
+      { operation: "port_scan", reason: "command_unavailable" },
+      { operation: "content_discovery", reason: "command_unavailable" }
+    ]);
+  });
+
+  it("marks content discovery unavailable when ffuf exists but its configured wordlist is not readable", async () => {
+    const executor = new LinuxSecurityExecutor({
+      wordlistPath: "/opt/wordlists/common.txt",
+      commandAvailable: async () => true,
+      fileReadable: async () => false
+    });
+    const capabilities = await executor.capabilities();
+    expect(capabilities.ready).toBe(true);
+    expect(capabilities.operations).not.toContain("content_discovery");
+    expect(capabilities.unavailable).toContainEqual({ operation: "content_discovery", reason: "wordlist_unavailable" });
+  });
+
   it("terminates a cancelled process group with SIGTERM then SIGKILL after the grace period", async () => {
     vi.useFakeTimers();
     const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
