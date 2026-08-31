@@ -34,6 +34,7 @@ async function readJson(request: IncomingMessage): Promise<SecurityExecutorReque
 }
 
 function json(response: ServerResponse, status: number, value: unknown): void {
+  if (response.destroyed || response.writableEnded) return;
   const body = JSON.stringify(value);
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -52,10 +53,21 @@ const executor = new LinuxSecurityExecutor({
   auditLogPath: process.env.DIV3RSA_SECURITY_AUDIT_LOG?.trim() || "/var/log/div3rsa/security-executor.jsonl",
   wordlistPath: process.env.DIV3RSA_SECURITY_WORDLIST?.trim() || null,
   maxOutputBytes: integerEnvironment("DIV3RSA_SECURITY_MAX_OUTPUT_BYTES", 512_000),
-  readinessToken
+  readinessToken,
+  terminateGraceMs: integerEnvironment("DIV3RSA_SECURITY_TERMINATE_GRACE_MS", 750)
 });
 
 const server = createServer(async (request, response) => {
+  const executionController = new AbortController();
+  let executing = false;
+  const abortExecution = () => {
+    if (executing && !executionController.signal.aborted) executionController.abort(new DOMException("Client disconnected", "AbortError"));
+  };
+  request.once("aborted", abortExecution);
+  response.once("close", () => {
+    if (!response.writableEnded) abortExecution();
+  });
+
   try {
     if (request.method === "GET" && request.url === "/health") {
       return json(response, 200, { ok: true, service: "security-executor", isolation: "allowlisted-process" });
@@ -63,10 +75,14 @@ const server = createServer(async (request, response) => {
     if (request.method !== "POST" || request.url !== "/v1/execute") return json(response, 404, { error: "not_found" });
     if (!bearerMatches(request.headers.authorization, token)) return json(response, 401, { error: "unauthorized" });
     const input = await readJson(request);
-    const result = await executor.execute(input);
+    executing = true;
+    const result = await executor.execute(input, executionController.signal);
+    executing = false;
     return json(response, 200, result);
   } catch (error) {
+    executing = false;
     const message = error instanceof Error ? error.message : "security_executor_failed";
+    if (executionController.signal.aborted) return;
     const status = /scope|target|tool|option|class|timeout|invalid|blocked|required/.test(message) ? 400 : 500;
     return json(response, status, { error: message.slice(0, 180) });
   }

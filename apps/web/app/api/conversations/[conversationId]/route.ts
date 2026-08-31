@@ -59,11 +59,25 @@ export async function DELETE(_: Request, context: { params: Promise<{ conversati
   if (!/^[0-9a-f-]{36}$/i.test(conversationId)) return NextResponse.json({ error: "invalid_request" }, { status: 400 });
 
   const rpc = supabase as unknown as RpcClient;
-  const { data, error } = await rpc.rpc<Record<string, unknown>>("delete_conversation", { target_conversation_id: conversationId });
+  const prepared = await rpc.rpc<Record<string, unknown>>("prepare_conversation_delete", { target_conversation_id: conversationId });
+  if (prepared.error) {
+    if (/conversation_not_found/.test(prepared.error.message)) return NextResponse.json({ error: "conversation_not_found" }, { status: 404 });
+    if (/permission_denied|workspace_access_denied|conversation_access_denied|authentication_required/.test(prepared.error.message)) return NextResponse.json({ error: "access_denied" }, { status: 403 });
+    return NextResponse.json({ error: "conversation_cancel_failed" }, { status: 500 });
+  }
+  if (!prepared.data || prepared.data.ready !== true) {
+    return NextResponse.json({
+      error: "conversation_cancellation_in_progress",
+      activeToolExecutions: Number(prepared.data?.activeToolExecutions ?? 0),
+      unsafeRollbacks: Number(prepared.data?.unsafeRollbacks ?? 0),
+      nonTerminalRuns: Number(prepared.data?.nonTerminalRuns ?? 0)
+    }, { status: 409 });
+  }
 
+  const { data, error } = await rpc.rpc<Record<string, unknown>>("delete_conversation", { target_conversation_id: conversationId });
   if (error) {
     if (/conversation_not_found/.test(error.message)) return NextResponse.json({ error: "conversation_not_found" }, { status: 404 });
-    if (/conversation_has_active_run/.test(error.message)) return NextResponse.json({ error: "conversation_has_active_run" }, { status: 409 });
+    if (/agent_run_delete_not_ready|conversation_has_active_run/.test(error.message)) return NextResponse.json({ error: "conversation_cancellation_in_progress" }, { status: 409 });
     if (/permission_denied|workspace_access_denied|conversation_access_denied|authentication_required/.test(error.message)) return NextResponse.json({ error: "access_denied" }, { status: 403 });
     return NextResponse.json({ error: "conversation_delete_failed" }, { status: 500 });
   }

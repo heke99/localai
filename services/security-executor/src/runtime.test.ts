@@ -34,6 +34,20 @@ function successfulSpawn(stdoutText = "HTTP/1.1 200 OK\n") {
   });
 }
 
+function hangingSpawn() {
+  let current: (EventEmitter & { stdout: PassThrough; stderr: PassThrough; pid: number; kill: ReturnType<typeof vi.fn> }) | null = null;
+  const spawnProcess = vi.fn(() => {
+    const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; pid: number; kill: ReturnType<typeof vi.fn> };
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.pid = 99_999_998;
+    child.kill = vi.fn();
+    current = child;
+    return child as never;
+  });
+  return { spawnProcess, child: () => current };
+}
+
 describe("LinuxSecurityExecutor", () => {
   it("executes an allowlisted passive operation without a shell", async () => {
     const spawnProcess = successfulSpawn();
@@ -75,6 +89,33 @@ describe("LinuxSecurityExecutor", () => {
     const executor = new LinuxSecurityExecutor({ resolveHost: async () => ["203.0.113.10"], spawnProcess: successfulSpawn() as never });
     await expect(executor.execute(request({ tool: "bash" }))).rejects.toThrow("security_tool_not_allowlisted");
     await expect(executor.execute(request({ tool: "port_scan", executionClass: "active", options: { ports: [22, 0] } }))).rejects.toThrow("invalid_security_option:ports");
+  });
+
+  it("terminates a cancelled process group with SIGTERM then SIGKILL after the grace period", async () => {
+    vi.useFakeTimers();
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      const hanging = hangingSpawn();
+      const controller = new AbortController();
+      const executor = new LinuxSecurityExecutor({
+        resolveHost: async () => ["203.0.113.10"],
+        spawnProcess: hanging.spawnProcess as never,
+        terminateGraceMs: 100
+      });
+      const pending = executor.execute(request(), controller.signal);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(hanging.child()).not.toBeNull();
+      controller.abort(new DOMException("Cancelled", "AbortError"));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(kill).toHaveBeenCalledWith(-99_999_998, "SIGTERM");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(kill).toHaveBeenCalledWith(-99_999_998, "SIGKILL");
+      hanging.child()?.emit("close", null);
+      await expect(pending).rejects.toThrow("Cancelled");
+    } finally {
+      kill.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
 

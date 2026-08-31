@@ -2,6 +2,8 @@ import { timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import type { ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import type { ClaimedRun, WorkerToolRuntime } from "./processor";
+import type { ToolExecutionContext } from "./tool-execution-context";
+import { linkedAbortController, throwIfAborted } from "./tool-execution-context";
 import {
   applyPentestCapabilityPlan,
   planPentestCapabilities,
@@ -47,6 +49,9 @@ export interface SecurityExecutorRequest {
   runId: string;
   requestId: string;
   traceId: string;
+  executionId?: string;
+  operationId?: string;
+  attempt?: number;
   tool: string;
   target: string;
   timeoutMs: number;
@@ -67,7 +72,7 @@ export interface SecurityExecutorResult {
 }
 
 export interface SecurityToolExecutor {
-  execute(request: SecurityExecutorRequest): Promise<SecurityExecutorResult>;
+  execute(request: SecurityExecutorRequest, context?: ToolExecutionContext): Promise<SecurityExecutorResult>;
 }
 
 export type SecuritySelectedSkillsResolver = (run: ClaimedRun) => Promise<readonly string[]>;
@@ -88,24 +93,32 @@ export class HttpSecurityToolExecutor implements SecurityToolExecutor {
     private readonly fetcher: typeof fetch = fetch
   ) {}
 
-  async execute(request: SecurityExecutorRequest): Promise<SecurityExecutorResult> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error("security_executor_timeout")), request.timeoutMs + 5_000);
-    timer.unref?.();
+  async execute(request: SecurityExecutorRequest, context?: ToolExecutionContext): Promise<SecurityExecutorResult> {
+    throwIfAborted(context?.signal);
+    const linked = linkedAbortController(context?.signal, request.timeoutMs + 5_000, "security_executor_timeout");
     try {
       let response: Response;
       try {
         response = await this.fetcher(this.endpoint, {
           method: "POST",
-          headers: { "content-type": "application/json", authorization: `Bearer ${this.bearerToken}` },
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${this.bearerToken}`,
+            ...(context?.operationId ? { "idempotency-key": context.operationId } : {}),
+            ...(context?.executionId ? { "x-tool-execution-id": context.executionId } : {})
+          },
           body: JSON.stringify(request),
-          signal: controller.signal
+          signal: linked.controller.signal
         });
       } catch (error) {
-        if (controller.signal.aborted || (error instanceof Error && /abort|timeout/i.test(error.message))) throw new Error("security_executor_timeout");
+        if (context?.signal?.aborted) throw context.signal.reason instanceof Error ? context.signal.reason : new Error("run_cancelled");
+        if (linked.timedOut() || (error instanceof Error && /timeout/i.test(error.message))) throw new Error("security_executor_timeout");
+        if (error instanceof Error && /abort/i.test(error.message)) throw error;
         throw new Error("security_executor_transport_error");
       }
+      throwIfAborted(context?.signal);
       const text = await response.text();
+      throwIfAborted(context?.signal);
       if (Buffer.byteLength(text, "utf8") > MAX_RESULT_BYTES) throw new Error("security_executor_result_too_large");
       if (!response.ok) {
         const remoteError = remoteExecutorError(text);
@@ -120,7 +133,7 @@ export class HttpSecurityToolExecutor implements SecurityToolExecutor {
       if (!parsed || typeof parsed.ok !== "boolean" || typeof parsed.durationMs !== "number") throw new Error("security_executor_invalid_result");
       return parsed;
     } finally {
-      clearTimeout(timer);
+      linked.dispose();
     }
   }
 }
@@ -330,7 +343,8 @@ export class SecurityToolRuntime implements WorkerToolRuntime {
     return [definition];
   }
 
-  async execute(run: ClaimedRun, call: ModelToolCall): Promise<unknown> {
+  async execute(run: ClaimedRun, call: ModelToolCall, context?: ToolExecutionContext): Promise<unknown> {
+    throwIfAborted(context?.signal);
     if (call.name !== TOOL_NAME) throw new Error("unknown_security_tool");
     if (run.mode !== "lab" || !this.executor) throw new Error("security_runtime_unavailable");
     const scope = scopeFromRun(run);
@@ -360,14 +374,18 @@ export class SecurityToolRuntime implements WorkerToolRuntime {
         runId: run.runId,
         requestId: run.requestId,
         traceId: run.traceId,
+        executionId: context?.executionId,
+        operationId: context?.operationId,
+        attempt: context?.attempt,
         tool: spec.id,
         target,
         timeoutMs: spec.timeoutMs,
         executionClass: spec.executionClass,
         scope: { scopeId: scope.scopeId, allowHosts: scope.allowHosts, allowIpv4Cidrs: scope.allowIpv4Cidrs, ...(allowReadinessLoopback ? { readinessProof: scope.readinessProof } : {}) },
         options
-      });
+      }, context);
     } catch (error) {
+      if (context?.signal?.aborted) throw context.signal.reason instanceof Error ? context.signal.reason : new Error("run_cancelled");
       const errorCode = failureCode(error);
       if (hardExecutorFailure(errorCode)) throw error instanceof Error ? error : new Error(errorCode);
       return {

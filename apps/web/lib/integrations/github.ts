@@ -138,10 +138,11 @@ function githubAppJwt() {
   return `${input}.${signature}`;
 }
 
-async function installationToken(installationId: number) {
+async function installationToken(installationId: number, signal?: AbortSignal) {
   const result = await fetchJson<{ token: string; expires_at: string }>(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
     method: "POST",
-    headers: githubHeaders(githubAppJwt())
+    headers: githubHeaders(githubAppJwt()),
+    signal
   });
   return result.token;
 }
@@ -197,26 +198,27 @@ async function githubApi<T>(token: string, path: string, init: RequestInit = {})
   return fetchJson<T>(`https://api.github.com${path}`, { ...init, headers: { ...githubHeaders(token), ...(init.headers ?? {}) } });
 }
 
-export async function executeGithubTool(toolName: string, args: Record<string,unknown>, metadata: Record<string,unknown>) {
+export async function executeGithubTool(toolName: string, args: Record<string,unknown>, metadata: Record<string,unknown>, signal?: AbortSignal) {
   const { fullName, installationId } = repositoryCoordinates(metadata);
-  const token = await installationToken(installationId);
+  const token = await installationToken(installationId, signal);
   const repoPath = `/repos/${fullName}`;
+  const api = <T>(path: string, init: RequestInit = {}) => githubApi<T>(token, path, { ...init, signal });
 
   if (toolName === "github_read_file") {
     const path = String(args.path ?? "");
     const ref = typeof args.ref === "string" && args.ref ? `?ref=${encodeURIComponent(args.ref)}` : "";
-    return githubApi(token, `${repoPath}/contents/${encodeRepoPath(path)}${ref}`);
+    return api(`${repoPath}/contents/${encodeRepoPath(path)}${ref}`);
   }
   if (toolName === "github_write_file") {
     const path = String(args.path ?? "");
     const branch = String(args.branch ?? "");
-    const currentResponse = await fetch(`https://api.github.com${repoPath}/contents/${encodeRepoPath(path)}?ref=${encodeURIComponent(branch)}`, { headers: githubHeaders(token), cache: "no-store" });
+    const currentResponse = await fetch(`https://api.github.com${repoPath}/contents/${encodeRepoPath(path)}?ref=${encodeURIComponent(branch)}`, { headers: githubHeaders(token), cache: "no-store", signal });
     let sha: string | undefined;
     if (currentResponse.ok) {
       const current = await currentResponse.json() as { sha?: string };
       sha = current.sha;
     } else if (currentResponse.status !== 404) throw new Error(`provider_http_${currentResponse.status}:github_read_before_write_failed`);
-    return githubApi(token, `${repoPath}/contents/${encodeRepoPath(path)}`, {
+    return api(`${repoPath}/contents/${encodeRepoPath(path)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: String(args.message ?? "Update via DIV3RSA"), content: Buffer.from(String(args.content ?? ""), "utf8").toString("base64"), branch, ...(sha ? { sha } : {}) })
@@ -225,25 +227,25 @@ export async function executeGithubTool(toolName: string, args: Record<string,un
   if (toolName === "github_create_branch") {
     const baseRef = String(args.baseRef ?? "main").replace(/^refs\/heads\//, "");
     const branch = String(args.branch ?? "").replace(/^refs\/heads\//, "");
-    const base = await githubApi<{ object: { sha: string } }>(token, `${repoPath}/git/ref/heads/${encodeURIComponent(baseRef)}`);
-    return githubApi(token, `${repoPath}/git/refs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: base.object.sha }) });
+    const base = await api<{ object: { sha: string } }>(`${repoPath}/git/ref/heads/${encodeURIComponent(baseRef)}`);
+    return api(`${repoPath}/git/refs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: base.object.sha }) });
   }
   if (toolName === "github_read_pull_requests") {
     const state = String(args.state ?? "open");
-    return githubApi(token, `${repoPath}/pulls?state=${encodeURIComponent(state)}&per_page=50`);
+    return api(`${repoPath}/pulls?state=${encodeURIComponent(state)}&per_page=50`);
   }
   if (toolName === "github_create_pull_request") {
-    return githubApi(token, `${repoPath}/pulls`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: String(args.title ?? ""), body: String(args.body ?? ""), head: String(args.head ?? ""), base: String(args.base ?? "main") }) });
+    return api(`${repoPath}/pulls`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: String(args.title ?? ""), body: String(args.body ?? ""), head: String(args.head ?? ""), base: String(args.base ?? "main") }) });
   }
   if (toolName === "github_merge_pull_request") {
-    return githubApi(token, `${repoPath}/pulls/${Number(args.pullNumber)}/merge`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ merge_method: String(args.mergeMethod ?? "squash") }) });
+    return api(`${repoPath}/pulls/${Number(args.pullNumber)}/merge`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ merge_method: String(args.mergeMethod ?? "squash") }) });
   }
   if (toolName === "github_read_actions") {
     const branch = typeof args.branch === "string" && args.branch ? `&branch=${encodeURIComponent(args.branch)}` : "";
-    return githubApi(token, `${repoPath}/actions/runs?per_page=50${branch}`);
+    return api(`${repoPath}/actions/runs?per_page=50${branch}`);
   }
   if (toolName === "github_run_action") {
-    return githubApi(token, `${repoPath}/actions/workflows/${encodeURIComponent(String(args.workflow ?? ""))}/dispatches`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ref: String(args.ref ?? "main"), inputs: args.inputs && typeof args.inputs === "object" ? args.inputs : {} }) });
+    return api(`${repoPath}/actions/workflows/${encodeURIComponent(String(args.workflow ?? ""))}/dispatches`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ref: String(args.ref ?? "main"), inputs: args.inputs && typeof args.inputs === "object" ? args.inputs : {} }) });
   }
   throw new Error("github_tool_not_supported");
 }

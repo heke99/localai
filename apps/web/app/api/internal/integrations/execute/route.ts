@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { consumeExecutionGrant, finishExecutionGrant, updateCredential } from "../../../../../lib/integrations/broker";
+import { updateCredential } from "../../../../../lib/integrations/broker";
+import { consumeIdempotentExecution, finishIdempotentExecution } from "../../../../../lib/integrations/idempotent-execution";
 import { executeGithubTool } from "../../../../../lib/integrations/github";
 import { executeGithubRepositorySnapshot } from "../../../../../lib/integrations/github-snapshot";
 import { executeSupabaseTool, refreshSupabaseCredential } from "../../../../../lib/integrations/supabase-provider";
@@ -26,29 +27,52 @@ function needsRefresh(credential: StoredCredential) {
   return Number.isFinite(expires) && expires < Date.now() + 60_000;
 }
 function safeOutput(value: unknown) {
-  const text = JSON.stringify(value);
-  if (text.length <= 1_500_000) return value;
+  const text = JSON.stringify(value ?? null);
+  if (text.length <= 1_500_000) return value ?? null;
   return { truncated: true, preview: text.slice(0,1_500_000), originalBytes: Buffer.byteLength(text) };
+}
+function retryableProviderFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /429|502|503|504|timeout|temporar|connection|unavailable/i.test(message);
 }
 
 export async function POST(request: Request) {
   let grantId = "";
+  let operationId = "";
+  let provider = "";
+  let toolName = "";
+  let executionStarted = false;
   try {
     const contentLength = Number(request.headers.get("content-length") ?? 0);
     if (contentLength > 2_500_000) return NextResponse.json({ error: "request_too_large" }, { status: 413 });
-    const body = await request.json() as { grantId?: unknown; toolName?: unknown; args?: unknown };
+    const body = await request.json() as { grantId?: unknown; toolName?: unknown; args?: unknown; operationId?: unknown; attempt?: unknown };
     grantId = typeof body.grantId === "string" ? body.grantId : "";
-    const toolName = typeof body.toolName === "string" ? body.toolName : "";
+    toolName = typeof body.toolName === "string" ? body.toolName : "";
+    operationId = typeof body.operationId === "string" ? body.operationId : "";
+    const idempotencyKey = request.headers.get("idempotency-key") ?? "";
     const args = body.args && typeof body.args === "object" && !Array.isArray(body.args) ? body.args as Record<string,unknown> : {};
-    if (!/^[0-9a-f-]{36}$/i.test(grantId) || !toolName) return NextResponse.json({ error: "invalid_execution_request" }, { status: 400 });
+    if (!/^[0-9a-f-]{36}$/i.test(grantId) || !toolName || !/^[a-f0-9]{64}$/.test(operationId)) return NextResponse.json({ error: "invalid_execution_request" }, { status: 400 });
+    if (idempotencyKey !== operationId) return NextResponse.json({ error: "idempotency_key_mismatch" }, { status: 409, headers: { "Cache-Control": "no-store, max-age=0" } });
     if (isForbiddenIntegrationToolName(toolName)) return NextResponse.json({ error: "vercel_log_drains_forbidden" }, { status: 403, headers: { "Cache-Control": "no-store, max-age=0" } });
     const tool = gatewayToolByName(toolName);
     if (!tool) return NextResponse.json({ error: "unknown_integration_tool" }, { status: 404 });
 
-    const grant = await consumeExecutionGrant(grantId, toolName);
-    const provider = stringField(grant,"provider");
+    const grant = await consumeIdempotentExecution(grantId, toolName, operationId);
+    const executionStatus = stringField(grant,"executionStatus");
+    if (executionStatus === "completed") {
+      const response = NextResponse.json({ result: safeOutput(grant.result), replayed: true });
+      response.headers.set("Cache-Control","no-store, max-age=0");
+      response.headers.set("Idempotency-Replayed","true");
+      return response;
+    }
+    if (grant.executeAllowed !== true) {
+      return NextResponse.json({ error: executionStatus === "running" ? "operation_in_progress" : "operation_not_executable", operationStatus: executionStatus }, { status: 409, headers: { "Cache-Control": "no-store, max-age=0" } });
+    }
+    executionStarted = true;
+
+    provider = stringField(grant,"provider");
     const capability = stringField(grant,"capability");
-    if (provider !== tool.provider || capability !== tool.capability) throw new Error("execution_grant_tool_mismatch");
+    if (provider !== tool.provider || capability !== tool.capability || stringField(grant,"operationId") !== operationId) throw new Error("execution_grant_tool_mismatch");
     const metadata = objectField(grant,"resourceMetadata");
     const externalId = stringField(grant,"externalResourceId");
     const connectionId = stringField(grant,"connectionId");
@@ -57,7 +81,7 @@ export async function POST(request: Request) {
     if (provider === "github") {
       result = toolName === "github_read_repository_snapshot"
         ? await executeGithubRepositorySnapshot(args, metadata)
-        : await executeGithubTool(toolName,args,metadata);
+        : await executeGithubTool(toolName,args,metadata,request.signal);
     } else {
       let credential = credentialFrom(grant.credential);
       if (!credential) throw new Error("integration_credential_missing");
@@ -74,12 +98,22 @@ export async function POST(request: Request) {
         result = await execute();
       }
     }
-    await finishExecutionGrant(grantId,"completed",{ tool: toolName, provider });
-    const response = NextResponse.json({ result: safeOutput(result) });
+
+    const storedResult = safeOutput(result);
+    await finishIdempotentExecution({ grantId, operationId, outcome: "completed", result: storedResult, metadata: { tool: toolName, provider } });
+    const response = NextResponse.json({ result: storedResult, replayed: false });
     response.headers.set("Cache-Control","no-store, max-age=0");
     return response;
   } catch (error) {
-    if (grantId) await finishExecutionGrant(grantId,"failed",{ errorCode: error instanceof Error ? error.message.split(":",1)[0].slice(0,120) : "execution_failed" });
-    return NextResponse.json({ error: "integration_execution_failed" }, { status: 409, headers: { "Cache-Control": "no-store, max-age=0" } });
+    if (grantId && operationId && executionStarted) {
+      await finishIdempotentExecution({
+        grantId,
+        operationId,
+        outcome: request.signal.aborted ? "cancelled" : "failed",
+        metadata: { errorCode: error instanceof Error ? error.message.split(":",1)[0].slice(0,120) : "execution_failed", tool: toolName, provider },
+        retryable: !request.signal.aborted && retryableProviderFailure(error)
+      }).catch(() => undefined);
+    }
+    return NextResponse.json({ error: request.signal.aborted ? "integration_execution_cancelled" : "integration_execution_failed" }, { status: 409, headers: { "Cache-Control": "no-store, max-age=0" } });
   }
 }

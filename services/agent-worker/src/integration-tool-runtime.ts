@@ -1,6 +1,9 @@
 import type { ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import { integrationToolByName, integrationToolsForResources, type IntegrationToolDefinition } from "@div3rsa/integrations";
 import type { ClaimedRun, WorkerToolRuntime } from "./processor";
+import type { ToolExecutionContext } from "./tool-execution-context";
+import { throwIfAborted } from "./tool-execution-context";
+import { operationId } from "./tool-execution-lifecycle";
 
 type RpcClient = { rpc: (name: string, args: Record<string, unknown>) => Promise<{ data: unknown | null; error: { message: string } | null }> };
 
@@ -16,10 +19,20 @@ export interface ToolAuthorization {
   metadata?: Record<string, unknown>;
   capability: string;
   executionGrantId: string;
+  operationId: string;
+  operationStatus: string;
+  operationAttempt: number;
+  replayResult?: unknown;
 }
 
 export interface ProviderToolExecutor {
-  execute(input: { run: ClaimedRun; authorization: ToolAuthorization; tool: IntegrationToolDefinition; arguments: Record<string, unknown> }): Promise<unknown>;
+  execute(input: {
+    run: ClaimedRun;
+    authorization: ToolAuthorization;
+    tool: IntegrationToolDefinition;
+    arguments: Record<string, unknown>;
+    context?: ToolExecutionContext;
+  }): Promise<unknown>;
 }
 
 const LIST_PROJECT_RESOURCES = "div3rsa_list_project_resources";
@@ -60,7 +73,10 @@ function isToolAuthorization(value: unknown): value is ToolAuthorization {
     && typeof item.externalResourceId === "string"
     && typeof item.displayName === "string"
     && typeof item.capability === "string"
-    && typeof item.executionGrantId === "string";
+    && typeof item.executionGrantId === "string"
+    && typeof item.operationId === "string"
+    && typeof item.operationStatus === "string"
+    && typeof item.operationAttempt === "number";
 }
 
 export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
@@ -71,9 +87,11 @@ export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
     return [...projectMemoryTools, ...providerTools];
   }
 
-  async execute(run: ClaimedRun, call: ModelToolCall): Promise<unknown> {
+  async execute(run: ClaimedRun, call: ModelToolCall, context?: ToolExecutionContext): Promise<unknown> {
+    throwIfAborted(context?.signal);
     if (call.name === LIST_PROJECT_RESOURCES) {
       const { data, error } = await this.client.rpc("worker_project_resource_directory", { target_run_id: run.runId });
+      throwIfAborted(context?.signal);
       if (error || !data) throw new Error(error?.message ?? "project_resource_directory_failed");
       return data;
     }
@@ -91,6 +109,7 @@ export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
         target_relation_key: relation,
         target_note: note
       });
+      throwIfAborted(context?.signal);
       if (error || !data) throw new Error(error?.message ?? "resource_link_memory_failed");
       return data;
     }
@@ -104,14 +123,25 @@ export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
     const executor = this.executors.get(tool.provider);
     if (!executor) throw new Error("provider_executor_not_configured");
 
-    const { data, error } = await this.client.rpc("worker_create_tool_execution_grant", {
+    const stableOperationId = context?.operationId ?? operationId(run.runId, call.id);
+    const attempt = Math.max(1, context?.attempt ?? 1);
+    const { data, error } = await this.client.rpc("worker_create_idempotent_tool_execution_grant", {
       target_run_id: run.runId,
       target_resource_id: resourceId,
       target_capability: tool.capability,
-      target_tool_name: tool.name
+      target_tool_name: tool.name,
+      target_operation_id: stableOperationId,
+      target_attempt: attempt
     });
+    throwIfAborted(context?.signal);
     if (error || !isToolAuthorization(data)) throw new Error(error?.message ?? "tool_resource_capability_denied");
-    if (data.resourceId !== resourceId || data.provider !== tool.provider || data.capability !== tool.capability) throw new Error("tool_authorization_mismatch");
-    return executor.execute({ run, authorization: data, tool, arguments: call.input });
+    if (data.resourceId !== resourceId || data.provider !== tool.provider || data.capability !== tool.capability || data.operationId !== stableOperationId) throw new Error("tool_authorization_mismatch");
+    return executor.execute({
+      run,
+      authorization: data,
+      tool,
+      arguments: call.input,
+      context: { ...context, operationId: stableOperationId, attempt }
+    });
   }
 }

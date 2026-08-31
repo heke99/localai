@@ -30,6 +30,9 @@ function never<T>(): Promise<T> {
   return new Promise<T>(() => undefined);
 }
 
+const claim = async () => ({ executionId: "11111111-1111-4111-8111-111111111111", status: "running", executeAllowed: true, replayed: false, attempt: 1 });
+const transition = async () => undefined;
+
 describe("CompositeWorkerToolRuntime timeout hardening", () => {
   it("bounds a runtime that hangs while listing tools", async () => {
     vi.useFakeTimers();
@@ -55,7 +58,7 @@ describe("CompositeWorkerToolRuntime timeout hardening", () => {
         list: async () => [webDefinition],
         execute: async () => never<unknown>()
       };
-      const runtime = new CompositeWorkerToolRuntime([hanging], { listTimeoutMs: 25, executeTimeoutMs: 50 });
+      const runtime = new CompositeWorkerToolRuntime([hanging], { listTimeoutMs: 25, executeTimeoutMs: 50, claimToolExecution: claim, transitionToolExecution: transition });
       const pending = runtime.execute(run, { id: "tool-1", name: "web_search", input: { query: "Iran latest news" } });
       const resolution = expect(pending).resolves.toMatchObject({
         ok: false,
@@ -76,7 +79,7 @@ describe("CompositeWorkerToolRuntime timeout hardening", () => {
       list: async () => [webDefinition],
       execute: async () => { throw new Error("web_search_failed:503"); }
     };
-    const runtime = new CompositeWorkerToolRuntime([failing], { listTimeoutMs: 25, executeTimeoutMs: 50 });
+    const runtime = new CompositeWorkerToolRuntime([failing], { listTimeoutMs: 25, executeTimeoutMs: 50, claimToolExecution: claim, transitionToolExecution: transition });
     await expect(runtime.execute(run, { id: "tool-1", name: "web_search", input: { query: "Iran latest news" } }))
       .resolves.toMatchObject({ ok: false, tool: "web_search", error: "web_search_failed:503", retryable: true });
   });
@@ -88,7 +91,7 @@ describe("CompositeWorkerToolRuntime timeout hardening", () => {
         list: async () => [securityDefinition],
         execute: async () => never<unknown>()
       };
-      const runtime = new CompositeWorkerToolRuntime([hanging], { listTimeoutMs: 25, executeTimeoutMs: 50 });
+      const runtime = new CompositeWorkerToolRuntime([hanging], { listTimeoutMs: 25, executeTimeoutMs: 50, claimToolExecution: claim, transitionToolExecution: transition });
       const pending = runtime.execute(run, { id: "tool-1", name: "security_scan", input: { target: "app.localai.test" } });
       const rejection = expect(pending).rejects.toThrow("tool_runtime_timeout:execute:security_scan");
       await vi.advanceTimersByTimeAsync(50);
@@ -103,8 +106,89 @@ describe("CompositeWorkerToolRuntime timeout hardening", () => {
       list: async () => [webDefinition],
       execute: async (_run, call) => ({ query: call.input.query, ok: true })
     };
-    const runtime = new CompositeWorkerToolRuntime([healthy], { listTimeoutMs: 25, executeTimeoutMs: 50 });
+    const runtime = new CompositeWorkerToolRuntime([healthy], { listTimeoutMs: 25, executeTimeoutMs: 50, claimToolExecution: claim, transitionToolExecution: transition });
     await expect(runtime.execute(run, { id: "tool-1", name: "web_search", input: { query: "Iran latest news" } }))
       .resolves.toEqual({ query: "Iran latest news", ok: true });
+  });
+});
+
+describe("CompositeWorkerToolRuntime cancellation and idempotency", () => {
+  it("aborts an in-flight child operation and persists cancelling then cancelled", async () => {
+    vi.useFakeTimers();
+    try {
+      let cancelled = false;
+      const statuses: string[] = [];
+      let observedSignal: AbortSignal | undefined;
+      const child = {
+        list: async () => [securityDefinition],
+        execute: async (_run: ClaimedRun, _call: unknown, context?: { signal?: AbortSignal }) => {
+          observedSignal = context?.signal;
+          return await new Promise((_resolve, reject) => context?.signal?.addEventListener("abort", () => reject(context.signal?.reason ?? new Error("aborted")), { once: true }));
+        }
+      } as unknown as WorkerToolRuntime;
+      const runtime = new CompositeWorkerToolRuntime([child], {
+        listTimeoutMs: 25,
+        executeTimeoutMs: 5_000,
+        cancellationPollMs: 10,
+        isCancellationRequested: async () => cancelled,
+        claimToolExecution: claim,
+        transitionToolExecution: async (input) => { statuses.push(input.status); },
+        finalizeCancellation: async () => undefined
+      });
+      const pending = runtime.execute(run, { id: "tool-cancel", name: "security_scan", input: { target: "app.localai.test" } });
+      await vi.advanceTimersByTimeAsync(1);
+      cancelled = true;
+      const rejection = expect(pending).rejects.toThrow(/run_cancelled/);
+      await vi.advanceTimersByTimeAsync(20);
+      await rejection;
+      expect(observedSignal?.aborted).toBe(true);
+      expect(statuses).toEqual(["cancelling", "cancelled"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("replays a completed mutation without invoking the provider again", async () => {
+    const execute = vi.fn(async () => ({ shouldNotRun: true }));
+    const child: WorkerToolRuntime = { list: async () => [securityDefinition], execute };
+    const runtime = new CompositeWorkerToolRuntime([child], {
+      claimToolExecution: async () => ({ executionId: "11111111-1111-4111-8111-111111111111", status: "completed", executeAllowed: false, replayed: true, result: { commit: "abc" }, attempt: 1 }),
+      transitionToolExecution: transition
+    });
+    await expect(runtime.execute(run, { id: "stable-call", name: "security_scan", input: { target: "app.localai.test" } })).resolves.toEqual({ commit: "abc" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("uses the same operation id when the same tool call is retried", async () => {
+    const operationIds: string[] = [];
+    let attempt = 0;
+    const child: WorkerToolRuntime = {
+      list: async () => [securityDefinition],
+      execute: async () => { if (attempt++ === 0) throw new Error("provider_http_503"); return { ok: true }; }
+    };
+    const runtime = new CompositeWorkerToolRuntime([child], {
+      claimToolExecution: async (_run, _call, operationId) => {
+        operationIds.push(operationId);
+        return { executionId: "11111111-1111-4111-8111-111111111111", status: "running", executeAllowed: true, replayed: false, attempt: operationIds.length };
+      },
+      transitionToolExecution: transition
+    });
+    const call = { id: "stable-retry", name: "security_scan", input: { target: "app.localai.test" } };
+    await expect(runtime.execute(run, call)).rejects.toThrow("provider_http_503");
+    await expect(runtime.execute(run, call)).resolves.toEqual({ ok: true });
+    expect(operationIds).toHaveLength(2);
+    expect(operationIds[0]).toBe(operationIds[1]);
+    expect(operationIds[0]).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("fails closed when the same operation is already running", async () => {
+    const execute = vi.fn(async () => ({ duplicate: true }));
+    const child: WorkerToolRuntime = { list: async () => [securityDefinition], execute };
+    const runtime = new CompositeWorkerToolRuntime([child], {
+      claimToolExecution: async () => ({ executionId: "11111111-1111-4111-8111-111111111111", status: "running", executeAllowed: false, replayed: false, attempt: 1 }),
+      transitionToolExecution: transition
+    });
+    await expect(runtime.execute(run, { id: "duplicate", name: "security_scan", input: { target: "app.localai.test" } })).rejects.toThrow("tool_operation_in_progress");
+    expect(execute).not.toHaveBeenCalled();
   });
 });
