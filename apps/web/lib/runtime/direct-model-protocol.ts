@@ -34,6 +34,18 @@ export function stripThinking(text: string): string {
   return output.replace(/<\/?think>/gi, "").trim();
 }
 
+export function conservativeTokenCount(reported: unknown, texts: readonly string[]): number {
+  const numeric = Number(reported);
+  if (Number.isFinite(numeric) && numeric > 0) return Math.max(1, Math.trunc(numeric));
+
+  // llama.cpp normally reports exact prompt/completion token counts. If an
+  // OpenAI-compatible runtime omits usage, never turn that omission into free
+  // quota. ~3 characters/token is deliberately conservative across code and
+  // multilingual text; billing remains safe until exact usage is available.
+  const characters = texts.reduce((total, text) => total + text.length, 0);
+  return characters > 0 ? Math.max(1, Math.ceil(characters / 3)) : 0;
+}
+
 export function buildDirectModelMessages(rows: readonly StoredMessage[], maxCharacters = 120_000): DirectModelMessage[] {
   const accepted = rows
     .filter((row) => row.role === "user" || row.role === "assistant")
