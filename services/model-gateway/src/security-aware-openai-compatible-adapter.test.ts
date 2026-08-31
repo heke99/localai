@@ -17,6 +17,20 @@ const securityTool: ModelToolDefinition = {
   }
 };
 
+function plannedSecurityTool(operations: string[]): ModelToolDefinition {
+  return {
+    ...securityTool,
+    description: `bounded security\n\nPENTEST CAPABILITY PLAN V1\nExecutable security plan: ${operations.map((operation, index) => `${index + 1}:${operation}`).join(" -> ")}.\nUnsupported capabilities: none.`,
+    inputSchema: {
+      ...securityTool.inputSchema,
+      properties: {
+        ...(securityTool.inputSchema.properties as Record<string, Record<string, unknown>>),
+        tool: { type: "string", enum: operations }
+      }
+    }
+  };
+}
+
 function completion(content: string) {
   return new Response(JSON.stringify({
     choices: [{ message: { content }, finish_reason: "stop" }],
@@ -41,6 +55,69 @@ describe("SecurityAwareOpenAiCompatibleAdapter", () => {
     expect(output.finishReason).toBe("tool_call");
     expect(output.toolCalls?.[0]).toMatchObject({ name: "security_scan", input: { tool: "http_probe", target: "https://app.localai.test", options: {} } });
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("aligns an out-of-order Qwen tool choice to the authoritative executable plan", async () => {
+    const fetcher = vi.fn(async () => completion(`<tool_call><function=security_scan><parameter=tool>tls_probe</parameter><parameter=target>https://app.localai.test</parameter></function></tool_call>`));
+    const adapter = new SecurityAwareOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
+    const output = await adapter.generate({
+      requestId: "security-plan-order",
+      alias: "lab-prod",
+      messages: [{ role: "user", content: "Säkerhetsgranska https://app.localai.test" }],
+      tools: [plannedSecurityTool(["http_probe", "tls_probe"])]
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(output.finishReason).toBe("tool_call");
+    expect(output.toolCalls?.[0]).toMatchObject({ name: "security_scan", input: { tool: "http_probe", target: "https://app.localai.test", options: {} } });
+  });
+
+  it("continues the authoritative plan when live Qwen emits a malformed textual security call after an observation", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+      expect(body.messages.some((message) => message.role === "system" && message.content.includes("SECURITY EXECUTION STATE V1"))).toBe(true);
+      return completion(`\n\n<tool_call>\n"security_scan"`);
+    });
+    const adapter = new SecurityAwareOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
+    const output = await adapter.generate({
+      requestId: "security-malformed-continuation",
+      alias: "lab-prod",
+      messages: [
+        { role: "user", content: "Samla passiv evidens för https://app.localai.test" },
+        { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "security_scan", input: { tool: "http_probe", target: "https://app.localai.test", options: {} } }] },
+        { role: "tool", name: "security_scan", toolCallId: "c1", content: "{\"ok\":true,\"stdout\":\"HTTP/2 200\"}" }
+      ],
+      tools: [plannedSecurityTool(["http_probe", "tls_probe"])]
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(output.finishReason).toBe("tool_call");
+    expect(output.content).toBe("");
+    expect(output.toolCalls?.[0]).toMatchObject({ name: "security_scan", input: { tool: "tls_probe", target: "https://app.localai.test", options: {} } });
+  });
+
+  it("repairs a fabricated completion so only executed observations may be reported", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(completion("Alla kontroller är avklarade. TLS: självsignerat certifikat. HTTP: 302."))
+      .mockImplementationOnce(async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+        expect(body.messages.some((message) => message.role === "user" && message.content.includes("Evidence-grounding repair"))).toBe(true);
+        expect(body.messages.some((message) => message.role === "user" && message.content.includes("Executed operations backed by tool results: http_probe"))).toBe(true);
+        return completion("HTTP-observationen visar en redirect till en extern host. Den externa hosten är utanför scope och har inte testats; separat uttrycklig behörighet krävs.");
+      });
+    const adapter = new SecurityAwareOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
+    const output = await adapter.generate({
+      requestId: "security-grounding",
+      alias: "lab-prod",
+      messages: [
+        { role: "user", content: "Granska endast https://portal.localai.test och expandera aldrig scope." },
+        { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "security_scan", input: { tool: "http_probe", target: "https://portal.localai.test", options: {} } }] },
+        { role: "tool", name: "security_scan", toolCallId: "c1", content: "{\"ok\":true,\"stdout\":\"HTTP/2 302 location: https://auth.vendor.test/login\"}" }
+      ],
+      tools: [plannedSecurityTool(["http_probe"])]
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(output.finishReason).toBe("stop");
+    expect(output.content).toContain("utanför scope");
+    expect(output.content).not.toContain("självsignerat");
   });
 
   it("keeps deterministic production-readiness turns on the raw adapter path", async () => {
@@ -133,6 +210,27 @@ describe("SecurityAwareOpenAiCompatibleAdapter", () => {
     expect(output.content).toContain("kan inte verifiera autentiserad BOLA/IDOR");
     expect(output.content).toContain("utan att påstå en sårbarhet");
     expect(output.usage).toEqual({ inputTokens: 20, outputTokens: 8, cachedTokens: 0 });
+  });
+
+  it("falls back to a grounded capability stop if Qwen keeps narrating future JWT actions", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(completion("Jag behöver nu kontrollera DNS och TLS."))
+      .mockResolvedValueOnce(completion("Jag fortsätter med TLS-kontrollen."));
+    const adapter = new SecurityAwareOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
+    const output = await adapter.generate({
+      requestId: "security-jwt-stop-fallback",
+      alias: "lab-prod",
+      messages: [
+        { role: "user", content: "Bedöm om JWT/session-valideringen kan kringgås på https://auth.localai.test" },
+        { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "security_scan", input: { tool: "http_probe", target: "https://auth.localai.test", options: {} } }] },
+        { role: "tool", name: "security_scan", toolCallId: "c1", content: "{\"ok\":true,\"stdout\":\"HTTP/2 302\"}" }
+      ],
+      tools: [plannedSecurityTool(["http_probe", "tls_probe"])]
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(output.finishReason).toBe("stop");
+    expect(output.content).toContain("kan inte verifiera JWT- eller session-bypass");
+    expect(output.content).toContain("tokenmutation");
   });
 
   it("does not force a tool for a conceptual security question", async () => {
