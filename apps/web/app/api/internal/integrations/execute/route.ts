@@ -81,7 +81,7 @@ export async function POST(request: Request) {
     if (provider === "github") {
       result = toolName === "github_read_repository_snapshot"
         ? await executeGithubRepositorySnapshot(args, metadata)
-        : await executeGithubTool(toolName,args,metadata);
+        : await executeGithubTool(toolName,args,metadata,request.signal);
     } else {
       let credential = credentialFrom(grant.credential);
       if (!credential) throw new Error("integration_credential_missing");
