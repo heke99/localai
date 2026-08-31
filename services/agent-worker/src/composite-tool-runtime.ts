@@ -7,7 +7,9 @@ import { toolPolicy, toolTimeoutMs } from "./tool-registry";
 const DEFAULT_LIST_TIMEOUT_MS = 15_000;
 const DEFAULT_EXECUTE_TIMEOUT_MS = 90_000;
 const DEFAULT_CANCELLATION_POLL_MS = 100;
+const MAX_PROGRESS_RUNS = 1024;
 const RECOVERABLE_RESEARCH_TOOLS = new Set(["web_search", "web_fetch"]);
+const VOLATILE_OBSERVATION_KEYS = new Set(["durationMs", "auditId", "observationId", "retrievedAt", "checkedAt", "generatedAt", "timestamp"]);
 
 type ToolExecutionClaim = {
   executionId: string;
@@ -27,6 +29,12 @@ type ToolExecutionTransitionInput = {
   errorCode?: string | null;
   retryable?: boolean;
 };
+
+interface RunProgressState {
+  lastSignature: string | null;
+  lastToolName: string | null;
+  lastObservationFingerprint: string | null;
+}
 
 export interface CompositeWorkerToolRuntimeOptions {
   listTimeoutMs?: number;
@@ -190,13 +198,49 @@ function recoverableResearchFailure(call: ModelToolCall, error: unknown): Record
     tool: call.name,
     error: message.slice(0, 500),
     retryable,
-    observation: "research_tool_unavailable"
+    observation: "research_tool_unavailable",
+    adaptationRequired: true
   };
 }
 
 function retryableFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /timeout|429|502|503|504|connection|unavailable|network|fetch failed/i.test(message);
+}
+
+function materialObservation(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(materialObservation);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .filter(([key, entry]) => entry !== undefined && !VOLATILE_OBSERVATION_KEYS.has(key))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, materialObservation(entry)]));
+  }
+  return value;
+}
+
+function duplicateObservation(call: ModelToolCall): Record<string, unknown> {
+  return {
+    ok: false,
+    status: "blocked",
+    tool: call.name,
+    error: { code: "duplicate_tool_call_suppressed", retryable: false },
+    observation: "duplicate_action_no_progress",
+    duplicateSuppressed: true,
+    noProgress: true,
+    adaptationRequired: true,
+    suggestedAction: "Use a materially different available tool or stop if the required capability is unavailable."
+  };
+}
+
+function withProgressSignal(output: unknown, noProgress: boolean): unknown {
+  if (!noProgress || !output || typeof output !== "object" || Array.isArray(output)) return output;
+  return {
+    ...(output as Record<string, unknown>),
+    noProgress: true,
+    adaptationRequired: true,
+    suggestedAction: "The previous materially different call produced the same observation. Change strategy or stop instead of looping."
+  };
 }
 
 export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
@@ -207,6 +251,7 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
   private readonly claimToolExecution: (run: ClaimedRun, call: ModelToolCall, operationId: string) => Promise<ToolExecutionClaim>;
   private readonly transitionToolExecution: (input: ToolExecutionTransitionInput) => Promise<void>;
   private readonly finalizeCancellation: (runId: string) => Promise<void>;
+  private readonly progressByRun = new Map<string, RunProgressState>();
 
   constructor(
     private readonly runtimes: readonly WorkerToolRuntime[],
@@ -220,6 +265,18 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
     this.claimToolExecution = options.claimToolExecution ?? defaultClaimToolExecution;
     this.transitionToolExecution = options.transitionToolExecution ?? defaultTransitionToolExecution;
     this.finalizeCancellation = options.finalizeCancellation ?? defaultFinalizeCancellation;
+  }
+
+  private progressState(runId: string): RunProgressState {
+    const existing = this.progressByRun.get(runId);
+    if (existing) return existing;
+    if (this.progressByRun.size >= MAX_PROGRESS_RUNS) {
+      const oldest = this.progressByRun.keys().next().value as string | undefined;
+      if (oldest) this.progressByRun.delete(oldest);
+    }
+    const created: RunProgressState = { lastSignature: null, lastToolName: null, lastObservationFingerprint: null };
+    this.progressByRun.set(runId, created);
+    return created;
   }
 
   async list(run: ClaimedRun): Promise<ModelToolDefinition[]> {
@@ -270,6 +327,11 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
   async execute(run: ClaimedRun, call: ModelToolCall, context?: ToolExecutionContext): Promise<unknown> {
     const cancellation = this.cancellationSignal(run.runId, context?.signal);
     const stableOperationId = context?.operationId ?? operationId(run.runId, call.id);
+    const progress = this.progressState(run.runId);
+    const signature = `${call.name}:${canonicalInputHash(call.input)}`;
+    const duplicate = progress.lastSignature === signature
+      && progress.lastToolName === call.name
+      && progress.lastObservationFingerprint !== null;
     let claim: ToolExecutionClaim | null = null;
     try {
       for (let index = 0; index < this.runtimes.length; index += 1) {
@@ -289,9 +351,23 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
           throw new Error(`tool_operation_terminal:${call.name}:${claim.status}:${claim.errorCode ?? "unknown"}`);
         }
 
+        if (duplicate) {
+          const observation = duplicateObservation(call);
+          await this.transitionToolExecution({
+            executionId: claim.executionId,
+            status: "blocked",
+            attempt: claim.attempt,
+            outputSummary: observation,
+            errorCode: "duplicate_tool_call_suppressed",
+            retryable: false
+          });
+          return observation;
+        }
+        progress.lastSignature = signature;
+
         try {
           const timeoutMs = Math.min(toolTimeoutMs(call.name, this.executeTimeoutMs), this.executeTimeoutMs);
-          const output = await withAbortableTimeout(
+          const rawOutput = await withAbortableTimeout(
             (signal) => runtime.execute(run, call, {
               signal,
               executionId: claim!.executionId,
@@ -302,6 +378,11 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
             `tool_runtime_timeout:execute:${call.name}`,
             cancellation.signal
           );
+          const fingerprint = canonicalInputHash(materialObservation(rawOutput));
+          const noProgress = progress.lastToolName === call.name && progress.lastObservationFingerprint === fingerprint;
+          const output = withProgressSignal(rawOutput, noProgress);
+          progress.lastToolName = call.name;
+          progress.lastObservationFingerprint = fingerprint;
           const normalized = normalizeToolResult(output);
           await this.transitionToolExecution({
             executionId: claim.executionId,
@@ -331,7 +412,14 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
             retryable
           }).catch(() => undefined);
           const observation = recoverableResearchFailure(call, error);
-          if (observation) return observation;
+          if (observation) {
+            const fingerprint = canonicalInputHash(materialObservation(observation));
+            const noProgress = progress.lastToolName === call.name && progress.lastObservationFingerprint === fingerprint;
+            progress.lastToolName = call.name;
+            progress.lastObservationFingerprint = fingerprint;
+            return withProgressSignal(observation, noProgress);
+          }
+          progress.lastSignature = null;
           throw error;
         }
       }
@@ -342,10 +430,15 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
   }
 
   async beginRun(run: ClaimedRun): Promise<void> {
+    this.progressByRun.delete(run.runId);
     for (const runtime of this.runtimes as readonly LifecycleWorkerToolRuntime[]) await runtime.beginRun?.(run);
   }
 
   async endRun(run: ClaimedRun, outcome?: string): Promise<void> {
-    for (const runtime of [...this.runtimes].reverse() as LifecycleWorkerToolRuntime[]) await runtime.endRun?.(run, outcome);
+    try {
+      for (const runtime of [...this.runtimes].reverse() as LifecycleWorkerToolRuntime[]) await runtime.endRun?.(run, outcome);
+    } finally {
+      this.progressByRun.delete(run.runId);
+    }
   }
 }
