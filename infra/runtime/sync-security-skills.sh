@@ -27,7 +27,7 @@ trap cleanup EXIT
 
 mkdir -p "$EXTRACTED" "$SNAPSHOT/skills"
 
-if [[ -f "$FINAL_DIR/source.json" && -f "$FINAL_DIR/index.json" ]]; then
+if [[ -f "$FINAL_DIR/source.json" && -f "$FINAL_DIR/index.json" && -f "$FINAL_DIR/integrity.json" ]]; then
   if "$NODE_BIN" "$REPO_DIR/scripts/validate_security_skill_snapshot.mjs" "$FINAL_DIR" >/dev/null; then
     printf '[security-skills] snapshot already valid commit=%s root=%s\n' "$COMMIT" "$FINAL_DIR"
     exit 0
@@ -57,6 +57,7 @@ while IFS= read -r skill_file; do
   cp "$skill_file" "$destination"
 done < <(find "$UPSTREAM_ROOT/skills" -mindepth 2 -maxdepth 2 -type f -name SKILL.md -print | sort)
 
+"$NODE_BIN" "$REPO_DIR/scripts/build_security_skill_integrity.mjs" "$SNAPSHOT"
 "$NODE_BIN" "$REPO_DIR/scripts/validate_security_skill_snapshot.mjs" "$SNAPSHOT"
 
 rm -rf "${FINAL_DIR}.new"
