@@ -39,12 +39,14 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       DIV3RSA_LEARNING_EXPORT_CREATED_BEFORE: ${{ inputs.created_before }}
-      DIV3RSA_LEARNING_EXPORT_OUTPUT: ${{ runner.temp }}/verified-learning.json
+      # runner.* is not available while GitHub validates job-level env. The
+      # hosted runner is ephemeral, so fixed /tmp paths are isolated per job.
+      DIV3RSA_LEARNING_EXPORT_OUTPUT: /tmp/div3rsa-verified-learning.json
       DIV3RSA_LEARNING_MINIMUM_SAMPLES: "25"
-      DIV3RSA_OPTIMIZER_BASELINE_EVAL: ${{ runner.temp }}/baseline.json
-      DIV3RSA_OPTIMIZER_CANDIDATE_EVAL: ${{ runner.temp }}/candidate.json
-      DIV3RSA_OPTIMIZER_CANDIDATE_DEFINITION: ${{ runner.temp }}/candidate-definition.json
-      DIV3RSA_OPTIMIZER_OUTPUT: ${{ runner.temp }}/optimization-decision.json
+      DIV3RSA_OPTIMIZER_BASELINE_EVAL: /tmp/div3rsa-baseline.json
+      DIV3RSA_OPTIMIZER_CANDIDATE_EVAL: /tmp/div3rsa-candidate.json
+      DIV3RSA_OPTIMIZER_CANDIDATE_DEFINITION: /tmp/div3rsa-candidate-definition.json
+      DIV3RSA_OPTIMIZER_OUTPUT: /tmp/div3rsa-optimization-decision.json
     steps:
       - name: Validate exact current main revision
         shell: bash
@@ -88,7 +90,7 @@ jobs:
 
       - name: Evaluate candidate against frozen baseline
         env:
-          DIV3RSA_LEARNING_DATASET: ${{ runner.temp }}/verified-learning.json
+          DIV3RSA_LEARNING_DATASET: /tmp/div3rsa-verified-learning.json
         run: npm run learning:optimize
 
       - name: Publish decision summary without training or promotion
