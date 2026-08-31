@@ -143,7 +143,7 @@ describe("SecurityToolRuntime", () => {
   });
 
   it("normalizes a configured executor base URL to the canonical execute route", async () => {
-    const fetcher = vi.fn(async () => new Response(JSON.stringify({ ok: true, exitCode: 0, durationMs: 1, findings: [] }), {
+    const fetcher = vi.fn(async (_input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => new Response(JSON.stringify({ ok: true, exitCode: 0, durationMs: 1, findings: [] }), {
       status: 200,
       headers: { "content-type": "application/json" }
     }));
@@ -156,7 +156,7 @@ describe("SecurityToolRuntime", () => {
   });
 
   it("reads capability readiness from the protected canonical capabilities route", async () => {
-    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+    const fetcher = vi.fn(async (_input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => new Response(JSON.stringify({
       schemaVersion: 1,
       ready: true,
       complete: false,
@@ -171,10 +171,21 @@ describe("SecurityToolRuntime", () => {
   });
 
   it("preserves remote scope and policy denials as hard fail-closed errors", async () => {
-    const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: "security_private_resolution_out_of_scope" }), {
-      status: 400,
-      headers: { "content-type": "application/json" }
-    }));
+    const fetcher = vi.fn(async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      if (init?.method === "GET") {
+        return new Response(JSON.stringify({
+          schemaVersion: 1,
+          ready: true,
+          complete: true,
+          checkedAt: "2026-08-31T08:00:00.000Z",
+          operations: ["dns_lookup", "http_probe", "tls_probe", "port_scan", "template_scan", "content_discovery"]
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ error: "security_private_resolution_out_of_scope" }), {
+        status: 400,
+        headers: { "content-type": "application/json" }
+      });
+    });
     const runtime = new SecurityToolRuntime(new HttpSecurityToolExecutor("http://executor/v1/execute", "token", fetcher as typeof fetch));
 
     await expect(runtime.execute(run(), {
