@@ -1,4 +1,5 @@
-2026-08-31 Batch 5 Pentest Intelligence E2E production gate rerun 4
+2026-08-31 Batch 5 Pentest Intelligence E2E production gate rerun 5
 focus=execution-grounding,tool-selection,sequencing,adaptation,verification,capability-stop,textual-tool-chain
 strict=true
-source_fix=PR-196
+source_fix=PR-198
+expected_definition_of_done=8/8,allowed=true,no_false_execution_claims,no_malformed_continuation_stops,correct_capability_stop
