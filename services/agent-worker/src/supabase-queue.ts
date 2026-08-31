@@ -3,6 +3,7 @@ import type { ImpactAnalysis, TaskAnalysis, VerificationPlan, VerificationReport
 import type { Database, Json } from "@div3rsa/db";
 import type { PreparedRepositoryWorkspace } from "./repository-runtime";
 import type { AgentQueue, AgentResourceContext, ClaimedRun } from "./processor";
+import type { ToolExecutionStart, ToolExecutionTransition } from "./tool-execution-lifecycle";
 import { chunk, impactNodePayload, repositoryGraph, verificationResultPayload } from "./observability";
 
 type UntypedRpcClient = { rpc: (name: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { message: string } | null }> };
@@ -119,6 +120,37 @@ export class SupabaseAgentQueue implements AgentQueue {
   async step(runId: string, kind: string, status: string, summary: string, state: Record<string, unknown> = {}): Promise<void> {
     const { error } = await this.client.rpc("worker_record_agent_step", { target_run_id: runId, step_kind: kind, step_status: status, summary, state: asJson(state) });
     if (error) throw error;
+  }
+
+  async beginToolExecution(input: ToolExecutionStart): Promise<string> {
+    const { data, error } = await (this.client as unknown as UntypedRpcClient).rpc("worker_begin_agent_tool_execution", {
+      target_run_id: input.runId,
+      target_tool_call_id: input.toolCallId,
+      target_operation_id: input.operationId,
+      target_tool_name: input.toolName,
+      target_input_hash: input.inputHash,
+      target_input_redacted: asJson(input.inputRedacted),
+      target_mutating: input.mutating,
+      target_reversible: input.reversible,
+      target_scope_snapshot: input.scopeSnapshot == null ? null : asJson(input.scopeSnapshot)
+    });
+    if (error) throw new Error(error.message);
+    return requiredId(data, "tool_execution_id_invalid");
+  }
+
+  async transitionToolExecution(input: ToolExecutionTransition): Promise<void> {
+    const { error } = await (this.client as unknown as UntypedRpcClient).rpc("worker_transition_agent_tool_execution", {
+      target_execution_id: input.executionId,
+      target_status: input.status,
+      target_attempt: input.attempt ?? null,
+      target_output_summary: input.outputSummary == null ? null : asJson(input.outputSummary),
+      target_error_code: input.errorCode ?? null,
+      target_retryable: input.retryable ?? null,
+      target_provider_resource_id: input.providerResourceId ?? null,
+      target_external_operation_id: input.externalOperationId ?? null,
+      target_rollback_status: input.rollbackStatus ?? null
+    });
+    if (error) throw new Error(error.message);
   }
 
   async stream(runId: string, delta: string, reset = false): Promise<void> {
