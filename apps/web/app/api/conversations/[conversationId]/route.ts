@@ -13,6 +13,13 @@ type ActiveRun = {
   output_message_id: string | null;
   created_at: string;
 };
+type DashboardSnapshot = {
+  conversations?: Array<{ id?: string; selected_resource_ids?: string[] | null }>;
+};
+
+function resourceRpcUnavailable(message: string) {
+  return /get_conversation_selected_resource_ids|Could not find the function|PGRST202/i.test(message);
+}
 
 export async function GET(_: Request, context: { params: Promise<{ conversationId: string }> }) {
   const supabase = await createSupabaseServerClient();
@@ -22,21 +29,22 @@ export async function GET(_: Request, context: { params: Promise<{ conversationI
   const { conversationId } = await context.params;
   const { data: conversation, error: conversationError } = await supabase
     .from("conversations")
-    .select("id,project_id,mode,title,created_at,updated_at")
+    .select("id,workspace_id,project_id,mode,title,created_at,updated_at")
     .eq("id", conversationId)
     .maybeSingle();
 
   if (conversationError || !conversation) return NextResponse.json({ error: "conversation_not_found" }, { status: 404 });
 
   const rpc = supabase as unknown as RpcClient;
-  const [{ data: messages, error: messagesError }, activeRunResult] = await Promise.all([
+  const [{ data: messages, error: messagesError }, activeRunResult, selectedResourcesResult] = await Promise.all([
     supabase
       .from("messages")
       .select("id,role,content,created_at")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: true })
       .limit(500),
-    rpc.rpc<ActiveRun[]>("get_active_agent_run", { target_conversation_id: conversationId })
+    rpc.rpc<ActiveRun[]>("get_active_agent_run", { target_conversation_id: conversationId }),
+    rpc.rpc<string[]>("get_conversation_selected_resource_ids", { target_conversation_id: conversationId })
   ]);
 
   if (messagesError) return NextResponse.json({ error: "conversation_load_failed" }, { status: 500 });
@@ -47,7 +55,31 @@ export async function GET(_: Request, context: { params: Promise<{ conversationI
     return NextResponse.json({ error: "conversation_run_resume_lookup_failed" }, { status: 500 });
   }
 
-  return NextResponse.json({ conversation, messages: messages ?? [], activeRun: activeRunResult.data?.[0] ?? null });
+  let selectedResourceIds = selectedResourcesResult.data ?? [];
+  if (selectedResourcesResult.error) {
+    if (!resourceRpcUnavailable(selectedResourcesResult.error.message)) {
+      return NextResponse.json({ error: "conversation_resource_resume_lookup_failed" }, { status: 500 });
+    }
+
+    // During a rolling release the lightweight RPC may not have reached the
+    // production database yet. Fall back to the already-deployed dashboard
+    // snapshot contract so reload never silently drops selected integrations.
+    const fallback = await rpc.rpc<DashboardSnapshot>("workspace_dashboard_snapshot", {
+      target_workspace_id: conversation.workspace_id
+    });
+    if (fallback.error) return NextResponse.json({ error: "conversation_resource_resume_lookup_failed" }, { status: 500 });
+    selectedResourceIds = fallback.data?.conversations
+      ?.find((item) => item.id === conversationId)
+      ?.selected_resource_ids
+      ?.filter((value): value is string => typeof value === "string") ?? [];
+  }
+
+  return NextResponse.json({
+    conversation,
+    messages: messages ?? [],
+    activeRun: activeRunResult.data?.[0] ?? null,
+    selectedResourceIds
+  });
 }
 
 export async function DELETE(_: Request, context: { params: Promise<{ conversationId: string }> }) {
