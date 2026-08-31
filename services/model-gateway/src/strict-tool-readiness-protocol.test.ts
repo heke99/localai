@@ -87,13 +87,16 @@ describe("reserved security readiness protocol", () => {
     const fetcher = vi.fn().mockResolvedValueOnce(completion(malformedWebSearch));
     const adapter = new StrictToolProtocolOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
     const securityWithPlan: ModelToolDefinition = {
-      ...readinessSecurityTool,
+      name: "security_scan",
       description: "Authorized bounded Lab executor. Executable security plan: 1:port_scan",
       inputSchema: {
-        ...readinessSecurityTool.inputSchema,
+        type: "object",
+        additionalProperties: false,
+        required: ["tool", "target", "options"],
         properties: {
-          ...readinessSecurityTool.inputSchema.properties,
-          target: { type: "string" }
+          tool: { type: "string", enum: ["port_scan"] },
+          target: { type: "string" },
+          options: { type: "object" }
         }
       }
     };
