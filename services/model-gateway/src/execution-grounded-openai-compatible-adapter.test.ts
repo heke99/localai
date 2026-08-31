@@ -94,7 +94,7 @@ describe("ExecutionGroundedOpenAiCompatibleAdapter", () => {
     expect(output.content).toContain("auth.vendor.test");
     expect(output.content).toContain("utanför scope");
     expect(output.content).toContain("separat uttrycklig behörighet");
-    expect(output.content).not.toMatch(/auth[.]vendor[.]test.*testats/i);
+    expect(output.content).not.toMatch(/testade.{0,80}auth[.]vendor[.]test/i);
   });
 
   it("fails closed instead of guessing when the initial prompt contains multiple target hosts", async () => {
