@@ -14,6 +14,13 @@ function executor(): SecurityToolExecutor & { execute: ReturnType<typeof vi.fn> 
   return { execute: vi.fn(async () => ({ ok: true, exitCode: 0, durationMs: 12, findings: [], auditId: "audit-1" })) } as never;
 }
 
+function capabilityExecutor(operations: Array<"http_probe" | "tls_probe" | "dns_lookup" | "port_scan" | "template_scan" | "content_discovery">): SecurityToolExecutor {
+  return {
+    execute: vi.fn(async () => ({ ok: true, exitCode: 0, durationMs: 12, findings: [], auditId: "audit-1" })),
+    capabilities: vi.fn(async () => ({ schemaVersion: 1, ready: true, complete: operations.length === 6, checkedAt: new Date().toISOString(), operations }))
+  };
+}
+
 describe("SecurityToolRuntime", () => {
   it("is visible only in lab mode with trusted scope and executor", async () => {
     const runtime = new SecurityToolRuntime(executor());
@@ -32,6 +39,21 @@ describe("SecurityToolRuntime", () => {
     expect(definition.description).toContain("PENTEST CAPABILITY PLAN V1");
     expect(definition.description).toContain("external-security:jwt-security");
     expect(definition.description).toContain("authenticated_session_state");
+  });
+
+  it("filters the model-visible operation enum to capabilities verified by the live executor", async () => {
+    const runtime = new SecurityToolRuntime(capabilityExecutor(["http_probe", "tls_probe"]));
+    const definitions = await runtime.list(run({ prompt: "Inspect the authorized web service" }));
+    const properties = definitions[0]!.inputSchema.properties as Record<string, Record<string, unknown>>;
+    expect(properties.tool.enum).toEqual(["http_probe", "tls_probe"]);
+  });
+
+  it("hides security_scan when executor capability discovery cannot verify any operation", async () => {
+    const runtime = new SecurityToolRuntime({
+      execute: vi.fn(async () => ({ ok: true, exitCode: 0, durationMs: 1 })),
+      capabilities: vi.fn(async () => { throw new Error("executor offline"); })
+    });
+    expect(await runtime.list(run())).toEqual([]);
   });
 
   it("allows exact and subdomain targets but rejects suffix lookalikes", async () => {
@@ -79,9 +101,9 @@ describe("SecurityToolRuntime", () => {
     expect(exec.execute).not.toHaveBeenCalled();
   });
 
-  it("enforces the pre-model capability plan at execution time", async () => {
+  it("enforces the same selected-skill capability plan at execution time", async () => {
     const exec = executor();
-    const runtime = new SecurityToolRuntime(exec);
+    const runtime = new SecurityToolRuntime(exec, async () => ["authorized-pentest", "external-security:jwt-security"]);
     const jwtRun = run({ prompt: "Verify JWT session security on this authorized API" });
     await expect(runtime.execute(jwtRun, {
       id: "plan-violation",
@@ -89,6 +111,16 @@ describe("SecurityToolRuntime", () => {
       input: { tool: "template_scan", target: "https://example.com", options: { rateLimit: 10 } }
     })).rejects.toThrow("security_capability_plan_violation:template_scan");
     expect(exec.execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects an operation that disappeared from executor readiness before dispatch", async () => {
+    const exec = capabilityExecutor(["http_probe", "tls_probe"]);
+    const runtime = new SecurityToolRuntime(exec);
+    await expect(runtime.execute(run({ prompt: "Scan the authorized ports" }), {
+      id: "runtime-unavailable",
+      name: "security_scan",
+      input: { tool: "port_scan", target: "example.com", options: { ports: [443] } }
+    })).rejects.toThrow("security_operation_unavailable:port_scan");
   });
 
   it("turns operational executor failures into structured observations so the model can adapt", async () => {
@@ -108,6 +140,34 @@ describe("SecurityToolRuntime", () => {
       suggestedNextOperations: ["dns_lookup", "tls_probe"]
     });
     expect(output.evidence).toMatchObject({ kind: "security_tool_observation", status: "executor_error" });
+  });
+
+  it("normalizes a configured executor base URL to the canonical execute route", async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ ok: true, exitCode: 0, durationMs: 1, findings: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }));
+    const remote = new HttpSecurityToolExecutor("http://executor:7319", "token", fetcher as typeof fetch);
+    await remote.execute({
+      runId: "run", requestId: "req", traceId: "trace", tool: "http_probe", target: "https://example.com", timeoutMs: 1_000,
+      executionClass: "passive", scope: { scopeId: "scope", allowHosts: ["example.com"], allowIpv4Cidrs: [] }, options: {}
+    });
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe("http://executor:7319/v1/execute");
+  });
+
+  it("reads capability readiness from the protected canonical capabilities route", async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+      schemaVersion: 1,
+      ready: true,
+      complete: false,
+      checkedAt: "2026-08-31T08:00:00.000Z",
+      operations: ["http_probe", "tls_probe"]
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const remote = new HttpSecurityToolExecutor("http://executor:7319", "token", fetcher as typeof fetch);
+    const snapshot = await remote.capabilities();
+    expect(snapshot.operations).toEqual(["http_probe", "tls_probe"]);
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe("http://executor:7319/v1/capabilities");
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ method: "GET", headers: { authorization: "Bearer token" } });
   });
 
   it("preserves remote scope and policy denials as hard fail-closed errors", async () => {
