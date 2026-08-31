@@ -24,7 +24,7 @@ function call(id: string, tool: string, target = "example.test", options: Record
   return { id, name: "security_scan", input: { tool, target, options } };
 }
 
-function runtime(execute: ReturnType<typeof vi.fn>): WorkerToolRuntime {
+function runtime(execute: WorkerToolRuntime["execute"]): WorkerToolRuntime {
   return { list: async () => [definition], execute };
 }
 
