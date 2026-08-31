@@ -32,6 +32,24 @@ function abortReason(reason: unknown): Error {
   return reason instanceof Error ? reason : new DOMException("Aborted", "AbortError");
 }
 
+async function defaultCancellationCheck(runId: string): Promise<boolean> {
+  const baseUrl = process.env.SUPABASE_URL?.trim().replace(/\/+$/, "");
+  const serviceKey = process.env.SUPABASE_SECRET_KEY?.trim();
+  if (!baseUrl || !serviceKey) return false;
+  const response = await fetch(`${baseUrl}/rest/v1/rpc/worker_is_agent_run_cancelled`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      apikey: serviceKey,
+      authorization: `Bearer ${serviceKey}`
+    },
+    body: JSON.stringify({ target_run_id: runId }),
+    signal: AbortSignal.timeout(2_000)
+  });
+  if (!response.ok) return false;
+  return (await response.json().catch(() => false)) === true;
+}
+
 async function withAbortableTimeout<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
@@ -91,7 +109,7 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
   private readonly listTimeoutMs: number;
   private readonly executeTimeoutMs: number;
   private readonly cancellationPollMs: number;
-  private readonly isCancellationRequested?: (runId: string) => Promise<boolean>;
+  private readonly isCancellationRequested: (runId: string) => Promise<boolean>;
 
   constructor(
     private readonly runtimes: readonly WorkerToolRuntime[],
@@ -101,7 +119,7 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
     this.listTimeoutMs = positiveTimeout(options.listTimeoutMs, DEFAULT_LIST_TIMEOUT_MS);
     this.executeTimeoutMs = positiveTimeout(options.executeTimeoutMs, DEFAULT_EXECUTE_TIMEOUT_MS);
     this.cancellationPollMs = positiveTimeout(options.cancellationPollMs, DEFAULT_CANCELLATION_POLL_MS);
-    this.isCancellationRequested = options.isCancellationRequested;
+    this.isCancellationRequested = options.isCancellationRequested ?? defaultCancellationCheck;
   }
 
   async list(run: ClaimedRun): Promise<ModelToolDefinition[]> {
@@ -126,22 +144,25 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
 
     let checking = false;
     const check = async () => {
-      if (!this.isCancellationRequested || checking || controller.signal.aborted) return;
+      if (checking || controller.signal.aborted) return;
       checking = true;
       try {
         if (await this.isCancellationRequested(runId)) controller.abort(new Error("run_cancelled"));
+      } catch {
+        // The queue remains the source of truth. A transient cancellation-poll failure
+        // must not manufacture cancellation or rerun the provider operation.
       } finally {
         checking = false;
       }
     };
     void check();
-    const timer = this.isCancellationRequested ? setInterval(() => { void check(); }, this.cancellationPollMs) : null;
-    timer?.unref?.();
+    const timer = setInterval(() => { void check(); }, this.cancellationPollMs);
+    timer.unref?.();
 
     return {
       signal: controller.signal,
       dispose: () => {
-        if (timer) clearInterval(timer);
+        clearInterval(timer);
         parent?.removeEventListener("abort", onParentAbort);
       }
     };
