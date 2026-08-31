@@ -70,7 +70,17 @@ const server = createServer(async (request, response) => {
 
   try {
     if (request.method === "GET" && request.url === "/health") {
-      return json(response, 200, { ok: true, service: "security-executor", isolation: "allowlisted-process" });
+      const capabilities = await executor.capabilities();
+      return json(response, capabilities.ready ? 200 : 503, {
+        ok: capabilities.ready,
+        service: "security-executor",
+        isolation: "allowlisted-process",
+        capabilities
+      });
+    }
+    if (request.method === "GET" && request.url === "/v1/capabilities") {
+      if (!bearerMatches(request.headers.authorization, token)) return json(response, 401, { error: "unauthorized" });
+      return json(response, 200, await executor.capabilities());
     }
     if (request.method !== "POST" || request.url !== "/v1/execute") return json(response, 404, { error: "not_found" });
     if (!bearerMatches(request.headers.authorization, token)) return json(response, 401, { error: "unauthorized" });
