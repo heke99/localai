@@ -1,6 +1,8 @@
 import type { ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import { integrationToolByName, integrationToolsForResources, type IntegrationToolDefinition } from "@div3rsa/integrations";
 import type { ClaimedRun, WorkerToolRuntime } from "./processor";
+import type { ToolExecutionContext } from "./tool-execution-context";
+import { throwIfAborted } from "./tool-execution-context";
 
 type RpcClient = { rpc: (name: string, args: Record<string, unknown>) => Promise<{ data: unknown | null; error: { message: string } | null }> };
 
@@ -19,7 +21,13 @@ export interface ToolAuthorization {
 }
 
 export interface ProviderToolExecutor {
-  execute(input: { run: ClaimedRun; authorization: ToolAuthorization; tool: IntegrationToolDefinition; arguments: Record<string, unknown> }): Promise<unknown>;
+  execute(input: {
+    run: ClaimedRun;
+    authorization: ToolAuthorization;
+    tool: IntegrationToolDefinition;
+    arguments: Record<string, unknown>;
+    context?: ToolExecutionContext;
+  }): Promise<unknown>;
 }
 
 const LIST_PROJECT_RESOURCES = "div3rsa_list_project_resources";
@@ -71,9 +79,11 @@ export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
     return [...projectMemoryTools, ...providerTools];
   }
 
-  async execute(run: ClaimedRun, call: ModelToolCall): Promise<unknown> {
+  async execute(run: ClaimedRun, call: ModelToolCall, context?: ToolExecutionContext): Promise<unknown> {
+    throwIfAborted(context?.signal);
     if (call.name === LIST_PROJECT_RESOURCES) {
       const { data, error } = await this.client.rpc("worker_project_resource_directory", { target_run_id: run.runId });
+      throwIfAborted(context?.signal);
       if (error || !data) throw new Error(error?.message ?? "project_resource_directory_failed");
       return data;
     }
@@ -91,6 +101,7 @@ export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
         target_relation_key: relation,
         target_note: note
       });
+      throwIfAborted(context?.signal);
       if (error || !data) throw new Error(error?.message ?? "resource_link_memory_failed");
       return data;
     }
@@ -110,8 +121,9 @@ export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
       target_capability: tool.capability,
       target_tool_name: tool.name
     });
+    throwIfAborted(context?.signal);
     if (error || !isToolAuthorization(data)) throw new Error(error?.message ?? "tool_resource_capability_denied");
     if (data.resourceId !== resourceId || data.provider !== tool.provider || data.capability !== tool.capability) throw new Error("tool_authorization_mismatch");
-    return executor.execute({ run, authorization: data, tool, arguments: call.input });
+    return executor.execute({ run, authorization: data, tool, arguments: call.input, context });
   }
 }
