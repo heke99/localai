@@ -6,13 +6,17 @@ import type {
   ModelHealth,
   ModelMessage,
   ModelStreamDeltaHandler,
-  ModelToolCall
+  ModelToolCall,
+  ModelToolDefinition
 } from "@div3rsa/model-sdk";
 import type { AdmissionController } from "./admission-control";
 import { OpenAiCompatibleAdapter as RawOpenAiCompatibleAdapter, type InferenceWatchdogOptions } from "./openai-compatible-adapter";
 import { normalizeTextualToolResult, securityToolContract } from "./textual-tool-call-normalizer";
 
 type Fetch = typeof fetch;
+type SecurityOperation = "dns_lookup" | "http_probe" | "tls_probe" | "port_scan" | "template_scan" | "content_discovery";
+
+const SECURITY_OPERATIONS = new Set<SecurityOperation>(["dns_lookup", "http_probe", "tls_probe", "port_scan", "template_scan", "content_discovery"]);
 
 function hasAnyTool(request: GenerateRequest): boolean {
   return Boolean(request.tools?.length);
@@ -60,11 +64,87 @@ function signalsDeferredToolAction(content: string): boolean {
   return commitment && toolAction;
 }
 
+function hasMalformedToolMarkup(content: string): boolean {
+  return /<\/?tool_call\b|<function=|<\/?parameter=/i.test(content);
+}
+
+function securityDefinition(request: GenerateRequest): ModelToolDefinition | undefined {
+  return request.tools?.find((tool) => tool.name === "security_scan");
+}
+
+function plannedSecurityOperations(request: GenerateRequest): SecurityOperation[] {
+  const description = securityDefinition(request)?.description ?? "";
+  const line = /Executable security plan:\s*([^\n.]+)/i.exec(description)?.[1] ?? "";
+  const operations: SecurityOperation[] = [];
+  for (const match of line.matchAll(/\d+:([a-z_]+)/gi)) {
+    const operation = match[1] as SecurityOperation;
+    if (SECURITY_OPERATIONS.has(operation) && !operations.includes(operation)) operations.push(operation);
+  }
+  return operations;
+}
+
+interface ExecutedSecurityCall {
+  call: ModelToolCall;
+  operation: SecurityOperation;
+  target: string;
+  result: string;
+}
+
+function executedSecurityCalls(request: GenerateRequest): ExecutedSecurityCall[] {
+  const toolResults = new Map<string, string>();
+  for (const message of request.messages) {
+    if (message.role === "tool" && message.name === "security_scan" && message.toolCallId) {
+      toolResults.set(message.toolCallId, message.content ?? "");
+    }
+  }
+  const calls: ExecutedSecurityCall[] = [];
+  for (const message of request.messages) {
+    if (message.role !== "assistant" || !message.toolCalls?.length) continue;
+    for (const call of message.toolCalls) {
+      if (call.name !== "security_scan" || !toolResults.has(call.id)) continue;
+      const operation = typeof call.input.tool === "string" ? call.input.tool as SecurityOperation : null;
+      const target = typeof call.input.target === "string" ? call.input.target.trim() : "";
+      if (!operation || !SECURITY_OPERATIONS.has(operation) || !target) continue;
+      calls.push({ call, operation, target, result: toolResults.get(call.id) ?? "" });
+    }
+  }
+  return calls;
+}
+
+function executionStateInstruction(request: GenerateRequest): string | null {
+  const executed = executedSecurityCalls(request);
+  if (!executed.length) return null;
+  const plan = plannedSecurityOperations(request);
+  const executedSet = new Set(executed.map((item) => item.operation));
+  const remaining = plan.filter((operation) => !executedSet.has(operation));
+  const evidence = executed.map((item, index) => {
+    const compact = item.result.replace(/\s+/g, " ").trim().slice(0, 1200) || "<empty tool result>";
+    return `${index + 1}. ${item.operation} target=${item.target} result=${compact}`;
+  }).join("\n");
+  return [
+    "SECURITY EXECUTION STATE V1",
+    `Executed operations backed by tool results: ${[...executedSet].join(", ")}.`,
+    `Authoritative remaining executable plan: ${remaining.join(" -> ") || "none"}.`,
+    "Only operations listed as executed above may be described as having produced evidence. Never invent status codes, ports, certificates, paths, scanner results, or completed checks for an operation that is not in the executed set.",
+    remaining.length
+      ? "If the assessment is not capability-limited, continue with the next remaining planned operation before giving a completion claim."
+      : "The executable plan is complete; give a concise evidence-grounded conclusion and do not narrate another future tool action.",
+    "Observed tool evidence:",
+    evidence
+  ].join("\n");
+}
+
 function withSecurityContract(request: GenerateRequest): GenerateRequest {
+  const additions: ModelMessage[] = [];
   const contract = securityToolContract(request.tools);
-  if (!contract || request.messages.some((message) => message.role === "system" && message.content.includes("SECURITY TOOL CONTRACT V1"))) return request;
-  const messages: ModelMessage[] = [{ role: "system", content: contract }, ...request.messages];
-  return { ...request, messages };
+  if (contract && !request.messages.some((message) => message.role === "system" && message.content.includes("SECURITY TOOL CONTRACT V1"))) {
+    additions.push({ role: "system", content: contract });
+  }
+  const state = executionStateInstruction(request);
+  if (state && !request.messages.some((message) => message.role === "system" && message.content.includes("SECURITY EXECUTION STATE V1"))) {
+    additions.push({ role: "system", content: state });
+  }
+  return additions.length ? { ...request, messages: [...additions, ...request.messages] } : request;
 }
 
 function mergeUsage(first: GenerateResult["usage"], second: GenerateResult["usage"]): GenerateResult["usage"] {
@@ -116,6 +196,71 @@ function duplicateSecurityCall(request: GenerateRequest, result: GenerateResult)
   });
 }
 
+function nextPlannedOperation(request: GenerateRequest): SecurityOperation | null {
+  const plan = plannedSecurityOperations(request);
+  if (!plan.length) return null;
+  const executed = new Set(executedSecurityCalls(request).map((item) => item.operation));
+  return plan.find((operation) => !executed.has(operation)) ?? null;
+}
+
+function alignToolCallToPlan(request: GenerateRequest, result: GenerateResult): GenerateResult {
+  if (result.finishReason !== "tool_call" || !result.toolCalls?.length) return result;
+  const next = nextPlannedOperation(request);
+  if (!next) return result;
+  const securityCall = result.toolCalls.find((call) => call.name === "security_scan");
+  if (!securityCall) return result;
+  const target = typeof securityCall.input.target === "string" ? securityCall.input.target.trim() : "";
+  const selected = typeof securityCall.input.tool === "string" ? securityCall.input.tool : "";
+  if (!target || selected === next) return result;
+  return {
+    ...result,
+    content: "",
+    toolCalls: [{
+      id: securityCall.id || `security-plan-${next}`,
+      name: "security_scan",
+      input: { tool: next, target, options: {} }
+    }]
+  };
+}
+
+function plannedContinuation(request: GenerateRequest, previous: GenerateResult): GenerateResult | null {
+  if (!hasSecurityToolResult(request) || requestsCapabilityLimitedSecurityClass(request)) return null;
+  const next = nextPlannedOperation(request);
+  if (!next) return null;
+  const executed = executedSecurityCalls(request);
+  const target = executed.at(-1)?.target ?? "";
+  if (!target) return null;
+  return {
+    ...previous,
+    content: "",
+    finishReason: "tool_call",
+    toolCalls: [{ id: `security-plan-continuation-${executed.length + 1}`, name: "security_scan", input: { tool: next, target, options: {} } }]
+  };
+}
+
+function ungroundedExecutionClaim(request: GenerateRequest, content: string): boolean {
+  const executed = new Set(executedSecurityCalls(request).map((item) => item.operation));
+  if (!executed.size || !content.trim()) return false;
+  const plan = plannedSecurityOperations(request);
+  const broadCompletion = /(?:alla\s+(?:passiva\s+och\s+aktiva\s+)?kontroller\s+(?:är\s+)?avklarade|all\s+(?:passive\s+and\s+active\s+)?checks\s+(?:are\s+)?complete)/i.test(content);
+  if (broadCompletion && plan.some((operation) => !executed.has(operation))) return true;
+  const claims: Array<[SecurityOperation, RegExp]> = [
+    ["dns_lookup", /\bDNS\b\s*(?:resultat|result|[:=-])/i],
+    ["http_probe", /\bHTTP\b\s*(?:probe|prov)?\s*[:=-]|\bHTTP\b.{0,40}\b(?:status|gav|returned)\b/i],
+    ["tls_probe", /\bTLS\b\s*[:=-]|\bcertifikat\b.{0,50}(?:CN=|självsign|verification|verified)/i],
+    ["port_scan", /\b(?:portar|ports?)\b\s*[:=-]\s*\d/i],
+    ["template_scan", /\b(?:template[- ]?scan|nuclei)\b\s*[:=-]/i],
+    ["content_discovery", /\bcontent[- ]?discovery\b\s*[:=-]|\bsökvägar\b.{0,40}\b(?:200|403|404)\b/i]
+  ];
+  return claims.some(([operation, pattern]) => !executed.has(operation) && pattern.test(content));
+}
+
+function needsGroundedRepair(request: GenerateRequest, result: GenerateResult): boolean {
+  if (result.finishReason === "tool_call") return false;
+  const content = result.content ?? "";
+  return !content.trim() || hasMalformedToolMarkup(content) || signalsDeferredToolAction(content) || ungroundedExecutionClaim(request, content);
+}
+
 function initialRepairRequest(request: GenerateRequest, previous: GenerateResult): GenerateRequest {
   return {
     ...request,
@@ -125,7 +270,7 @@ function initialRepairRequest(request: GenerateRequest, previous: GenerateResult
       { role: "assistant", content: previous.content },
       {
         role: "user",
-        content: "Execution repair: you stated or implied that you would perform the authorized security assessment, but no executable function call was produced. Invoke exactly one exposed security_scan function now using the SECURITY TOOL CONTRACT V1 JSON shape. Choose the least-disruptive useful supported subtool for the current step. Do not print XML/tool markup and do not invent unsupported parameters."
+        content: "Execution repair: you stated or implied that you would perform the authorized security assessment, but no executable function call was produced. Invoke exactly one exposed security_scan function now using the SECURITY TOOL CONTRACT V1 JSON shape. Choose the first still-unexecuted operation in the authoritative PENTEST CAPABILITY PLAN when one exists. Do not print XML/tool markup and do not invent unsupported parameters."
       }
     ]
   };
@@ -163,6 +308,7 @@ function duplicateRepairRequest(request: GenerateRequest, previous: GenerateResu
 }
 
 function capabilityStopRepairRequest(request: GenerateRequest, previous: GenerateResult): GenerateRequest {
+  const state = executionStateInstruction(request) ?? "SECURITY EXECUTION STATE V1 unavailable";
   return {
     ...request,
     temperature: 0,
@@ -171,10 +317,39 @@ function capabilityStopRepairRequest(request: GenerateRequest, previous: Generat
       { role: "assistant", content: previous.content },
       {
         role: "user",
-        content: "Capability-stop repair: the requested security class requires authenticated identity/session/token manipulation or a stateful business workflow that the currently exposed security tools cannot perform. Use the observations already collected. Give the final answer now, explicitly say that the requested class cannot be verified with the current runtime, name the missing authenticated/session/token/workflow capability, and do not claim a vulnerability. Do not invoke web research as a substitute and do not narrate another future tool action."
+        content: `Capability-stop repair. ${state}\nThe requested security class requires authenticated identity/session/token manipulation or a stateful business workflow that the currently exposed security tools cannot perform. Give the final answer now. Explicitly say that the requested class cannot be verified with the current runtime, name the missing authenticated/session/token/workflow capability, and do not claim a vulnerability. Mention only evidence from operations that actually executed. Do not invoke web research as a substitute, do not narrate another future tool action, and do not print tool markup.`
       }
     ]
   };
+}
+
+function groundedFinalRepairRequest(request: GenerateRequest, previous: GenerateResult): GenerateRequest {
+  const state = executionStateInstruction(request) ?? "SECURITY EXECUTION STATE V1 unavailable";
+  return {
+    ...request,
+    temperature: 0,
+    messages: [
+      ...request.messages,
+      { role: "assistant", content: previous.content },
+      {
+        role: "user",
+        content: `Evidence-grounding repair. ${state}\nReturn a final answer now using only the recorded tool evidence. Do not claim that an unexecuted operation ran. If an observed redirect points outside the authorized host, explicitly state that it is outside scope and needs separate authorization. If a scanner finding was followed by contradictory independent evidence, label it false positive / not confirmed rather than confirmed. If a probe timed out and an independent follow-up succeeded, report both facts without claiming the target is definitively down. Do not narrate future actions and do not print <tool_call> or other pseudo-tool markup.`
+      }
+    ]
+  };
+}
+
+function capabilityStopFallback(request: GenerateRequest, previous: GenerateResult): GenerateResult {
+  const prompt = latestUserContent(request);
+  let content: string;
+  if (/\b(?:BOLA|IDOR)\b/i.test(prompt)) {
+    content = "Den körda passiva baslinjen är den enda verifierade evidensen. Nuvarande runtime kan inte verifiera BOLA/IDOR eftersom autentiserad identitets- och sessionsväxling mellan användare saknas. Ingen BOLA/IDOR-sårbarhet påstås vara verifierad.";
+  } else if (/\b(?:JWT|session|token)\b/i.test(prompt)) {
+    content = "Den körda passiva baslinjen är verifierad. Nuvarande runtime kan inte verifiera JWT- eller session-bypass eftersom autentiserad sessionsstate samt tokenmutation och replay saknas. Ingen bypass påstås vara verifierad.";
+  } else {
+    content = "Den körda passiva baslinjen är verifierad. Nuvarande runtime kan inte verifiera den efterfrågade stateful affärslogiken eftersom autentiserad multi-step workflow- och multi-actor-kapacitet saknas. Ingen affärslogiksårbarhet påstås vara verifierad.";
+  }
+  return { ...previous, content, finishReason: "stop", toolCalls: undefined };
 }
 
 /**
@@ -205,11 +380,12 @@ export class SecurityAwareOpenAiCompatibleAdapter implements ModelAdapter {
 
     const prepared = withSecurityContract(request);
     const first = await this.raw.generate(prepared);
-    const normalizedFirst = normalizeTextualToolResult(first, prepared.tools).result;
+    const firstNormalized = normalizeTextualToolResult(first, prepared.tools).result;
+    const normalizedFirst = alignToolCallToPlan(prepared, firstNormalized);
 
     if (duplicateSecurityCall(prepared, normalizedFirst)) {
       const repaired = await this.raw.generate(duplicateRepairRequest(prepared, normalizedFirst));
-      const normalizedRepair = normalizeTextualToolResult(repaired, prepared.tools).result;
+      const normalizedRepair = alignToolCallToPlan(prepared, normalizeTextualToolResult(repaired, prepared.tools).result);
       return { ...normalizedRepair, usage: mergeUsage(normalizedFirst.usage, normalizedRepair.usage) };
     }
 
@@ -217,13 +393,25 @@ export class SecurityAwareOpenAiCompatibleAdapter implements ModelAdapter {
 
     if (requestsSecurityExecution(prepared) && !hasSecurityToolResult(prepared)) {
       const second = await this.raw.generate(initialRepairRequest(prepared, normalizedFirst));
-      const normalizedSecond = normalizeTextualToolResult(second, prepared.tools).result;
+      const normalizedSecond = alignToolCallToPlan(prepared, normalizeTextualToolResult(second, prepared.tools).result);
       return { ...normalizedSecond, usage: mergeUsage(normalizedFirst.usage, normalizedSecond.usage) };
     }
 
     if (hasSecurityToolResult(prepared) && requestsCapabilityLimitedSecurityClass(prepared) && !hasCapabilityStopLanguage(normalizedFirst.content)) {
       const second = await this.raw.generate(capabilityStopRepairRequest(prepared, normalizedFirst));
       const normalizedSecond = normalizeTextualToolResult(second, prepared.tools).result;
+      const combined = { ...normalizedSecond, usage: mergeUsage(normalizedFirst.usage, normalizedSecond.usage) };
+      if (normalizedSecond.finishReason === "tool_call") return alignToolCallToPlan(prepared, combined);
+      if (hasCapabilityStopLanguage(normalizedSecond.content) && !needsGroundedRepair(prepared, normalizedSecond)) return combined;
+      return capabilityStopFallback(prepared, combined);
+    }
+
+    const continuation = plannedContinuation(prepared, normalizedFirst);
+    if (continuation) return continuation;
+
+    if (hasSecurityToolResult(prepared) && needsGroundedRepair(prepared, normalizedFirst)) {
+      const second = await this.raw.generate(groundedFinalRepairRequest(prepared, normalizedFirst));
+      const normalizedSecond = alignToolCallToPlan(prepared, normalizeTextualToolResult(second, prepared.tools).result);
       return { ...normalizedSecond, usage: mergeUsage(normalizedFirst.usage, normalizedSecond.usage) };
     }
 
