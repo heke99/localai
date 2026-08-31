@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,9 +7,12 @@ import {
   ExternalSecuritySkillRuntime,
   externalIndexToSecurityNodes,
   inferSecurityDomains,
-  validateExternalSecuritySkillIndex
+  validateExternalSecuritySkillIndex,
+  validateExternalSecuritySkillIntegrity
 } from "./external-security-runtime";
 
+const sourceRepository = "mukul975/Anthropic-Cybersecurity-Skills";
+const sourceCommit = "1b3f6b2286981381a5cc0566551ef3bb6bc38383";
 const index = {
   version: "1.1.0",
   generated_at: "2026-08-24T10:40:36Z",
@@ -22,13 +26,37 @@ const index = {
   ]
 };
 
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function skillBody(name: string, description: string): string {
+  return `# ${name}\nSpecialist playbook for ${description}`;
+}
+
+function integrityFor(entries = index.skills) {
+  const files = entries.map((skill) => ({
+    path: `${skill.path}/SKILL.md`,
+    sha256: sha256(skillBody(skill.name, skill.description))
+  })).sort((a, b) => a.path.localeCompare(b.path));
+  return {
+    schemaVersion: 1 as const,
+    algorithm: "sha256" as const,
+    repository: sourceRepository,
+    commit: sourceCommit,
+    files,
+    snapshotSha256: sha256(files.map((entry) => `${entry.path}\0${entry.sha256}`).join("\n"))
+  };
+}
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "localai-security-skills-"));
   await writeFile(join(root, "index.json"), JSON.stringify(index));
+  await writeFile(join(root, "integrity.json"), JSON.stringify(integrityFor()));
   for (const skill of index.skills) {
     const directory = join(root, skill.path);
     await mkdir(directory, { recursive: true });
-    await writeFile(join(directory, "SKILL.md"), `# ${skill.name}\nSpecialist playbook for ${skill.description}`);
+    await writeFile(join(directory, "SKILL.md"), skillBody(skill.name, skill.description));
   }
   return root;
 }
@@ -39,6 +67,13 @@ describe("external security skill runtime", () => {
     expect(validated.total_skills).toBe(3);
     expect(() => validateExternalSecuritySkillIndex({ ...index, total_skills: 4 })).toThrow("external_security_skill_count_mismatch");
     expect(() => validateExternalSecuritySkillIndex({ ...index, repository: "https://github.com/evil/repo" })).toThrow("external_security_skill_repository_mismatch");
+  });
+
+  it("validates the external integrity lock and its deterministic aggregate digest", () => {
+    const integrity = integrityFor();
+    expect(validateExternalSecuritySkillIntegrity(integrity).snapshotSha256).toBe(integrity.snapshotSha256);
+    expect(() => validateExternalSecuritySkillIntegrity({ ...integrity, commit: "0".repeat(40) })).toThrow("external_security_skill_integrity_commit_mismatch");
+    expect(() => validateExternalSecuritySkillIntegrity({ ...integrity, snapshotSha256: "0".repeat(64) })).toThrow("external_security_skill_integrity_digest_mismatch");
   });
 
   it("rejects path mismatches instead of reading arbitrary files", () => {
@@ -74,6 +109,14 @@ describe("external security skill runtime", () => {
     expect(prepared.instructions).toContain("execution=knowledge_only");
     expect(prepared.instructions).toContain("never grants shell, network, mutation, destructive, credential or scope authority");
     expect(prepared.instructions).not.toContain("analyzing-kubernetes-audit-logs");
+  });
+
+  it("fails closed if a selected external skill body drifts after sync", async () => {
+    const root = await fixture();
+    await writeFile(join(root, "skills/testing-idor-in-rest-apis/SKILL.md"), "tampered after sync");
+    const runtime = new ExternalSecuritySkillRuntime(root, undefined, 2, 20_000);
+    await expect(runtime.prepare("lab", "Check this REST API for IDOR/BOLA authorization weaknesses"))
+      .rejects.toThrow("external_security_skill_integrity_mismatch:testing-idor-in-rest-apis");
   });
 
   it("never exceeds the configured external context budget", async () => {
