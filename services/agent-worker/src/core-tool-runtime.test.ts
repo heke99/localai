@@ -13,6 +13,24 @@ const run: ClaimedRun = {
   resourceContext: []
 };
 
+function scopedLab(prompt: string): ClaimedRun {
+  return {
+    ...run,
+    mode: "lab",
+    prompt,
+    resourceContext: [{
+      resourceId: "scope",
+      connectionId: "scope",
+      provider: "security",
+      resourceType: "security_scope",
+      externalResourceId: "scope",
+      displayName: "Authorized scope",
+      capabilities: ["security.passive", "security.active"],
+      metadata: { allowHosts: ["example.test"], allowIpv4Cidrs: [] }
+    }]
+  };
+}
+
 describe("CoreToolRuntime", () => {
   it("returns the real injected instant in an IANA timezone with DST-aware offset", async () => {
     const runtime = new CoreToolRuntime({ now: () => new Date("2026-08-27T09:40:00.000Z") });
@@ -32,6 +50,23 @@ describe("CoreToolRuntime", () => {
 
     const withSearch = new CoreToolRuntime({ searchBaseUrl: "http://search.internal:8080" });
     expect((await withSearch.list(run)).map((tool) => tool.name)).toEqual(["current_time", "convert_time", "web_search", "web_fetch"]);
+  });
+
+  it("does not advertise web research as a substitute for scoped Lab security execution", async () => {
+    const runtime = new CoreToolRuntime({ searchBaseUrl: "http://search.internal:8080" });
+    const labRun = scopedLab("Genomför ett auktoriserat penetrationstest av https://example.test med de security-verktyg som finns.");
+    expect((await runtime.list(labRun)).map((tool) => tool.name)).toEqual(["current_time", "convert_time"]);
+    await expect(runtime.execute(labRun, {
+      id: "stale-search-call",
+      name: "web_search",
+      input: { query: "example.test vulnerability exploit CVE" }
+    })).rejects.toThrow("lab_web_research_not_requested");
+  });
+
+  it("keeps public web research available in Lab when the user explicitly requests it", async () => {
+    const runtime = new CoreToolRuntime({ searchBaseUrl: "http://search.internal:8080" });
+    const labRun = scopedLab("Sök på webben efter senaste CVE och publika säkerhetsråd för produkten innan du sammanfattar dem.");
+    expect((await runtime.list(labRun)).map((tool) => tool.name)).toEqual(["current_time", "convert_time", "web_search", "web_fetch"]);
   });
 
   it("queries a SearXNG-compatible service and normalizes results", async () => {
