@@ -51,6 +51,34 @@ function jsonObject(raw: string): Record<string, unknown> | null {
   }
 }
 
+function firstJsonObject(raw: string): Record<string, unknown> | null {
+  const start = raw.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return jsonObject(raw.slice(start, index + 1));
+      if (depth < 0) return null;
+    }
+  }
+  return null;
+}
+
 function parameterEntries(block: string): Record<string, unknown> {
   const parameters: Record<string, unknown> = {};
   const patterns = [
@@ -88,15 +116,23 @@ function parsePseudoCall(content: string, securityExposed: boolean): ParsedPseud
     const bodyStart = open + opening.length;
     const remainder = content.slice(bodyStart);
     const closingMatch = /<\/tool_call>/i.exec(remainder);
-    const end = closingMatch ? bodyStart + closingMatch.index + closingMatch[0].length : content.length;
+    const nextOpeningMatch = /<tool_call\b[^>]*>/i.exec(remainder);
+    const firstBlockEnd = closingMatch
+      ? bodyStart + closingMatch.index + closingMatch[0].length
+      : nextOpeningMatch
+        ? bodyStart + nextOpeningMatch.index
+        : content.length;
+    const trailing = content.slice(firstBlockEnd).trimStart();
+    const end = /^<tool_call\b/i.test(trailing) ? content.length : firstBlockEnd;
+    const block = content.slice(open, firstBlockEnd);
     const raw = content.slice(open, end);
-    const functionMatch = /<function=([A-Za-z_][\w.:-]*)>/i.exec(raw);
+    const functionMatch = /<function=([A-Za-z_][\w.:-]*)>/i.exec(block);
     const name = functionMatch?.[1]?.trim();
-    if (name) return { name, parameters: parameterEntries(raw), start: open, end, raw };
+    if (name) return { name, parameters: parameterEntries(block), start: open, end, raw };
 
     if (securityExposed) {
-      const bodyEnd = closingMatch ? bodyStart + closingMatch.index : content.length;
-      const object = jsonObject(content.slice(bodyStart, bodyEnd).trim());
+      const bodyEnd = closingMatch ? bodyStart + closingMatch.index : firstBlockEnd;
+      const object = firstJsonObject(content.slice(bodyStart, bodyEnd));
       if (object) return securityJsonCall(object, open, end, raw);
     }
     return null;
