@@ -50,11 +50,13 @@ export interface SecurityExecutorOptions {
   wordlistPath?: string | null;
   spawnProcess?: typeof spawn;
   readinessToken?: string | null;
+  terminateGraceMs?: number;
 }
 
 const MAX_TIMEOUT_MS = 90_000;
 const MAX_OUTPUT_BYTES = 512_000;
 const MAX_PORTS = 128;
+const DEFAULT_TERMINATE_GRACE_MS = 750;
 const ACTIVE_TOOLS = new Set(["port_scan", "template_scan", "content_discovery"]);
 const PASSIVE_TOOLS = new Set(["http_probe", "tls_probe", "dns_lookup"]);
 const ALL_TOOLS = new Set([...PASSIVE_TOOLS, ...ACTIVE_TOOLS]);
@@ -236,7 +238,26 @@ function safeEnvironment(): NodeJS.ProcessEnv {
   return env;
 }
 
-async function executeProcess(command: ToolCommand, timeoutMs: number, maxBytes: number, spawnProcess: typeof spawn): Promise<{ exitCode: number | null; durationMs: number; stdout: string; stderr: string }> {
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError");
+}
+
+function signalProcess(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
+  try {
+    if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch { /* already exited */ }
+}
+
+async function executeProcess(
+  command: ToolCommand,
+  timeoutMs: number,
+  maxBytes: number,
+  spawnProcess: typeof spawn,
+  signal?: AbortSignal,
+  terminateGraceMs = DEFAULT_TERMINATE_GRACE_MS
+): Promise<{ exitCode: number | null; durationMs: number; stdout: string; stderr: string }> {
+  if (signal?.aborted) throw abortError(signal);
   const started = performance.now();
   return await new Promise((resolve, reject) => {
     const child = spawnProcess(command.command, command.args, {
@@ -250,6 +271,10 @@ async function executeProcess(command: ToolCommand, timeoutMs: number, maxBytes:
     let stderr = "";
     let totalBytes = 0;
     let overflow = false;
+    let terminalError: Error | null = null;
+    let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+
     const collect = (chunk: Buffer, stream: "stdout" | "stderr") => {
       if (overflow) return;
       totalBytes += chunk.length;
@@ -262,16 +287,36 @@ async function executeProcess(command: ToolCommand, timeoutMs: number, maxBytes:
     };
     child.stdout?.on("data", (chunk: Buffer) => collect(chunk, "stdout"));
     child.stderr?.on("data", (chunk: Buffer) => collect(chunk, "stderr"));
-    const timer = setTimeout(() => {
-      try {
-        if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
-        else child.kill("SIGKILL");
-      } catch { /* already exited */ }
-    }, timeoutMs);
-    timer.unref?.();
-    child.once("error", (error) => { clearTimeout(timer); reject(error); });
+
+    const terminate = (error: Error) => {
+      if (settled || terminalError) return;
+      terminalError = error;
+      signalProcess(child, "SIGTERM");
+      killTimer = setTimeout(() => signalProcess(child, "SIGKILL"), Math.max(50, terminateGraceMs));
+      killTimer.unref?.();
+    };
+    const timeoutTimer = setTimeout(() => terminate(new Error("security_executor_timeout")), timeoutMs);
+    timeoutTimer.unref?.();
+    const onAbort = () => terminate(abortError(signal!));
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    const cleanup = () => {
+      clearTimeout(timeoutTimer);
+      if (killTimer) clearTimeout(killTimer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(terminalError ?? error);
+    });
     child.once("close", (code) => {
-      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (terminalError) return reject(terminalError);
       if (overflow) return reject(new Error("security_executor_output_limit"));
       resolve({ exitCode: code, durationMs: Math.round(performance.now() - started), stdout, stderr });
     });
@@ -318,25 +363,29 @@ export class LinuxSecurityExecutor {
   private readonly resolveHost: (hostname: string) => Promise<string[]>;
   private readonly maxOutputBytes: number;
   private readonly spawnProcess: typeof spawn;
+  private readonly terminateGraceMs: number;
 
   constructor(private readonly options: SecurityExecutorOptions = {}) {
     this.resolveHost = options.resolveHost ?? defaultResolveHost;
     this.maxOutputBytes = Math.max(1_024, Math.min(options.maxOutputBytes ?? MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES));
     this.spawnProcess = options.spawnProcess ?? spawn;
+    this.terminateGraceMs = Math.max(50, Math.min(options.terminateGraceMs ?? DEFAULT_TERMINATE_GRACE_MS, 5_000));
   }
 
-  async execute(request: SecurityExecutorRequest): Promise<SecurityExecutorResult> {
+  async execute(request: SecurityExecutorRequest, signal?: AbortSignal): Promise<SecurityExecutorResult> {
+    if (signal?.aborted) throw abortError(signal);
     const auditId = randomUUID();
     const startedAt = new Date().toISOString();
     const parsed = await enforceScope(request, this.resolveHost, this.options.readinessToken);
+    if (signal?.aborted) throw abortError(signal);
     const timeoutMs = boundedTimeout(request.timeoutMs);
     const command = commandFor(request, parsed, this.options.wordlistPath ?? null);
     const requestHash = createHash("sha256").update(JSON.stringify({ tool: request.tool, target: request.target, scope: request.scope, options: request.options, executionClass: request.executionClass })).digest("hex");
     let processResult: Awaited<ReturnType<typeof executeProcess>>;
     try {
-      processResult = await executeProcess(command, timeoutMs, this.maxOutputBytes, this.spawnProcess);
+      processResult = await executeProcess(command, timeoutMs, this.maxOutputBytes, this.spawnProcess, signal, this.terminateGraceMs);
     } catch (error) {
-      await writeAudit(this.options.auditLogPath, { auditId, startedAt, finishedAt: new Date().toISOString(), runId: request.runId, requestId: request.requestId, traceId: request.traceId, scopeId: request.scope.scopeId, tool: request.tool, executionClass: request.executionClass, target: request.target, requestHash, capability: command.capability, status: "error", error: error instanceof Error ? error.message : "security_executor_failed" });
+      await writeAudit(this.options.auditLogPath, { auditId, startedAt, finishedAt: new Date().toISOString(), runId: request.runId, requestId: request.requestId, traceId: request.traceId, scopeId: request.scope.scopeId, tool: request.tool, executionClass: request.executionClass, target: request.target, requestHash, capability: command.capability, status: signal?.aborted ? "cancelled" : "error", error: error instanceof Error ? error.message : "security_executor_failed" });
       throw error;
     }
     const findings = parseFindings(request.tool, processResult.stdout);
