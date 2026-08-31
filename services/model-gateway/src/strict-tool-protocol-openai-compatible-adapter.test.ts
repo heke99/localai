@@ -43,8 +43,10 @@ const malformedEmptyWebSearch = [
 ].join("\n");
 
 describe("strict tool protocol boundary", () => {
-  it("recovers the exact live Lab malformed web_search into the first authorized security operation", async () => {
-    const fetcher = vi.fn().mockResolvedValueOnce(completion(malformedEmptyWebSearch));
+  it("recovers the exact live Lab malformed web_search after the model repeats it during security repair", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(completion(malformedEmptyWebSearch))
+      .mockResolvedValueOnce(completion(malformedEmptyWebSearch));
     const adapter = new StrictToolProtocolOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
 
     const output = await adapter.generate({
@@ -57,7 +59,7 @@ describe("strict tool protocol boundary", () => {
       tools: [securityTool, webSearchTool]
     });
 
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
     expect(output.finishReason).toBe("tool_call");
     expect(output.content).toBe("");
     expect(output.toolCalls).toEqual([{
@@ -67,8 +69,10 @@ describe("strict tool protocol boundary", () => {
     }]);
   });
 
-  it("does not stream malformed tool markup before Lab recovery", async () => {
-    const fetcher = vi.fn().mockResolvedValueOnce(completion(malformedEmptyWebSearch));
+  it("does not stream repeated malformed Lab tool markup before deterministic recovery", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(completion(malformedEmptyWebSearch))
+      .mockResolvedValueOnce(completion(malformedEmptyWebSearch));
     const adapter = new StrictToolProtocolOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
     const deltas: string[] = [];
 
@@ -79,9 +83,29 @@ describe("strict tool protocol boundary", () => {
       tools: [securityTool, webSearchTool]
     }, async (delta) => { deltas.push(delta); });
 
+    expect(fetcher).toHaveBeenCalledTimes(2);
     expect(output.finishReason).toBe("tool_call");
     expect(output.toolCalls?.[0]?.name).toBe("security_scan");
     expect(deltas).toEqual([]);
+  });
+
+  it("recognizes bare Swedish penetration as execution intent at the final boundary", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(completion(malformedEmptyWebSearch));
+    const adapter = new StrictToolProtocolOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
+
+    const output = await adapter.generate({
+      requestId: "bare-penetration",
+      alias: "lab-prod",
+      messages: [{ role: "user", content: "Penetration mot https://target.localai.test inom auktoriserat labb-scope." }],
+      tools: [securityTool, webSearchTool]
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(output.finishReason).toBe("tool_call");
+    expect(output.toolCalls?.[0]).toMatchObject({
+      name: "security_scan",
+      input: { tool: "http_probe", target: "https://target.localai.test", options: {} }
+    });
   });
 
   it("repairs an incomplete generic web_search by requiring its query field", async () => {
