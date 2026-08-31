@@ -12,11 +12,25 @@ export async function DELETE(_: Request, context: { params: Promise<{ projectId:
   if (!/^[0-9a-f-]{36}$/i.test(projectId)) return NextResponse.json({ error: "invalid_request" }, { status: 400 });
 
   const rpc = supabase as unknown as RpcClient;
-  const { data, error } = await rpc.rpc<Record<string, unknown>>("delete_project", { target_project_id: projectId });
+  const prepared = await rpc.rpc<Record<string, unknown>>("prepare_project_delete", { target_project_id: projectId });
+  if (prepared.error) {
+    if (/project_not_found/.test(prepared.error.message)) return NextResponse.json({ error: "project_not_found" }, { status: 404 });
+    if (/permission_denied|workspace_access_denied|project_access_denied|authentication_required/.test(prepared.error.message)) return NextResponse.json({ error: "access_denied" }, { status: 403 });
+    return NextResponse.json({ error: "project_cancel_failed" }, { status: 500 });
+  }
+  if (!prepared.data || prepared.data.ready !== true) {
+    return NextResponse.json({
+      error: "project_cancellation_in_progress",
+      activeToolExecutions: Number(prepared.data?.activeToolExecutions ?? 0),
+      unsafeRollbacks: Number(prepared.data?.unsafeRollbacks ?? 0),
+      nonTerminalRuns: Number(prepared.data?.nonTerminalRuns ?? 0)
+    }, { status: 409 });
+  }
 
+  const { data, error } = await rpc.rpc<Record<string, unknown>>("delete_project", { target_project_id: projectId });
   if (error) {
     if (/project_not_found/.test(error.message)) return NextResponse.json({ error: "project_not_found" }, { status: 404 });
-    if (/project_has_active_run/.test(error.message)) return NextResponse.json({ error: "project_has_active_run" }, { status: 409 });
+    if (/agent_run_delete_not_ready|project_has_active_run/.test(error.message)) return NextResponse.json({ error: "project_cancellation_in_progress" }, { status: 409 });
     if (/permission_denied|workspace_access_denied|project_access_denied|authentication_required/.test(error.message)) return NextResponse.json({ error: "access_denied" }, { status: 403 });
     return NextResponse.json({ error: "project_delete_failed" }, { status: 500 });
   }
