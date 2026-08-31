@@ -5,6 +5,7 @@ import { runtimeAliasForMode } from "../../../../lib/runtime/contracts";
 import { ensureModelRuntime } from "../../../../lib/runtime/production";
 import {
   buildDirectModelMessages,
+  conservativeTokenCount,
   directInferenceApiKey,
   directRuntimeModelName,
   stripThinking
@@ -193,8 +194,8 @@ export async function POST(request: Request) {
     const rawText = completion.choices?.[0]?.message?.content ?? "";
     const outputText = stripThinking(rawText);
     if (!outputText) throw new Error("direct_model_empty_output");
-    const inputTokens = Math.max(0, Math.trunc(Number(completion.usage?.prompt_tokens ?? 0)));
-    const outputTokens = Math.max(0, Math.trunc(Number(completion.usage?.completion_tokens ?? 0)));
+    const inputTokens = conservativeTokenCount(completion.usage?.prompt_tokens, messages.map((message) => message.content));
+    const outputTokens = conservativeTokenCount(completion.usage?.completion_tokens, [outputText]);
 
     const completed = await admin.rpc<Record<string, unknown>>("complete_direct_model_run", {
       target_direct_run_id: directRunId,
