@@ -113,6 +113,9 @@ export class SkillEngine {
   private readonly skills: Map<string, SkillMetadata>;
   constructor(manifest: SkillManifest, private readonly reader?: SkillBodyReader) {
     if (manifest.schemaVersion !== 1) throw new Error("unsupported_skill_manifest");
+    for (const skill of manifest.skills) {
+      if (!/^[a-f0-9]{64}$/i.test(skill.sha256)) throw new Error(`invalid_skill_sha256:${skill.name}`);
+    }
     this.skills = new Map(manifest.skills.map((skill) => [skill.name, skill]));
     if (this.skills.size !== manifest.skills.length) throw new Error("duplicate_skill_name");
   }
@@ -159,16 +162,21 @@ export class SkillEngine {
 
   async load(selection: SkillSelection[]): Promise<Array<SkillSelection & { instructions: string }>> {
     if (!this.reader) throw new Error("skill_body_reader_unavailable");
-    const local = await Promise.all(selection.map(async (selected) => ({ ...selected, instructions: await this.reader!.read(selected.metadata.path) })));
+    const { createHash } = await import("node:crypto");
+    const local = await Promise.all(selection.map(async (selected) => {
+      const instructions = await this.reader!.read(selected.metadata.path);
+      const actual = createHash("sha256").update(instructions).digest("hex");
+      if (actual !== selected.metadata.sha256.toLowerCase()) throw new Error(`skill_integrity_mismatch:${selected.metadata.name}`);
+      return { ...selected, instructions };
+    }));
     const query = (selection as SkillSelectionQueryCarrier)[externalSecurityQuery];
     if (!query || query.mode !== "lab") return local;
 
     const root = await externalSecurityRoot();
     if (!root) return local;
-    const [{ access }, { resolve }, { createHash }, runtimeModule, graphModule] = await Promise.all([
+    const [{ access }, { resolve }, runtimeModule, graphModule] = await Promise.all([
       import("node:fs/promises"),
       import("node:path"),
-      import("node:crypto"),
       import("./external-security-runtime"),
       import("./security-skill-graph")
     ]);
