@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "../../lib/supabase/server";
 import { SubscriptionSettingsCard } from "./subscription-settings-card";
-import { WorkspaceShellV5 } from "./workspace-shell-v5";
+import { WorkspaceShellV6 } from "./workspace-shell-v6";
 
 type AuthClaims = {
   sub?: string;
@@ -68,10 +68,10 @@ export default async function DashboardPage() {
 
   const { data: snapshotData, error: snapshotError } = await supabase.rpc("workspace_dashboard_snapshot", { target_workspace_id: workspace.id });
   if (snapshotError) throw new Error(snapshotError.message);
-  const snapshot = (snapshotData ?? {}) as Parameters<typeof WorkspaceShellV5>[0]["snapshot"];
+  const snapshot = (snapshotData ?? {}) as Parameters<typeof WorkspaceShellV6>[0]["snapshot"];
 
   return <>
-    <WorkspaceShellV5
+    <WorkspaceShellV6
       workspaceId={workspace.id}
       workspaceName={workspace.name}
       displayName={profile?.display_name ?? claims.email?.split("@")[0] ?? "Konto"}
