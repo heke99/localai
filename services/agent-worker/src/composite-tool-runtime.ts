@@ -329,7 +329,9 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
     const stableOperationId = context?.operationId ?? operationId(run.runId, call.id);
     const progress = this.progressState(run.runId);
     const signature = `${call.name}:${canonicalInputHash(call.input)}`;
-    const duplicate = progress.lastSignature === signature;
+    const duplicate = progress.lastSignature === signature
+      && progress.lastToolName === call.name
+      && progress.lastObservationFingerprint !== null;
     let claim: ToolExecutionClaim | null = null;
     try {
       for (let index = 0; index < this.runtimes.length; index += 1) {
@@ -417,6 +419,7 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
             progress.lastObservationFingerprint = fingerprint;
             return withProgressSignal(observation, noProgress);
           }
+          progress.lastSignature = null;
           throw error;
         }
       }
