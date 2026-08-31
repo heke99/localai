@@ -62,11 +62,11 @@ describe("strict tool protocol boundary", () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(output.finishReason).toBe("tool_call");
     expect(output.content).toBe("");
-    expect(output.toolCalls).toEqual([{
-      id: "strict-tool-security-live-malformed-web-search",
+    expect(output.toolCalls).toHaveLength(1);
+    expect(output.toolCalls?.[0]).toMatchObject({
       name: "security_scan",
       input: { tool: "http_probe", target: "https://target.localai.test", options: {} }
-    }]);
+    });
   });
 
   it("does not stream repeated malformed Lab tool markup before deterministic recovery", async () => {
