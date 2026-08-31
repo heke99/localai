@@ -1,17 +1,21 @@
 import type { ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import type { ClaimedRun, WorkerToolRuntime } from "./processor";
+import { operationId } from "./tool-execution-lifecycle";
+import type { ToolExecutionContext } from "./tool-execution-context";
 import { toolTimeoutMs } from "./tool-registry";
 
 const DEFAULT_LIST_TIMEOUT_MS = 15_000;
 const DEFAULT_EXECUTE_TIMEOUT_MS = 90_000;
+const DEFAULT_CANCELLATION_POLL_MS = 100;
 const RECOVERABLE_RESEARCH_TOOLS = new Set(["web_search", "web_fetch"]);
 
 export interface CompositeWorkerToolRuntimeOptions {
   listTimeoutMs?: number;
   executeTimeoutMs?: number;
+  cancellationPollMs?: number;
+  isCancellationRequested?: (runId: string) => Promise<boolean>;
 }
 
-type ToolExecutionContext = { signal?: AbortSignal; executionId?: string };
 type LifecycleWorkerToolRuntime = WorkerToolRuntime & {
   execute(run: ClaimedRun, call: ModelToolCall, context?: ToolExecutionContext): Promise<unknown>;
   beginRun?(run: ClaimedRun): Promise<void> | void;
@@ -86,6 +90,8 @@ function recoverableResearchFailure(call: ModelToolCall, error: unknown): Record
 export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
   private readonly listTimeoutMs: number;
   private readonly executeTimeoutMs: number;
+  private readonly cancellationPollMs: number;
+  private readonly isCancellationRequested?: (runId: string) => Promise<boolean>;
 
   constructor(
     private readonly runtimes: readonly WorkerToolRuntime[],
@@ -94,6 +100,8 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
     if (!runtimes.length) throw new Error("tool_runtime_required");
     this.listTimeoutMs = positiveTimeout(options.listTimeoutMs, DEFAULT_LIST_TIMEOUT_MS);
     this.executeTimeoutMs = positiveTimeout(options.executeTimeoutMs, DEFAULT_EXECUTE_TIMEOUT_MS);
+    this.cancellationPollMs = positiveTimeout(options.cancellationPollMs, DEFAULT_CANCELLATION_POLL_MS);
+    this.isCancellationRequested = options.isCancellationRequested;
   }
 
   async list(run: ClaimedRun): Promise<ModelToolDefinition[]> {
@@ -110,33 +118,73 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
     return definitions;
   }
 
+  private cancellationSignal(runId: string, parent?: AbortSignal): { signal: AbortSignal; dispose: () => void } {
+    const controller = new AbortController();
+    const onParentAbort = () => controller.abort(abortReason(parent?.reason));
+    if (parent?.aborted) onParentAbort();
+    else parent?.addEventListener("abort", onParentAbort, { once: true });
+
+    let checking = false;
+    const check = async () => {
+      if (!this.isCancellationRequested || checking || controller.signal.aborted) return;
+      checking = true;
+      try {
+        if (await this.isCancellationRequested(runId)) controller.abort(new Error("run_cancelled"));
+      } finally {
+        checking = false;
+      }
+    };
+    void check();
+    const timer = this.isCancellationRequested ? setInterval(() => { void check(); }, this.cancellationPollMs) : null;
+    timer?.unref?.();
+
+    return {
+      signal: controller.signal,
+      dispose: () => {
+        if (timer) clearInterval(timer);
+        parent?.removeEventListener("abort", onParentAbort);
+      }
+    };
+  }
+
   async execute(run: ClaimedRun, call: ModelToolCall, context?: ToolExecutionContext): Promise<unknown> {
-    for (let index = 0; index < this.runtimes.length; index += 1) {
-      const runtime = this.runtimes[index] as LifecycleWorkerToolRuntime;
-      const definitions = await withAbortableTimeout(
-        () => runtime.list(run),
-        this.listTimeoutMs,
-        `tool_runtime_timeout:list:${index}`,
-        context?.signal
-      );
-      if (definitions.some((definition) => definition.name === call.name)) {
-        try {
-          const timeoutMs = Math.min(toolTimeoutMs(call.name, this.executeTimeoutMs), this.executeTimeoutMs);
-          return await withAbortableTimeout(
-            (signal) => runtime.execute(run, call, { signal, executionId: context?.executionId ?? call.id }),
-            timeoutMs,
-            `tool_runtime_timeout:execute:${call.name}`,
-            context?.signal
-          );
-        } catch (error) {
-          if (context?.signal?.aborted) throw error;
-          const observation = recoverableResearchFailure(call, error);
-          if (observation) return observation;
-          throw error;
+    const cancellation = this.cancellationSignal(run.runId, context?.signal);
+    const stableOperationId = context?.operationId ?? operationId(run.runId, call.id);
+    try {
+      for (let index = 0; index < this.runtimes.length; index += 1) {
+        const runtime = this.runtimes[index] as LifecycleWorkerToolRuntime;
+        const definitions = await withAbortableTimeout(
+          () => runtime.list(run),
+          this.listTimeoutMs,
+          `tool_runtime_timeout:list:${index}`,
+          cancellation.signal
+        );
+        if (definitions.some((definition) => definition.name === call.name)) {
+          try {
+            const timeoutMs = Math.min(toolTimeoutMs(call.name, this.executeTimeoutMs), this.executeTimeoutMs);
+            return await withAbortableTimeout(
+              (signal) => runtime.execute(run, call, {
+                signal,
+                executionId: context?.executionId ?? call.id,
+                operationId: stableOperationId,
+                attempt: context?.attempt ?? 1
+              }),
+              timeoutMs,
+              `tool_runtime_timeout:execute:${call.name}`,
+              cancellation.signal
+            );
+          } catch (error) {
+            if (cancellation.signal.aborted) throw error;
+            const observation = recoverableResearchFailure(call, error);
+            if (observation) return observation;
+            throw error;
+          }
         }
       }
+      throw new Error(`unknown_worker_tool:${call.name}`);
+    } finally {
+      cancellation.dispose();
     }
-    throw new Error(`unknown_worker_tool:${call.name}`);
   }
 
   async beginRun(run: ClaimedRun): Promise<void> {
