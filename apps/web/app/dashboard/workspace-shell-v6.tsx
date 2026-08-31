@@ -121,8 +121,13 @@ export function WorkspaceShellV6(props: WorkspaceShellV6Props) {
     </div>;
   }
 
+  // V6 renders only after client-side navigation recovery. Passing the resolved
+  // section into V5 prevents a direct URL from briefly mounting V4, whose legacy
+  // navigation effect could otherwise rewrite `section=direct` back to a mode.
+  const initialDirectMode = new URLSearchParams(window.location.search).get("section") === "direct";
+
   return <>
-    <WorkspaceShellV5 {...props} snapshot={preparedSnapshot} />
+    <WorkspaceShellV5 {...props} snapshot={preparedSnapshot} initialDirectMode={initialDirectMode} />
     {recoveryError ? <div role="alert" style={{ position: "fixed", right: 18, bottom: 18, zIndex: 100, maxWidth: 420, border: "1px solid #5a3232", borderRadius: 10, padding: "10px 12px", background: "#241616", color: "#f0c4c4", font: "13px/1.4 system-ui, sans-serif" }}>
       Chatten kunde inte återställas efter siduppdateringen. URL-runnen användes inte som state; försök uppdatera sidan igen.
     </div> : null}
