@@ -5,6 +5,7 @@ import type {
   ModelToolDefinition
 } from "@div3rsa/model-sdk";
 import { ExecutionGroundedOpenAiCompatibleAdapter } from "./execution-grounded-openai-compatible-adapter";
+import { isDeterministicSecurityReadiness } from "./security-readiness-protocol";
 
 type SecurityOperation = "dns_lookup" | "http_probe" | "tls_probe" | "port_scan" | "template_scan" | "content_discovery";
 
@@ -149,9 +150,15 @@ function mergeUsage(first: GenerateResult["usage"], second: GenerateResult["usag
  * Final fail-closed boundary for llama.cpp/Qwen tool serialization.
  * Text that looks like tool protocol is never user-visible execution evidence. It must become a
  * validated native call, a deterministic already-planned Lab security call, or an explicit error.
+ *
+ * The sole exception is the reserved internal production-readiness protocol. Its harness owns a
+ * deterministic bridge from raw Qwen serialization to the exact schema-narrowed readiness call,
+ * so this outer user-facing guard must not intercept that protocol.
  */
 export class StrictToolProtocolOpenAiCompatibleAdapter extends ExecutionGroundedOpenAiCompatibleAdapter {
   async generate(request: GenerateRequest): Promise<GenerateResult> {
+    if (isDeterministicSecurityReadiness(request)) return super.generate(request);
+
     const first = await super.generate(request);
     if (!malformedToolProtocol(first)) return first;
 
@@ -164,6 +171,7 @@ export class StrictToolProtocolOpenAiCompatibleAdapter extends ExecutionGrounded
   }
 
   async generateStreamed(request: GenerateRequest, onDelta: ModelStreamDeltaHandler): Promise<GenerateResult> {
+    if (isDeterministicSecurityReadiness(request)) return super.generateStreamed(request, onDelta);
     if (!hasAnyTool(request)) return super.generateStreamed(request, onDelta);
     const result = await this.generate(request);
     if (result.finishReason !== "tool_call" && result.content) await onDelta(result.content);
