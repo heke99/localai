@@ -67,10 +67,19 @@ if (cutover.includes("ip link add")) throw new Error("security_deploy_contract_f
 requireText(workerSecurity, "readinessLoopbackAllowed", "worker_readiness_gate");
 requireText(workerSecurity, "timingSafeEqual", "worker_constant_time_proof_check");
 requireText(workerSecurity, "security-readiness-scope", "worker_readiness_scope_lock");
+requireText(workerSecurity, 'execute.pathname = "/v1/execute"', "worker_canonical_execute_route");
+requireText(workerSecurity, 'capabilities.pathname = "/v1/capabilities"', "worker_canonical_capability_route");
+requireText(workerSecurity, "security_operation_unavailable:", "worker_live_capability_execution_gate");
+requireText(workerSecurity, "runtimeOperations.has(tool.id)", "worker_live_capability_definition_gate");
 requireText(executorRuntime, "readinessLoopbackAllowed", "executor_readiness_gate");
 requireText(executorRuntime, "security-readiness-scope", "executor_readiness_scope_lock");
 requireText(executorRuntime, "a === 127 && !allowReadinessLoopback", "executor_loopback_exception_is_narrow");
+requireText(executorRuntime, "async capabilities()", "executor_capability_probe");
+requireText(executorRuntime, "commandAvailable", "executor_binary_readiness");
+requireText(executorRuntime, "wordlist_unavailable", "executor_wordlist_readiness");
 requireText(executorMain, "DIV3RSA_SECURITY_READINESS_TOKEN", "executor_loads_readiness_token");
+requireText(executorMain, 'request.url === "/v1/capabilities"', "executor_capability_endpoint");
+requireText(executorMain, "capabilities.ready ? 200 : 503", "executor_health_depends_on_capability_readiness");
 
 for (const tool of ["dns_lookup", "http_probe", "tls_probe", "port_scan", "template_scan", "content_discovery"]) {
   requireText(agentReadiness, `tool: "${tool}"`, `agent_readiness_${tool}`);

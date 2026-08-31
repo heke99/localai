@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve, relative } from "node:path";
 import {
@@ -25,6 +26,20 @@ export interface ExternalSecuritySkillIndex {
   skills: ExternalSecuritySkillIndexEntry[];
 }
 
+export interface ExternalSecuritySkillIntegrityEntry {
+  path: string;
+  sha256: string;
+}
+
+export interface ExternalSecuritySkillIntegrity {
+  schemaVersion: 1;
+  algorithm: "sha256";
+  repository: string;
+  commit: string;
+  files: ExternalSecuritySkillIntegrityEntry[];
+  snapshotSha256: string;
+}
+
 export interface PreparedExternalSecuritySkill {
   name: string;
   description: string;
@@ -40,6 +55,7 @@ export interface PreparedExternalSecuritySkills {
 }
 
 const WORD = /[a-z0-9][a-z0-9+._/-]{2,}/gi;
+const SHA256 = /^[a-f0-9]{64}$/i;
 const MAX_BODY_CHARS = 8_000;
 const MIN_BODY_CHARS = 600;
 const DEFAULT_MAX_SKILLS = 4;
@@ -99,6 +115,39 @@ export function validateExternalSecuritySkillIndex(raw: unknown, source: Externa
   };
 }
 
+export function validateExternalSecuritySkillIntegrity(raw: unknown, source: ExternalSkillSource = ANTHROPIC_CYBERSECURITY_SKILLS_SOURCE): ExternalSecuritySkillIntegrity {
+  if (!raw || typeof raw !== "object") throw new Error("invalid_external_security_skill_integrity");
+  const value = raw as Partial<ExternalSecuritySkillIntegrity>;
+  if (value.schemaVersion !== 1 || value.algorithm !== "sha256") throw new Error("external_security_skill_integrity_schema_mismatch");
+  if (value.repository !== source.repository) throw new Error("external_security_skill_integrity_repository_mismatch");
+  if (value.commit !== source.commit) throw new Error("external_security_skill_integrity_commit_mismatch");
+  if (!Array.isArray(value.files)) throw new Error("external_security_skill_integrity_files_required");
+  const files = value.files.map((entry) => {
+    const path = String(entry?.path ?? "").trim();
+    const sha256 = String(entry?.sha256 ?? "").trim().toLowerCase();
+    if (!/^skills\/[a-z0-9][a-z0-9-]*\/SKILL\.md$/i.test(path) || !SHA256.test(sha256)) {
+      throw new Error(`external_security_skill_integrity_entry_invalid:${path}`);
+    }
+    return { path, sha256 };
+  });
+  if (new Set(files.map((entry) => entry.path)).size !== files.length) throw new Error("external_security_skill_integrity_duplicate_path");
+  const snapshotSha256 = String(value.snapshotSha256 ?? "").trim().toLowerCase();
+  if (!SHA256.test(snapshotSha256)) throw new Error("external_security_skill_integrity_digest_invalid");
+  const ordered = [...files].sort((a, b) => a.path.localeCompare(b.path));
+  const actualDigest = createHash("sha256")
+    .update(ordered.map((entry) => `${entry.path}\0${entry.sha256}`).join("\n"))
+    .digest("hex");
+  if (actualDigest !== snapshotSha256) throw new Error("external_security_skill_integrity_digest_mismatch");
+  return {
+    schemaVersion: 1,
+    algorithm: "sha256",
+    repository: value.repository,
+    commit: value.commit,
+    files,
+    snapshotSha256
+  };
+}
+
 export function inferSecurityDomains(name: string, description: string): SecuritySkillDomain[] {
   const text = `${name.replace(/-/g, " ")} ${description}`;
   const domains = DOMAIN_SIGNALS.filter(([, pattern]) => pattern.test(text)).map(([domain]) => domain);
@@ -127,6 +176,7 @@ export function externalIndexToSecurityNodes(index: ExternalSecuritySkillIndex, 
 
 export class ExternalSecuritySkillRuntime {
   private indexPromise: Promise<ExternalSecuritySkillIndex> | null = null;
+  private integrityPromise: Promise<ExternalSecuritySkillIntegrity> | null = null;
   private nodesPromise: Promise<SecuritySkillNode[]> | null = null;
 
   constructor(
@@ -142,6 +192,12 @@ export class ExternalSecuritySkillRuntime {
     return this.indexPromise;
   }
 
+  private loadIntegrity(): Promise<ExternalSecuritySkillIntegrity> {
+    this.integrityPromise ??= readFile(safeRelativePath(this.snapshotRoot, "integrity.json"), "utf8")
+      .then((content) => validateExternalSecuritySkillIntegrity(JSON.parse(content), this.source));
+    return this.integrityPromise;
+  }
+
   private async nodes(): Promise<SecuritySkillNode[]> {
     this.nodesPromise ??= this.loadIndex().then((index) => externalIndexToSecurityNodes(index, this.source.id));
     return this.nodesPromise;
@@ -150,7 +206,9 @@ export class ExternalSecuritySkillRuntime {
   async prepare(mode: string, prompt: string): Promise<PreparedExternalSecuritySkills> {
     if (mode !== "lab") return { names: [], instructions: "", skills: [] };
     const budget = Math.max(this.contextBudgetChars, 1_000);
-    const matches = selectSecuritySkills(await this.nodes(), [this.source], {
+    const [nodes, integrity] = await Promise.all([this.nodes(), this.loadIntegrity()]);
+    const integrityByPath = new Map(integrity.files.map((entry) => [entry.path, entry.sha256]));
+    const matches = selectSecuritySkills(nodes, [this.source], {
       mode,
       prompt,
       maxSkills: this.maxSkills,
@@ -170,7 +228,12 @@ export class ExternalSecuritySkillRuntime {
       const availableBody = Math.min(MAX_BODY_CHARS, remaining - header.length);
       if (availableBody < MIN_BODY_CHARS) break;
       const file = safeRelativePath(this.snapshotRoot, skill.sourcePath);
-      const body = (await readFile(file, "utf8")).slice(0, availableBody);
+      const fullBody = await readFile(file, "utf8");
+      const expectedHash = integrityByPath.get(skill.sourcePath);
+      if (!expectedHash) throw new Error(`external_security_skill_integrity_missing:${skill.id}`);
+      const actualHash = createHash("sha256").update(fullBody).digest("hex");
+      if (actualHash !== expectedHash) throw new Error(`external_security_skill_integrity_mismatch:${skill.id}`);
+      const body = fullBody.slice(0, availableBody);
       const instructions = `${header}${body}`;
       prepared.push({ name: `external-security:${skill.id}`, description: skill.description, instructions, routingScore: score, matchedTerms });
       remaining -= instructions.length;

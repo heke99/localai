@@ -32,7 +32,9 @@ const TOOL_SPECS: readonly SecurityToolSpec[] = [
 ] as const;
 
 const TOOL_BY_ID = new Map(TOOL_SPECS.map((tool) => [tool.id, tool]));
+const ALL_OPERATION_IDS = new Set<SecurityOperationId>(TOOL_SPECS.map((tool) => tool.id));
 const MAX_RESULT_BYTES = 512_000;
+const MAX_CAPABILITY_BYTES = 64_000;
 const MODEL_STDOUT_CHARS = 12_000;
 const MODEL_STDERR_CHARS = 4_000;
 const MODEL_FINDINGS = 100;
@@ -71,8 +73,18 @@ export interface SecurityExecutorResult {
   capability?: string;
 }
 
+export interface SecurityExecutorCapabilities {
+  schemaVersion: 1;
+  ready: boolean;
+  complete: boolean;
+  checkedAt: string;
+  operations: SecurityOperationId[];
+  unavailable?: Array<{ operation: SecurityOperationId; reason: string }>;
+}
+
 export interface SecurityToolExecutor {
   execute(request: SecurityExecutorRequest, context?: ToolExecutionContext): Promise<SecurityExecutorResult>;
+  capabilities?(): Promise<SecurityExecutorCapabilities>;
 }
 
 export type SecuritySelectedSkillsResolver = (run: ClaimedRun) => Promise<readonly string[]>;
@@ -86,12 +98,71 @@ function remoteExecutorError(text: string): string | null {
   }
 }
 
+function normalizedExecutorUrls(endpoint: string): { execute: string; capabilities: string } {
+  let base: URL;
+  try {
+    base = new URL(endpoint);
+  } catch {
+    throw new Error("invalid_security_executor_url");
+  }
+  if (base.protocol !== "http:" && base.protocol !== "https:") throw new Error("invalid_security_executor_url");
+  if (base.username || base.password) throw new Error("invalid_security_executor_url");
+  const execute = new URL(base);
+  if (!execute.pathname || execute.pathname === "/") execute.pathname = "/v1/execute";
+  execute.search = "";
+  execute.hash = "";
+  const capabilities = new URL(base.origin);
+  capabilities.pathname = "/v1/capabilities";
+  return { execute: execute.toString(), capabilities: capabilities.toString() };
+}
+
 export class HttpSecurityToolExecutor implements SecurityToolExecutor {
+  private readonly executeEndpoint: string;
+  private readonly capabilitiesEndpoint: string;
+
   constructor(
-    private readonly endpoint: string,
+    endpoint: string,
     private readonly bearerToken: string,
     private readonly fetcher: typeof fetch = fetch
-  ) {}
+  ) {
+    const urls = normalizedExecutorUrls(endpoint);
+    this.executeEndpoint = urls.execute;
+    this.capabilitiesEndpoint = urls.capabilities;
+  }
+
+  async capabilities(): Promise<SecurityExecutorCapabilities> {
+    const linked = linkedAbortController(undefined, 3_000, "security_executor_capabilities_timeout");
+    try {
+      let response: Response;
+      try {
+        response = await this.fetcher(this.capabilitiesEndpoint, {
+          method: "GET",
+          headers: { authorization: `Bearer ${this.bearerToken}` },
+          signal: linked.controller.signal
+        });
+      } catch (error) {
+        if (linked.timedOut() || (error instanceof Error && /timeout/i.test(error.message))) throw new Error("security_executor_capabilities_timeout");
+        throw new Error("security_executor_capabilities_transport_error");
+      }
+      const text = await response.text();
+      if (Buffer.byteLength(text, "utf8") > MAX_CAPABILITY_BYTES) throw new Error("security_executor_capabilities_too_large");
+      if (!response.ok) throw new Error(remoteExecutorError(text) ?? `security_executor_capabilities_http_${response.status}`);
+      let parsed: SecurityExecutorCapabilities;
+      try {
+        parsed = JSON.parse(text) as SecurityExecutorCapabilities;
+      } catch {
+        throw new Error("security_executor_capabilities_invalid_json");
+      }
+      if (!parsed || parsed.schemaVersion !== 1 || typeof parsed.ready !== "boolean" || typeof parsed.complete !== "boolean" || !Array.isArray(parsed.operations)) {
+        throw new Error("security_executor_capabilities_invalid_result");
+      }
+      const operations = parsed.operations.filter((operation): operation is SecurityOperationId => typeof operation === "string" && ALL_OPERATION_IDS.has(operation as SecurityOperationId));
+      if (operations.length !== parsed.operations.length || new Set(operations).size !== operations.length) throw new Error("security_executor_capabilities_invalid_result");
+      return { ...parsed, operations };
+    } finally {
+      linked.dispose();
+    }
+  }
 
   async execute(request: SecurityExecutorRequest, context?: ToolExecutionContext): Promise<SecurityExecutorResult> {
     throwIfAborted(context?.signal);
@@ -99,7 +170,7 @@ export class HttpSecurityToolExecutor implements SecurityToolExecutor {
     try {
       let response: Response;
       try {
-        response = await this.fetcher(this.endpoint, {
+        response = await this.fetcher(this.executeEndpoint, {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -211,13 +282,17 @@ function scopeFromRun(run: ClaimedRun): SecurityScope | null {
   return { scopeId: resource.resourceId, allowHosts, allowIpv4Cidrs, capabilities: new Set(resource.capabilities), readinessProof };
 }
 
-function toolDefinition(scope: SecurityScope): ModelToolDefinition {
-  const allowedTools = TOOL_SPECS.filter((tool) => tool.executionClass === "passive"
+function scopeAllows(scope: SecurityScope, tool: SecurityToolSpec): boolean {
+  return tool.executionClass === "passive"
     ? scope.capabilities.has("security.passive") || scope.capabilities.has("security.active")
-    : scope.capabilities.has("security.active"));
+    : scope.capabilities.has("security.active");
+}
+
+function toolDefinition(scope: SecurityScope, runtimeOperations: ReadonlySet<SecurityOperationId>): ModelToolDefinition {
+  const allowedTools = TOOL_SPECS.filter((tool) => runtimeOperations.has(tool.id) && scopeAllows(scope, tool));
   return {
     name: TOOL_NAME,
-    description: "Execute one bounded security check through the isolated Linux security executor. Only use against the explicitly authorized scope attached to this Lab run. Never infer or expand scope. Options are strict: passive probes accept no options; port_scan accepts only ports/maxRate; template_scan and content_discovery accept only rateLimit.",
+    description: "Execute one bounded security check through the isolated Linux security executor. Only use against the explicitly authorized scope attached to this Lab run. Never infer or expand scope. The operation enum is capability-gated by the live executor, so unavailable Linux tools are not advertised. Options are strict: passive probes accept no options; port_scan accepts only ports/maxRate; template_scan and content_discovery accept only rateLimit.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -264,14 +339,14 @@ function failureCode(error: unknown): string {
 }
 
 function hardExecutorFailure(code: string): boolean {
-  return /^(?:invalid_security_target|invalid_security_option:|security_scope_required|security_target_blocked|security_target_out_of_scope|security_private_resolution_out_of_scope|security_tool_not_allowlisted|security_execution_class_mismatch|security_active_capability_required|security_passive_capability_required|security_capability_plan_violation:|unauthorized$)/.test(code);
+  return /^(?:invalid_security_target|invalid_security_option:|security_scope_required|security_target_blocked|security_target_out_of_scope|security_private_resolution_out_of_scope|security_tool_not_allowlisted|security_execution_class_mismatch|security_active_capability_required|security_passive_capability_required|security_operation_unavailable:|security_capability_plan_violation:|unauthorized$)/.test(code);
 }
 
 function retryableExecutorFailure(code: string): boolean {
   return /timeout|transport|http_429|http_502|http_503|http_504|unavailable/i.test(code);
 }
 
-function alternativeOperations(tool: SecurityOperationId, plan: PentestCapabilityPlan | null): SecurityOperationId[] {
+function alternativeOperations(tool: SecurityOperationId, plan: PentestCapabilityPlan | null, runtimeOperations: ReadonlySet<SecurityOperationId>): SecurityOperationId[] {
   const candidates: Record<SecurityOperationId, SecurityOperationId[]> = {
     dns_lookup: ["http_probe", "tls_probe"],
     http_probe: ["dns_lookup", "tls_probe"],
@@ -281,7 +356,7 @@ function alternativeOperations(tool: SecurityOperationId, plan: PentestCapabilit
     content_discovery: ["http_probe", "tls_probe"]
   };
   const allowed = new Set(plan?.allowedOperations ?? []);
-  return candidates[tool].filter((candidate) => candidate !== tool && (!plan || allowed.has(candidate)));
+  return candidates[tool].filter((candidate) => candidate !== tool && runtimeOperations.has(candidate) && (!plan || allowed.has(candidate)));
 }
 
 function resultEvidence(run: ClaimedRun, call: ModelToolCall, spec: SecurityToolSpec, target: string, scope: SecurityScope, result: SecurityExecutorResult) {
@@ -322,16 +397,23 @@ export class SecurityToolRuntime implements WorkerToolRuntime {
     private readonly selectedSkills: SecuritySelectedSkillsResolver = async () => []
   ) {}
 
-  private async definitionAndPlan(run: ClaimedRun, scope: SecurityScope): Promise<{ definition: ModelToolDefinition; plan: PentestCapabilityPlan | null }> {
-    const definition = toolDefinition(scope);
-    let skillNames: readonly string[] = [];
+  private async availableOperations(): Promise<ReadonlySet<SecurityOperationId>> {
+    if (!this.executor) return new Set();
+    if (!this.executor.capabilities) return new Set(TOOL_SPECS.map((tool) => tool.id));
     try {
-      skillNames = await this.selectedSkills(run);
+      const snapshot = await this.executor.capabilities();
+      return new Set(snapshot.operations.filter((operation) => ALL_OPERATION_IDS.has(operation)));
     } catch {
-      skillNames = [];
+      return new Set();
     }
+  }
+
+  private async definitionAndPlan(run: ClaimedRun, scope: SecurityScope): Promise<{ definition: ModelToolDefinition; plan: PentestCapabilityPlan | null; runtimeOperations: ReadonlySet<SecurityOperationId> }> {
+    const runtimeOperations = await this.availableOperations();
+    const definition = toolDefinition(scope, runtimeOperations);
+    const skillNames = await this.selectedSkills(run);
     const plan = planPentestCapabilities({ mode: run.mode, prompt: run.prompt, selectedSkills: skillNames, toolDefinitions: [definition] });
-    return { definition: plan ? applyPentestCapabilityPlan(definition, plan) : definition, plan };
+    return { definition: plan ? applyPentestCapabilityPlan(definition, plan) : definition, plan, runtimeOperations };
   }
 
   async list(run: ClaimedRun): Promise<ModelToolDefinition[]> {
@@ -339,7 +421,8 @@ export class SecurityToolRuntime implements WorkerToolRuntime {
     const scope = scopeFromRun(run);
     if (!scope || (!scope.allowHosts.length && !scope.allowIpv4Cidrs.length)) return [];
     if (!scope.capabilities.has("security.passive") && !scope.capabilities.has("security.active")) return [];
-    const { definition } = await this.definitionAndPlan(run, scope);
+    const { definition, runtimeOperations } = await this.definitionAndPlan(run, scope);
+    if (!TOOL_SPECS.some((tool) => runtimeOperations.has(tool.id) && scopeAllows(scope, tool))) return [];
     return [definition];
   }
 
@@ -364,8 +447,8 @@ export class SecurityToolRuntime implements WorkerToolRuntime {
       : {};
     validateOptions(spec, options);
 
-    const baseDefinition = toolDefinition(scope);
-    const plan = planPentestCapabilities({ mode: run.mode, prompt: run.prompt, toolDefinitions: [baseDefinition] });
+    const { plan, runtimeOperations } = await this.definitionAndPlan(run, scope);
+    if (!runtimeOperations.has(spec.id)) throw new Error(`security_operation_unavailable:${spec.id}`);
     if (plan && !plan.allowedOperations.includes(spec.id)) throw new Error(`security_capability_plan_violation:${spec.id}`);
 
     let result: SecurityExecutorResult;
@@ -404,7 +487,7 @@ export class SecurityToolRuntime implements WorkerToolRuntime {
         findings: [],
         errorCode,
         retryable: retryableExecutorFailure(errorCode),
-        suggestedNextOperations: alternativeOperations(spec.id, plan),
+        suggestedNextOperations: alternativeOperations(spec.id, plan, runtimeOperations),
         evidence: {
           schemaVersion: 1,
           kind: "security_tool_observation",

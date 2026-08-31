@@ -1,11 +1,13 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { appendFile, mkdir } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, appendFile, lstat, mkdir } from "node:fs/promises";
 import { isIP } from "node:net";
-import { dirname } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { spawn } from "node:child_process";
 
 export type SecurityExecutionClass = "passive" | "active";
+export type SecurityOperationId = "http_probe" | "tls_probe" | "dns_lookup" | "port_scan" | "template_scan" | "content_discovery";
 
 export interface SecurityExecutorRequest {
   runId: string;
@@ -37,6 +39,15 @@ export interface SecurityExecutorResult {
   capability: string;
 }
 
+export interface SecurityExecutorCapabilitySnapshot {
+  schemaVersion: 1;
+  ready: boolean;
+  complete: boolean;
+  checkedAt: string;
+  operations: SecurityOperationId[];
+  unavailable: Array<{ operation: SecurityOperationId; reason: "command_unavailable" | "wordlist_unavailable" }>;
+}
+
 interface ToolCommand {
   command: string;
   args: string[];
@@ -51,15 +62,27 @@ export interface SecurityExecutorOptions {
   spawnProcess?: typeof spawn;
   readinessToken?: string | null;
   terminateGraceMs?: number;
+  commandAvailable?: (command: string) => Promise<boolean>;
+  fileReadable?: (path: string) => Promise<boolean>;
 }
 
 const MAX_TIMEOUT_MS = 90_000;
 const MAX_OUTPUT_BYTES = 512_000;
 const MAX_PORTS = 128;
 const DEFAULT_TERMINATE_GRACE_MS = 750;
-const ACTIVE_TOOLS = new Set(["port_scan", "template_scan", "content_discovery"]);
-const PASSIVE_TOOLS = new Set(["http_probe", "tls_probe", "dns_lookup"]);
-const ALL_TOOLS = new Set([...PASSIVE_TOOLS, ...ACTIVE_TOOLS]);
+const TOOL_ORDER: readonly SecurityOperationId[] = ["http_probe", "tls_probe", "dns_lookup", "port_scan", "template_scan", "content_discovery"];
+const CORE_READY_TOOLS: readonly SecurityOperationId[] = ["http_probe", "tls_probe", "dns_lookup"];
+const TOOL_COMMANDS: Record<SecurityOperationId, string> = {
+  http_probe: "curl",
+  tls_probe: "openssl",
+  dns_lookup: "dig",
+  port_scan: "nmap",
+  template_scan: "nuclei",
+  content_discovery: "ffuf"
+};
+const ACTIVE_TOOLS = new Set<SecurityOperationId>(["port_scan", "template_scan", "content_discovery"]);
+const PASSIVE_TOOLS = new Set<SecurityOperationId>(["http_probe", "tls_probe", "dns_lookup"]);
+const ALL_TOOLS = new Set<SecurityOperationId>([...PASSIVE_TOOLS, ...ACTIVE_TOOLS]);
 const SAFE_ENV_KEYS = ["PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR"] as const;
 
 function normalizeHost(value: string): string {
@@ -131,10 +154,34 @@ async function defaultResolveHost(hostname: string): Promise<string[]> {
   return (await lookup(hostname, { all: true, verbatim: true })).map((entry) => entry.address);
 }
 
+async function defaultCommandAvailable(command: string): Promise<boolean> {
+  const candidates = isAbsolute(command)
+    ? [command]
+    : (process.env.PATH ?? "").split(delimiter).filter(Boolean).map((directory) => join(directory, command));
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, fsConstants.X_OK);
+      return true;
+    } catch { /* keep searching */ }
+  }
+  return false;
+}
+
+async function defaultFileReadable(path: string): Promise<boolean> {
+  try {
+    const stat = await lstat(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) return false;
+    await access(path, fsConstants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function enforceScope(request: SecurityExecutorRequest, resolveHost: (hostname: string) => Promise<string[]>, readinessToken: string | null | undefined): Promise<{ host: string; url: URL | null }> {
   if (!request.scope?.scopeId) throw new Error("security_scope_required");
-  if (!ALL_TOOLS.has(request.tool)) throw new Error("security_tool_not_allowlisted");
-  const expectedClass: SecurityExecutionClass = ACTIVE_TOOLS.has(request.tool) ? "active" : "passive";
+  if (!ALL_TOOLS.has(request.tool as SecurityOperationId)) throw new Error("security_tool_not_allowlisted");
+  const expectedClass: SecurityExecutionClass = ACTIVE_TOOLS.has(request.tool as SecurityOperationId) ? "active" : "passive";
   if (request.executionClass !== expectedClass) throw new Error("security_execution_class_mismatch");
   const parsed = targetParts(request.target);
   const allowReadinessLoopback = readinessLoopbackAllowed(request, readinessToken);
@@ -364,12 +411,47 @@ export class LinuxSecurityExecutor {
   private readonly maxOutputBytes: number;
   private readonly spawnProcess: typeof spawn;
   private readonly terminateGraceMs: number;
+  private readonly commandAvailable: (command: string) => Promise<boolean>;
+  private readonly fileReadable: (path: string) => Promise<boolean>;
 
   constructor(private readonly options: SecurityExecutorOptions = {}) {
     this.resolveHost = options.resolveHost ?? defaultResolveHost;
     this.maxOutputBytes = Math.max(1_024, Math.min(options.maxOutputBytes ?? MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES));
     this.spawnProcess = options.spawnProcess ?? spawn;
     this.terminateGraceMs = Math.max(50, Math.min(options.terminateGraceMs ?? DEFAULT_TERMINATE_GRACE_MS, 5_000));
+    this.commandAvailable = options.commandAvailable ?? defaultCommandAvailable;
+    this.fileReadable = options.fileReadable ?? defaultFileReadable;
+  }
+
+  async capabilities(): Promise<SecurityExecutorCapabilitySnapshot> {
+    const commandState = new Map<string, boolean>();
+    for (const command of new Set(Object.values(TOOL_COMMANDS))) {
+      commandState.set(command, await this.commandAvailable(command));
+    }
+    const operations: SecurityOperationId[] = [];
+    const unavailable: SecurityExecutorCapabilitySnapshot["unavailable"] = [];
+    const wordlistReady = this.options.wordlistPath ? await this.fileReadable(this.options.wordlistPath) : false;
+
+    for (const operation of TOOL_ORDER) {
+      if (!commandState.get(TOOL_COMMANDS[operation])) {
+        unavailable.push({ operation, reason: "command_unavailable" });
+        continue;
+      }
+      if (operation === "content_discovery" && !wordlistReady) {
+        unavailable.push({ operation, reason: "wordlist_unavailable" });
+        continue;
+      }
+      operations.push(operation);
+    }
+
+    return {
+      schemaVersion: 1,
+      ready: CORE_READY_TOOLS.every((operation) => operations.includes(operation)),
+      complete: operations.length === TOOL_ORDER.length,
+      checkedAt: new Date().toISOString(),
+      operations,
+      unavailable
+    };
   }
 
   async execute(request: SecurityExecutorRequest, signal?: AbortSignal): Promise<SecurityExecutorResult> {

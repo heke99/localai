@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,8 @@ import { SkillEngine, type SkillManifest } from "./index";
 
 const previousRepositoryRoot = process.env.DIV3RSA_REPOSITORY_ROOT;
 const previousSecurityRoot = process.env.DIV3RSA_SECURITY_SKILL_ROOT;
+const sourceRepository = "mukul975/Anthropic-Cybersecurity-Skills";
+const sourceCommit = "1b3f6b2286981381a5cc0566551ef3bb6bc38383";
 
 afterEach(() => {
   if (previousRepositoryRoot === undefined) delete process.env.DIV3RSA_REPOSITORY_ROOT;
@@ -13,6 +16,14 @@ afterEach(() => {
   if (previousSecurityRoot === undefined) delete process.env.DIV3RSA_SECURITY_SKILL_ROOT;
   else process.env.DIV3RSA_SECURITY_SKILL_ROOT = previousSecurityRoot;
 });
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function localBody(path: string): string {
+  return `local:${path}`;
+}
 
 const localNames = [
   "using-skills",
@@ -28,14 +39,17 @@ const localNames = [
 
 const manifest: SkillManifest = {
   schemaVersion: 1,
-  skills: localNames.map((name) => ({
-    name,
-    path: `${name}.md`,
-    category: "test",
-    description: name,
-    version: "1.0.0",
-    sha256: "a".repeat(64)
-  }))
+  skills: localNames.map((name) => {
+    const path = `${name}.md`;
+    return {
+      name,
+      path,
+      category: "test",
+      description: name,
+      version: "1.0.0",
+      sha256: sha256(localBody(path))
+    };
+  })
 };
 
 async function snapshot() {
@@ -52,18 +66,30 @@ async function snapshot() {
     total_skills: skills.length,
     skills
   }));
+  const integrityFiles = [];
   for (const skill of skills) {
     const directory = join(root, skill.path);
+    const body = `# ${skill.name}\nPinned specialist knowledge`;
     await mkdir(directory, { recursive: true });
-    await writeFile(join(directory, "SKILL.md"), `# ${skill.name}\nPinned specialist knowledge`);
+    await writeFile(join(directory, "SKILL.md"), body);
+    integrityFiles.push({ path: `${skill.path}/SKILL.md`, sha256: sha256(body) });
   }
+  integrityFiles.sort((a, b) => a.path.localeCompare(b.path));
+  await writeFile(join(root, "integrity.json"), JSON.stringify({
+    schemaVersion: 1,
+    algorithm: "sha256",
+    repository: sourceRepository,
+    commit: sourceCommit,
+    files: integrityFiles,
+    snapshotSha256: sha256(integrityFiles.map((entry) => `${entry.path}\0${entry.sha256}`).join("\n"))
+  }));
   return root;
 }
 
 describe("SkillEngine external security integration", () => {
   it("injects top-k pinned security knowledge before final verification in lab mode", async () => {
     process.env.DIV3RSA_SECURITY_SKILL_ROOT = await snapshot();
-    const engine = new SkillEngine(manifest, { read: async (path) => `local:${path}` });
+    const engine = new SkillEngine(manifest, { read: async (path) => localBody(path) });
     const loaded = await engine.load(engine.select("lab", "Check this REST API for IDOR and BOLA authorization issues"));
     const names = loaded.map((item) => item.metadata.name);
     expect(names).toContain("external-security:testing-idor-in-rest-apis");
@@ -75,7 +101,7 @@ describe("SkillEngine external security integration", () => {
 
   it("does not touch the external snapshot outside lab mode", async () => {
     process.env.DIV3RSA_SECURITY_SKILL_ROOT = join(tmpdir(), "definitely-missing-security-snapshot");
-    const engine = new SkillEngine(manifest, { read: async (path) => `local:${path}` });
+    const engine = new SkillEngine(manifest, { read: async (path) => localBody(path) });
     const loaded = await engine.load(engine.select("chat", "Explain OAuth"));
     expect(loaded.map((item) => item.metadata.name)).not.toEqual(expect.arrayContaining([expect.stringContaining("external-security:")]));
   });
