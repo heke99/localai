@@ -17,7 +17,7 @@ function executor(): SecurityToolExecutor & { execute: ReturnType<typeof vi.fn> 
 function capabilityExecutor(operations: Array<"http_probe" | "tls_probe" | "dns_lookup" | "port_scan" | "template_scan" | "content_discovery">): SecurityToolExecutor {
   return {
     execute: vi.fn(async () => ({ ok: true, exitCode: 0, durationMs: 12, findings: [], auditId: "audit-1" })),
-    capabilities: vi.fn(async () => ({ schemaVersion: 1, ready: true, complete: operations.length === 6, checkedAt: new Date().toISOString(), operations }))
+    capabilities: vi.fn(async () => ({ schemaVersion: 1 as const, ready: true, complete: operations.length === 6, checkedAt: new Date().toISOString(), operations }))
   };
 }
 
