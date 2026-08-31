@@ -5,6 +5,9 @@ declare
   prepare_definition text;
   preflight_definition text;
   complete_definition text;
+  exclusivity_definition text;
+  agent_trigger_count integer;
+  direct_trigger_count integer;
 begin
   if to_regclass('internal.direct_model_runs') is null then
     raise exception 'direct_model_runs table is missing';
@@ -45,6 +48,37 @@ begin
      or position('public.messages' in complete_definition) = 0
      or position('model.direct.completed' in complete_definition) = 0 then
     raise exception 'direct completion does not persist response, usage, and audit evidence';
+  end if;
+
+  select pg_get_functiondef('internal.enforce_conversation_execution_exclusivity()'::regprocedure)
+  into exclusivity_definition;
+  if position('pg_advisory_xact_lock' in exclusivity_definition) = 0
+     or position('internal.agent_runs' in exclusivity_definition) = 0
+     or position('internal.direct_model_runs' in exclusivity_definition) = 0
+     or position('conversation_has_active_run' in exclusivity_definition) = 0 then
+    raise exception 'agent/direct execution paths are not serialized by the same database lock';
+  end if;
+
+  select count(*) into agent_trigger_count
+  from pg_trigger t
+  join pg_class c on c.oid = t.tgrelid
+  join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'internal'
+    and c.relname = 'agent_runs'
+    and t.tgname = 'agent_runs_conversation_execution_exclusivity'
+    and not t.tgisinternal;
+
+  select count(*) into direct_trigger_count
+  from pg_trigger t
+  join pg_class c on c.oid = t.tgrelid
+  join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'internal'
+    and c.relname = 'direct_model_runs'
+    and t.tgname = 'direct_model_runs_conversation_execution_exclusivity'
+    and not t.tgisinternal;
+
+  if agent_trigger_count <> 1 or direct_trigger_count <> 1 then
+    raise exception 'execution exclusivity triggers are missing: agent %, direct %', agent_trigger_count, direct_trigger_count;
   end if;
 
   if not has_function_privilege('authenticated', 'public.prepare_direct_model_run(uuid,uuid,text,text,text,text)', 'execute') then
