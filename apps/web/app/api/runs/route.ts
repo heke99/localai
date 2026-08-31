@@ -39,10 +39,22 @@ export async function POST(request: Request) {
   if (error) {
     const subscriptionRequired = /subscription_access_required/.test(error.message);
     const denied = /permission_denied|workspace_access_denied|conversation_access_denied|resource_not_available|project_required_for_integration_resources/.test(error.message);
-    const conflict = /conversation_mode_mismatch/.test(error.message);
+    const modeConflict = /conversation_mode_mismatch/.test(error.message);
+    const executionConflict = /conversation_has_active_run/.test(error.message);
     return NextResponse.json(
-      { error: subscriptionRequired ? "subscription_required" : denied ? "resource_or_access_denied" : conflict ? "conversation_mode_mismatch" : "run_start_failed", requestId },
-      { status: subscriptionRequired ? 402 : denied ? 403 : conflict ? 409 : 500 }
+      {
+        error: subscriptionRequired
+          ? "subscription_required"
+          : denied
+            ? "resource_or_access_denied"
+            : modeConflict
+              ? "conversation_mode_mismatch"
+              : executionConflict
+                ? "conversation_busy"
+                : "run_start_failed",
+        requestId
+      },
+      { status: subscriptionRequired ? 402 : denied ? 403 : modeConflict || executionConflict ? 409 : 500 }
     );
   }
 
