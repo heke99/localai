@@ -42,11 +42,21 @@ function requestsSecurityExecution(request: GenerateRequest): boolean {
   return /\b(?:säkerhetsgranska|granska|testa|kontrollera|kör|börja|utför|pentest|penetrationstest|scan|assess|audit|test|review|check|execute|run)\b/i.test(text);
 }
 
+function requestsCapabilityLimitedSecurityClass(request: GenerateRequest): boolean {
+  if (!hasSecurityTool(request)) return false;
+  const text = latestUserContent(request).replace(/https?:\/\/\S+/gi, " ");
+  return /\b(?:BOLA|IDOR|JWT|session|token|authenticated|autentiserad|identity[- ]bound|identitetsbunden|business logic|affärslogik|checkout|price manipulation|prismanipulation|discount manipulation|rabattmanipulation)\b/i.test(text);
+}
+
+function hasCapabilityStopLanguage(content: string): boolean {
+  return /(?:kan\s+inte\s+verifiera|cannot\s+verify|inte\s+verifiera|saknar.{0,40}(?:auth|credential|identitet|session|token|workflow)|missing.{0,40}(?:auth|credential|identity|session|token|workflow)|stateful|förmågegap|capability\s+gap)/i.test(content);
+}
+
 function signalsDeferredToolAction(content: string): boolean {
   const text = content.replace(/\s+/g, " ").trim();
   if (!text) return false;
-  const commitment = /(?:\bjag\s+(?:börjar|ska|kommer|behöver|tänker)\b|\blåt\s+mig\b|\bi(?:'ll|\s+will|\s+need\s+to|\s+am\s+going\s+to)\b|\blet\s+me\b)/i.test(text);
-  const toolAction = /(?:undersök|inspekter|kontroller|kolla|sök|leta|läs|öppna|hämta|granska|arbetsmilj|verktyg|inspect|examine|check|search|look|read|open|fetch|review|environment|tool)/i.test(text);
+  const commitment = /(?:\bjag\s+(?:börjar|påbörjar|startar|ska|kommer|behöver|tänker|fortsätter|byter|växlar|anpassar)\b|\bjag\s+går\s+vidare\b|\blåt\s+mig\b|\bi(?:'ll|\s+will|\s+need\s+to|\s+am\s+going\s+to|\s+continue|\s+switch|\s+adapt|\s+proceed|\s+start)\b|\blet\s+me\b)/i.test(text);
+  const toolAction = /(?:undersök|inspekter|kontroller|kolla|sök|leta|läs|öppna|hämta|granska|arbetsmilj|verktyg|inspect|examine|check|search|look|read|open|fetch|review|environment|tool|\bdns\b|\btls\b|\bhttp\b|probe|scan|port)/i.test(text);
   return commitment && toolAction;
 }
 
@@ -131,7 +141,7 @@ function genericToolRepairRequest(request: GenerateRequest, previous: GenerateRe
       { role: "assistant", content: previous.content },
       {
         role: "user",
-        content: `Execution repair: your previous response deferred action (for example, saying you would inspect the environment or available tools) but produced no executable tool call. Do not narrate another future action. Either invoke exactly one currently exposed tool now, using its schema, or give the final answer now and explicitly state any capability limitation. Exposed tools: ${exposedTools}. Do not print XML, JSON pseudo-tool markup, or invent unavailable tools.`
+        content: `Execution repair: your previous response deferred action (for example, saying you would inspect the environment, switch to DNS/TLS/HTTP, or continue with another security check) but produced no executable tool call. Do not narrate another future action. Either invoke exactly one currently exposed tool now, using its schema, or give the final answer now and explicitly state any capability limitation. Exposed tools: ${exposedTools}. Do not print XML, JSON pseudo-tool markup, or invent unavailable tools.`
       }
     ]
   };
@@ -147,6 +157,21 @@ function duplicateRepairRequest(request: GenerateRequest, previous: GenerateResu
       {
         role: "user",
         content: "Decision repair: that exact security_scan tool + target + options call already ran, so do not repeat it. Use the existing tool observations. Either invoke one materially different supported security_scan check that tests a remaining hypothesis within the same authorized scope, or stop and give a concise evidence-based conclusion. After an HTTP timeout, adapt to another useful dimension such as DNS or TLS rather than retrying the identical HTTP probe. For authenticated BOLA/IDOR, JWT/session bypass, or stateful business-logic questions, after the supported passive baseline explicitly state that the current tools cannot verify the requested class and identify the missing authenticated/session/workflow capability. Do not print pseudo-tool markup."
+      }
+    ]
+  };
+}
+
+function capabilityStopRepairRequest(request: GenerateRequest, previous: GenerateResult): GenerateRequest {
+  return {
+    ...request,
+    temperature: 0,
+    messages: [
+      ...request.messages,
+      { role: "assistant", content: previous.content },
+      {
+        role: "user",
+        content: "Capability-stop repair: the requested security class requires authenticated identity/session/token manipulation or a stateful business workflow that the currently exposed security tools cannot perform. Use the observations already collected. Give the final answer now, explicitly say that the requested class cannot be verified with the current runtime, name the missing authenticated/session/token/workflow capability, and do not claim a vulnerability. Do not invoke web research as a substitute and do not narrate another future tool action."
       }
     ]
   };
@@ -192,6 +217,12 @@ export class SecurityAwareOpenAiCompatibleAdapter implements ModelAdapter {
 
     if (requestsSecurityExecution(prepared) && !hasSecurityToolResult(prepared)) {
       const second = await this.raw.generate(initialRepairRequest(prepared, normalizedFirst));
+      const normalizedSecond = normalizeTextualToolResult(second, prepared.tools).result;
+      return { ...normalizedSecond, usage: mergeUsage(normalizedFirst.usage, normalizedSecond.usage) };
+    }
+
+    if (hasSecurityToolResult(prepared) && requestsCapabilityLimitedSecurityClass(prepared) && !hasCapabilityStopLanguage(normalizedFirst.content)) {
+      const second = await this.raw.generate(capabilityStopRepairRequest(prepared, normalizedFirst));
       const normalizedSecond = normalizeTextualToolResult(second, prepared.tools).result;
       return { ...normalizedSecond, usage: mergeUsage(normalizedFirst.usage, normalizedSecond.usage) };
     }
