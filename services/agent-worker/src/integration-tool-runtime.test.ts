@@ -54,7 +54,7 @@ describe("PermissionedIntegrationToolRuntime", () => {
       },
       error: null
     }));
-    const execute = vi.fn(async () => ({ content: "ok" }));
+    const execute = vi.fn(async (_input: unknown) => ({ content: "ok" }));
     const runtime = new PermissionedIntegrationToolRuntime({ rpc }, new Map([["github", { execute }]]));
     const output = await runtime.execute(run, { id: "call-1", name: "github_read_file", input: { resourceId: "repo-1", path: "README.md" } });
     expect(output).toEqual({ content: "ok" });
