@@ -1,2 +1,3 @@
-2026-08-30T19:37:00Z post-duplicate-repair Pentest Intelligence E2E rerun
-focus=loop_control,adaptation,capability-stop,duplicate-repair
+2026-08-31 Batch 5 Pentest Intelligence E2E production gate
+focus=loop_control,adaptation,capability-stop,duplicate-repair,research-separation
+strict=true
