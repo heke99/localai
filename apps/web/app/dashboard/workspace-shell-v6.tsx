@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { WorkspaceShellV5 } from "./workspace-shell-v5";
-import { dashboardRecoveryRequest, upsertRecoveredConversation } from "./workspace-navigation-recovery";
+import { dashboardRecoveryRequest, upsertRecoveredConversation, withoutProvisionalRun } from "./workspace-navigation-recovery";
 
 type WorkspaceShellV6Props = Parameters<typeof WorkspaceShellV5>[0];
 type Snapshot = WorkspaceShellV6Props["snapshot"];
@@ -19,6 +19,7 @@ type ConversationRecoveryResponse = {
     updated_at?: string;
   };
   messages?: Message[];
+  selectedResourceIds?: string[];
   error?: string;
 };
 
@@ -43,8 +44,14 @@ function recoveredConversation(body: ConversationRecoveryResponse, expectedId: s
     created_at: conversation.created_at,
     updated_at: conversation.updated_at,
     last_message_at: latestMessageAt,
-    selected_resource_ids: []
+    selected_resource_ids: (body.selectedResourceIds ?? []).filter((value): value is string => typeof value === "string")
   };
+}
+
+function removeProvisionalRunFromLocation() {
+  if (!new URLSearchParams(window.location.search).has("run")) return;
+  const next = `${window.location.pathname}${withoutProvisionalRun(window.location.search)}${window.location.hash}`;
+  window.history.replaceState(window.history.state, "", next);
 }
 
 export function WorkspaceShellV6(props: WorkspaceShellV6Props) {
@@ -69,6 +76,11 @@ export function WorkspaceShellV6(props: WorkspaceShellV6Props) {
         }
         return;
       }
+
+      // The URL run id is deliberately consumed before WorkspaceShellV4 mounts.
+      // V4 will restore only the server-confirmed activeRun from the conversation
+      // endpoint, eliminating the old URL -> queued -> hydration-clear race.
+      if (request.runId) removeProvisionalRunFromLocation();
 
       let lastError: Error | null = null;
       for (let attempt = 0; attempt < 3 && !cancelled; attempt += 1) {
@@ -109,10 +121,15 @@ export function WorkspaceShellV6(props: WorkspaceShellV6Props) {
     </div>;
   }
 
+  // V6 renders only after client-side navigation recovery. Passing the resolved
+  // section into V5 prevents a direct URL from briefly mounting V4, whose legacy
+  // navigation effect could otherwise rewrite `section=direct` back to a mode.
+  const initialDirectMode = new URLSearchParams(window.location.search).get("section") === "direct";
+
   return <>
-    <WorkspaceShellV5 {...props} snapshot={preparedSnapshot} />
+    <WorkspaceShellV5 {...props} snapshot={preparedSnapshot} initialDirectMode={initialDirectMode} />
     {recoveryError ? <div role="alert" style={{ position: "fixed", right: 18, bottom: 18, zIndex: 100, maxWidth: 420, border: "1px solid #5a3232", borderRadius: 10, padding: "10px 12px", background: "#241616", color: "#f0c4c4", font: "13px/1.4 system-ui, sans-serif" }}>
-      Chatten kunde inte återställas efter siduppdateringen. Uppdatera sidan igen; run-referensen har inte behandlats som ett svar.
+      Chatten kunde inte återställas efter siduppdateringen. URL-runnen användes inte som state; försök uppdatera sidan igen.
     </div> : null}
   </>;
 }

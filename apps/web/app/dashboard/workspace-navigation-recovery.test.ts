@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { dashboardRecoveryRequest, upsertRecoveredConversation } from "./workspace-navigation-recovery";
+import { dashboardRecoveryRequest, upsertRecoveredConversation, withoutProvisionalRun } from "./workspace-navigation-recovery";
 
 describe("dashboard navigation recovery", () => {
-  it("preserves a new conversation and run from the URL when the server snapshot is stale", () => {
+  it("recovers a new conversation and provisional run when the server snapshot is stale", () => {
     const request = dashboardRecoveryRequest(
       "?section=lab&conversation=11111111-1111-4111-8111-111111111111&run=22222222-2222-4222-8222-222222222222",
       ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]
@@ -15,11 +15,27 @@ describe("dashboard navigation recovery", () => {
     });
   });
 
-  it("does not perform an authoritative recovery when the snapshot already contains the conversation", () => {
+  it("revalidates a run even when its conversation is already in the snapshot", () => {
     expect(dashboardRecoveryRequest(
       "?section=lab&conversation=11111111-1111-4111-8111-111111111111&run=22222222-2222-4222-8222-222222222222",
       ["11111111-1111-4111-8111-111111111111"]
+    )).toEqual({
+      conversationId: "11111111-1111-4111-8111-111111111111",
+      runId: "22222222-2222-4222-8222-222222222222",
+      section: "lab"
+    });
+  });
+
+  it("skips recovery for a known conversation when no provisional run exists", () => {
+    expect(dashboardRecoveryRequest(
+      "?section=lab&conversation=11111111-1111-4111-8111-111111111111",
+      ["11111111-1111-4111-8111-111111111111"]
     )).toBeNull();
+  });
+
+  it("removes only the provisional run from dashboard navigation", () => {
+    expect(withoutProvisionalRun("?section=lab&conversation=abc&run=stale&provider=github"))
+      .toBe("?section=lab&conversation=abc&provider=github");
   });
 
   it("upserts the recovered conversation without creating duplicates", () => {

@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { DirectModelPanel } from "./direct-model-panel";
 import { WorkspaceShellV4 } from "./workspace-shell-v4";
 import styles from "./workspace-shell-v3.module.css";
 
-type WorkspaceShellV5Props = Parameters<typeof WorkspaceShellV4>[0];
+type WorkspaceShellV5Props = Parameters<typeof WorkspaceShellV4>[0] & { initialDirectMode?: boolean };
 
 const PREWARM_DEBOUNCE_MS = 250;
 const PREWARM_COOLDOWN_MS = 30_000;
@@ -21,6 +22,14 @@ function isDeleteButton(target: EventTarget | null): target is HTMLButtonElement
   return Boolean(button.closest(`.${styles.projectActions}`) && button.textContent?.trim().startsWith("Radera"));
 }
 
+function dashboardLocation(section: string) {
+  const params = new URLSearchParams(window.location.search);
+  params.set("section", section);
+  params.delete("conversation");
+  params.delete("run");
+  return `${window.location.pathname}?${params.toString()}${window.location.hash}`;
+}
+
 export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
   const prewarmTimer = useRef<number | null>(null);
   const prewarmRetryTimer = useRef<number | null>(null);
@@ -29,6 +38,14 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
   const lastSuccessfulPrewarmAt = useRef(0);
   const deleteRetrying = useRef(false);
   const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
+  const [directMode, setDirectMode] = useState(props.initialDirectMode ?? false);
+
+  useEffect(() => {
+    const sync = () => setDirectMode(new URLSearchParams(window.location.search).get("section") === "direct");
+    sync();
+    window.addEventListener("popstate", sync);
+    return () => window.removeEventListener("popstate", sync);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -150,8 +167,6 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
     document.addEventListener("click", closeMobileHistoryAfterSelection, true);
     document.addEventListener("keydown", closeMobileHistoryOnEscape, true);
 
-    // Start warming as soon as a chat composer is rendered. This gives the GPU
-    // boot process a head start before the user has finished typing a prompt.
     if (composerAvailable()) void requestPrewarm();
 
     return () => {
@@ -165,6 +180,19 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
       if (prewarmRetryTimer.current !== null) window.clearTimeout(prewarmRetryTimer.current);
     };
   }, [props.workspaceId]);
+
+  function openDirectModel() {
+    window.history.pushState(window.history.state, "", dashboardLocation("direct"));
+    setMobileHistoryOpen(false);
+    setDirectMode(true);
+  }
+
+  function exitDirectModel() {
+    window.history.pushState(window.history.state, "", dashboardLocation("chat"));
+    setDirectMode(false);
+  }
+
+  if (directMode) return <DirectModelPanel workspaceId={props.workspaceId} onExit={exitDirectModel} />;
 
   const statusStyles = `
     .${styles.messageStream} {
@@ -273,6 +301,12 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
 
   return <div data-mobile-ui data-mobile-history={mobileHistoryOpen ? "open" : "closed"}>
     <WorkspaceShellV4 {...props} />
+    <button
+      type="button"
+      onClick={openDirectModel}
+      aria-label="Öppna direkt modell"
+      style={{ position: "fixed", right: 18, top: 14, zIndex: 48, minHeight: 36, border: "1px solid #34373e", borderRadius: 999, padding: "0 12px", background: "#181a1e", color: "#e2e3e5", boxShadow: "0 8px 24px rgba(0,0,0,.25)", cursor: "pointer", font: "12px/1 system-ui, sans-serif" }}
+    >Direkt modell</button>
     <button
       type="button"
       className="div3rsa-mobile-history-toggle"
