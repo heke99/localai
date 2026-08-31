@@ -54,6 +54,15 @@ function accessFailure(message: string, requestId: string) {
   );
 }
 
+function runtimeHealthUrl(endpoint: string, configured: string | null) {
+  if (configured) return configured;
+  const parsed = new URL(endpoint);
+  parsed.pathname = parsed.pathname.replace(/\/v1\/?$/, "").replace(/\/$/, "") + "/health";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
+}
+
 async function failDirectRun(admin: RpcClient, directRunId: string | null, code: string) {
   if (!directRunId) return;
   try {
@@ -91,6 +100,7 @@ export async function POST(request: Request) {
   const rpc = supabase as unknown as RpcClient;
   const admin = createSupabaseAdminClient() as unknown as RpcClient;
   let directRunId: string | null = null;
+  let resolvedConversationId: string | null = conversationId;
 
   try {
     // Permission + billing + conversation identity are checked without creating a
@@ -116,7 +126,7 @@ export async function POST(request: Request) {
 
     // RuntimeManager readiness includes the agent worker contract. Direct mode only
     // requires the inference server, so probe its own health URL explicitly.
-    const health = await fetch(ensured.instance.healthUrl, {
+    const health = await fetch(runtimeHealthUrl(endpoint, ensured.instance.healthUrl), {
       method: "GET",
       headers: authorizationHeaders,
       cache: "no-store",
@@ -141,6 +151,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "direct_model_prepare_failed", requestId }, { status: 500 });
     }
     directRunId = preparedRun.directRunId;
+    resolvedConversationId = preparedRun.conversationId;
     if (preparedRun.modelAlias !== alias) throw new Error("direct_model_alias_mismatch");
 
     const { data: storedMessages, error: messagesError } = await supabase
@@ -208,9 +219,14 @@ export async function POST(request: Request) {
     const message = error instanceof Error ? error.message : String(error);
     const warming = /warming|provision|unhealthy|fetch failed|ECONNREFUSED|UND_ERR_CONNECT|timeout/i.test(message);
     const pending = /direct_model_schema_pending/.test(message);
-    console.error("[direct-model] failed", { requestId, directRunId, failureCode });
+    console.error("[direct-model] failed", { requestId, directRunId, conversationId: resolvedConversationId, failureCode });
     return NextResponse.json(
-      { error: pending ? "direct_model_schema_pending" : warming ? "runtime_warming" : "direct_model_failed", requestId, directRunId },
+      {
+        error: pending ? "direct_model_schema_pending" : warming ? "runtime_warming" : "direct_model_failed",
+        requestId,
+        directRunId,
+        conversationId: resolvedConversationId
+      },
       { status: pending || warming ? 503 : 502 }
     );
   }
