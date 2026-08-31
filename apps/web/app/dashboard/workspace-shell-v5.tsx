@@ -5,7 +5,7 @@ import { DirectModelPanel } from "./direct-model-panel";
 import { WorkspaceShellV4 } from "./workspace-shell-v4";
 import styles from "./workspace-shell-v3.module.css";
 
-type WorkspaceShellV5Props = Parameters<typeof WorkspaceShellV4>[0];
+type WorkspaceShellV5Props = Parameters<typeof WorkspaceShellV4>[0] & { initialDirectMode?: boolean };
 
 const PREWARM_DEBOUNCE_MS = 250;
 const PREWARM_COOLDOWN_MS = 30_000;
@@ -38,7 +38,7 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
   const lastSuccessfulPrewarmAt = useRef(0);
   const deleteRetrying = useRef(false);
   const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
-  const [directMode, setDirectMode] = useState(false);
+  const [directMode, setDirectMode] = useState(props.initialDirectMode ?? false);
 
   useEffect(() => {
     const sync = () => setDirectMode(new URLSearchParams(window.location.search).get("section") === "direct");
