@@ -20,13 +20,13 @@ type RpcClient = {
   rpc: <T>(name: string, args: Record<string, unknown>) => Promise<{ data: T | null; error: { message: string; code?: string } | null }>;
 };
 
+type DirectAccess = { allowed?: boolean; modelAlias?: string; mode?: string };
 type PreparedDirectRun = {
   directRunId?: string;
   conversationId?: string;
   modelAlias?: string;
   mode?: string;
 };
-
 type StoredMessage = { role: string; content: unknown; created_at: string };
 type CompletionBody = {
   choices?: Array<{ message?: { content?: string | null } }>;
@@ -35,12 +35,23 @@ type CompletionBody = {
 };
 
 function schemaPending(message: string) {
-  return /prepare_direct_model_run|complete_direct_model_run|Could not find the function|PGRST202/i.test(message);
+  return /direct_model_access_preflight|prepare_direct_model_run|complete_direct_model_run|Could not find the function|PGRST202/i.test(message);
 }
 
 function safeFailureCode(value: unknown) {
   const text = value instanceof Error ? value.message : String(value ?? "direct_model_failed");
   return text.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 120) || "direct_model_failed";
+}
+
+function accessFailure(message: string, requestId: string) {
+  if (schemaPending(message)) return NextResponse.json({ error: "direct_model_schema_pending", requestId }, { status: 503 });
+  const subscription = /subscription_access_required/.test(message);
+  const denied = /permission_denied|workspace_access_denied|conversation_access_denied/.test(message);
+  const conflict = /conversation_has_active_run|conversation_mode_mismatch/.test(message);
+  return NextResponse.json(
+    { error: subscription ? "subscription_required" : denied ? "access_denied" : conflict ? "conversation_busy" : "direct_model_access_failed", requestId },
+    { status: subscription ? 402 : denied ? 403 : conflict ? 409 : 500 }
+  );
 }
 
 async function failDirectRun(admin: RpcClient, directRunId: string | null, code: string) {
@@ -51,8 +62,7 @@ async function failDirectRun(admin: RpcClient, directRunId: string | null, code:
       target_failure_code: code
     });
   } catch {
-    // The original failure remains the canonical error. A failed audit update
-    // must not mask the inference/runtime error returned to the caller.
+    // Preserve the original runtime/inference error as the response cause.
   }
 }
 
@@ -83,6 +93,39 @@ export async function POST(request: Request) {
   let directRunId: string | null = null;
 
   try {
+    // Permission + billing + conversation identity are checked without creating a
+    // message/run. This lets a cold GPU return runtime_warming without polluting
+    // the conversation with a failed user turn.
+    const access = await rpc.rpc<DirectAccess>("direct_model_access_preflight", {
+      target_workspace_id: workspaceId,
+      target_conversation_id: conversationId,
+      target_mode: mode
+    });
+    if (access.error) return accessFailure(access.error.message, requestId);
+    if (!access.data?.allowed || !access.data.modelAlias) {
+      return NextResponse.json({ error: "direct_model_access_failed", requestId }, { status: 403 });
+    }
+
+    const alias = runtimeAliasForMode(mode as "chat" | "code" | "lab" | "research");
+    if (alias !== access.data.modelAlias) throw new Error("direct_model_alias_mismatch");
+    const ensured = await ensureModelRuntime(alias);
+    const endpoint = ensured.instance.endpoint.replace(/\/$/, "");
+    const apiKey = directInferenceApiKey();
+    const authorizationHeaders: Record<string, string> = {};
+    if (apiKey) authorizationHeaders.authorization = `Bearer ${apiKey}`;
+
+    // RuntimeManager readiness includes the agent worker contract. Direct mode only
+    // requires the inference server, so probe its own health URL explicitly.
+    const health = await fetch(ensured.instance.healthUrl, {
+      method: "GET",
+      headers: authorizationHeaders,
+      cache: "no-store",
+      signal: AbortSignal.timeout(5_000)
+    }).catch(() => null);
+    if (!health?.ok) {
+      return NextResponse.json({ error: "runtime_warming", runtimeState: ensured.instance.state, requestId }, { status: 503 });
+    }
+
     const prepared = await rpc.rpc<PreparedDirectRun>("prepare_direct_model_run", {
       target_workspace_id: workspaceId,
       target_conversation_id: conversationId,
@@ -91,25 +134,14 @@ export async function POST(request: Request) {
       target_request_id: requestId,
       target_trace_id: traceId
     });
-
-    if (prepared.error) {
-      if (schemaPending(prepared.error.message)) {
-        return NextResponse.json({ error: "direct_model_schema_pending", requestId }, { status: 503 });
-      }
-      const subscription = /subscription_access_required/.test(prepared.error.message);
-      const denied = /permission_denied|workspace_access_denied|conversation_access_denied/.test(prepared.error.message);
-      const conflict = /conversation_has_active_run|conversation_mode_mismatch/.test(prepared.error.message);
-      return NextResponse.json(
-        { error: subscription ? "subscription_required" : denied ? "access_denied" : conflict ? "conversation_busy" : "direct_model_prepare_failed", requestId },
-        { status: subscription ? 402 : denied ? 403 : conflict ? 409 : 500 }
-      );
-    }
+    if (prepared.error) return accessFailure(prepared.error.message, requestId);
 
     const preparedRun = prepared.data;
     if (!preparedRun?.directRunId || !preparedRun.conversationId || !preparedRun.modelAlias) {
       return NextResponse.json({ error: "direct_model_prepare_failed", requestId }, { status: 500 });
     }
     directRunId = preparedRun.directRunId;
+    if (preparedRun.modelAlias !== alias) throw new Error("direct_model_alias_mismatch");
 
     const { data: storedMessages, error: messagesError } = await supabase
       .from("messages")
@@ -123,14 +155,7 @@ export async function POST(request: Request) {
     history.reverse();
     const messages = buildDirectModelMessages(history);
 
-    const alias = runtimeAliasForMode(mode as "chat" | "code" | "lab" | "research");
-    if (alias !== preparedRun.modelAlias) throw new Error("direct_model_alias_mismatch");
-    const ensured = await ensureModelRuntime(alias);
-    const endpoint = ensured.instance.endpoint.replace(/\/$/, "");
-    const apiKey = directInferenceApiKey();
-    const headers: Record<string, string> = { "content-type": "application/json" };
-    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-
+    const headers: Record<string, string> = { "content-type": "application/json", ...authorizationHeaders };
     const upstream = await fetch(`${endpoint}/chat/completions`, {
       method: "POST",
       headers,
@@ -180,8 +205,9 @@ export async function POST(request: Request) {
   } catch (error) {
     const failureCode = safeFailureCode(error);
     await failDirectRun(admin, directRunId, failureCode);
-    const warming = /warming|provision|unhealthy|fetch failed|ECONNREFUSED|UND_ERR_CONNECT/i.test(error instanceof Error ? error.message : String(error));
-    const pending = /direct_model_schema_pending/.test(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    const warming = /warming|provision|unhealthy|fetch failed|ECONNREFUSED|UND_ERR_CONNECT|timeout/i.test(message);
+    const pending = /direct_model_schema_pending/.test(message);
     console.error("[direct-model] failed", { requestId, directRunId, failureCode });
     return NextResponse.json(
       { error: pending ? "direct_model_schema_pending" : warming ? "runtime_warming" : "direct_model_failed", requestId, directRunId },
