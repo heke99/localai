@@ -1,9 +1,50 @@
 import { describe, expect, it } from "vitest";
 import {
+  deterministicTimeResult,
   groundedEvidenceReviewMessages,
   groundedSynthesisMessages,
   parseGroundedEvidenceReview
 } from "./final-grounding";
+
+const liveTimeTask = {
+  requiresCurrentInformation: true,
+  liveDataKind: "time"
+} as Parameters<typeof deterministicTimeResult>[0];
+
+const liveTimeTrace = [{
+  sequence: 1,
+  name: "current_time",
+  input: { timezone: "Europe/Stockholm" },
+  output: {
+    timezone: "Europe/Stockholm",
+    localDate: "2026-09-01",
+    localTime: "17:10:00",
+    localIso: "2026-09-01T17:10:00+02:00",
+    utcIso: "2026-09-01T15:10:00.000Z"
+  }
+}];
+
+describe("deterministicTimeResult", () => {
+  it("returns the exact live localIso for the production current date-and-time prompt", () => {
+    const result = deterministicTimeResult(
+      liveTimeTask,
+      "What is the current date and time in Europe/Stockholm? Use the current_time tool.",
+      liveTimeTrace
+    );
+
+    expect(result?.content).toBe("The current date and time in Europe/Stockholm is 2026-09-01T17:10:00+02:00.");
+  });
+
+  it("keeps both date and time for Swedish combined phrasing", () => {
+    const result = deterministicTimeResult(
+      liveTimeTask,
+      "Vad är datum och tid i Stockholm?",
+      liveTimeTrace
+    );
+
+    expect(result?.content).toBe("The current date and time in Europe/Stockholm is 2026-09-01T17:10:00+02:00.");
+  });
+});
 
 describe("groundedSynthesisMessages", () => {
   it("tightens synthesis for latest/current requests", () => {
