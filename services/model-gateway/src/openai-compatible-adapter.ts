@@ -182,7 +182,10 @@ function reasoningEffort(request: GenerateRequest): QwenReasoningEffort {
 }
 
 function requiredTool(name: string): ToolDirective {
-  return { choice: "required", forcedToolName: name };
+  // Qwen3.8's XML tool format is parsed reliably by llama.cpp on the auto path,
+  // while the pinned build's required grammar truncates calls after <tool_call>.
+  // Keep fail-closed scope by exposing only the required tool for this turn.
+  return { choice: "auto", forcedToolName: name };
 }
 
 function toolDirective(request: GenerateRequest): ToolDirective | undefined {
