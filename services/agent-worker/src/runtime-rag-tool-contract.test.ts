@@ -35,13 +35,14 @@ describe("production RAG and tool runtime contract", () => {
     expect(processor).toContain("${preparedSkills.instructions}");
   });
 
-  it("makes structured tool parsing and embeddings deployment gates", () => {
+  it("makes forced-tool schemas and embeddings deployment gates", () => {
     const upgrade = read("infra/runtime/upgrade-legacy-gpuhub.sh");
     const recovery = read("infra/runtime/recover-legacy-gpuhub.sh");
     const recoveryV2 = read("infra/runtime/recover-legacy-gpuhub-v2.sh");
     const reconciler = read("infra/runtime/reconcile-gpuhub-production-profile.sh");
     const profile = read("infra/runtime/gpuhub-production-profile.env");
     const toolProbe = read("infra/runtime/ensure-tool-calling-runtime.sh");
+    const gateway = read("services/model-gateway/src/openai-compatible-adapter.ts");
     const embed = read("infra/runtime/ensure-embedding-runtime.sh");
     const canary = read("infra/runtime/e2e-rag-tool-runtime.sh");
     const retrieval = read("services/agent-worker/src/knowledge-retrieval.ts");
@@ -58,10 +59,12 @@ describe("production RAG and tool runtime contract", () => {
     expect(reconciler).toContain("ACTIVE_JINJA");
     expect(reconciler).toContain("TARGET_JINJA");
     expect(toolProbe).toContain("div3rsa_runtime_probe");
-    expect(toolProbe).toContain("tool_calls");
-    expect(toolProbe).toContain('"tool_choice":"auto"');
-    expect(toolProbe).not.toContain('"tool_choice":"required"');
-    expect(toolProbe).not.toContain('"tool_choice":{"type":"function"');
+    expect(toolProbe).toContain('"json_schema": {');
+    expect(toolProbe).not.toContain('"tool_choice"');
+    expect(toolProbe).not.toContain('"tools":');
+    expect(gateway).toContain("json_schema: forcedToolSchema(forcedTool)");
+    expect(gateway).toContain("forced_tool_name_mismatch");
+    expect(gateway).toContain("if (forcedToolDefinition(request)) return this.generate(request)");
     expect(embed).toContain('DIV3RSA_EMBEDDING_PORT:-16007');
     expect(embed).toContain("TensorBoard service");
     expect(embed).toContain("--embedding");
