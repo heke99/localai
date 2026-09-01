@@ -19,8 +19,12 @@ class ConformantFixtureAdapter implements ModelAdapter {
   async generate(request: GenerateRequest): Promise<GenerateResult> {
     const toolResult = request.messages.find((message) => message.role === "tool");
     if (toolResult) {
-      const parsed = JSON.parse(toolResult.content) as { continuationToken: string };
-      return { modelVersionId: profile.modelVersionId, content: `Verified tool evidence: ${parsed.continuationToken}`, finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
+      const parsed = JSON.parse(toolResult.content) as { continuationToken: string; iso?: string };
+      const originalUser = request.messages.find((message) => message.role === "user")?.content ?? "";
+      const content = /continuationToken/i.test(originalUser)
+        ? `Verified tool evidence: ${parsed.continuationToken}`
+        : `The current date and time is ${parsed.iso ?? "unknown"}.`;
+      return { modelVersionId: profile.modelVersionId, content, finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
     }
     const currentTime = request.tools?.find((candidate) => candidate.name === "current_time");
     if (currentTime) {
@@ -56,7 +60,7 @@ class UngroundedContinuationAdapter extends ConformantFixtureAdapter {
 }
 
 describe("model conformance", () => {
-  it("accepts a continuation that proves opaque tool-result grounding even with harmless prose", async () => {
+  it("keeps the user's continuation intent explicit across native tool call and tool result", async () => {
     const report = await runModelConformance(new ConformantFixtureAdapter(), profile, { tokenSeed: "unit" });
     expect(report.allowed).toBe(true);
     expect(report.passed).toBe(report.cases);
