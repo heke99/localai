@@ -38,6 +38,8 @@ const downloadIndexPattern = /(?:^|\/)downloads?(?:\/|$)/i;
 const releaseIndexPattern = /\b(?:release\s+schedule|release\s+index|versions?|releases?)\b/i;
 const versionSpecificPathPattern = /(?:^|\/)v?\d+\.\d+\.\d+(?:\/|$)/i;
 const semanticVersionPattern = /\bv?\d+\.\d+\.\d+\b/i;
+const MAX_FRESHNESS_FETCH_ATTEMPTS = 6;
+const ACCEPTED_FETCH_CONTEXT_CHARS = 6_000;
 const searchStopWords = new Set([
   "what", "which", "find", "search", "look", "verify", "check", "tell", "show", "please", "using", "from", "with", "that", "this", "the", "and", "for", "now", "current", "latest", "newest", "recent", "official", "information", "source", "sources", "web", "open", "relevant", "report", "state", "answer", "memory", "alone", "today", "right", "currently", "senaste", "nyaste", "aktuell", "aktuellt", "idag", "sök", "söka", "källa", "källor"
 ]);
@@ -60,9 +62,14 @@ function isNodeReleasePrompt(prompt: string): boolean {
   return /\bnode\.?js\b/i.test(prompt) && /\b(?:release|version(?:en)?)\b/i.test(prompt);
 }
 
+function isSwedishVatPrompt(prompt: string): boolean {
+  return /\b(?:sweden|sverige|swedish|svensk(?:a|t)?)\b/i.test(prompt)
+    && /\b(?:vat|moms|momssats|tax|skatt)\b/i.test(prompt);
+}
+
 function authorityFocusedQuery(prompt: string, compact: string): string | null {
   const sweden = /\b(?:sweden|sverige|swedish|svensk(?:a|t)?)\b/i.test(prompt);
-  if (sweden && /\b(?:vat|moms|momssats|tax|skatt)\b/i.test(prompt)) return `site:skatteverket.se ${compact}`;
+  if (isSwedishVatPrompt(prompt)) return `site:skatteverket.se ${compact}`;
   if (sweden && /\b(?:visa|visum|immigration|residence\s+permit|uppehållstillstånd|work\s+permit|arbetstillstånd)\b/i.test(prompt)) return `site:migrationsverket.se ${compact}`;
   if (sweden && /\b(?:law|legal|regulation|legislation|lag|förordning|regelverk)\b/i.test(prompt)) return `site:riksdagen.se ${compact}`;
   if (isNodeReleasePrompt(prompt)) return `site:nodejs.org ${compact}`;
@@ -94,12 +101,8 @@ function promptSearchTerms(prompt: string): string[] {
 }
 
 function topicEvidenceTerms(prompt: string): string[] {
-  if (isNodeReleasePrompt(prompt)) {
-    return ["node.js", "nodejs", "release", "version"];
-  }
-  if (/\b(?:sweden|sverige|swedish|svensk(?:a|t)?)\b/i.test(prompt) && /\b(?:vat|moms|momssats|tax|skatt)\b/i.test(prompt)) {
-    return ["vat", "moms", "momssats", "mervärdesskatt", "skattesats"];
-  }
+  if (isNodeReleasePrompt(prompt)) return ["node.js", "nodejs", "release", "version"];
+  if (isSwedishVatPrompt(prompt)) return ["vat", "moms", "momssats", "mervärdesskatt", "skattesats"];
   return [];
 }
 
@@ -152,11 +155,9 @@ export interface RankedSearchCandidate {
 
 function canonicalFreshnessCandidates(prompt: string): RankedSearchCandidate[] {
   const entries: string[] = [];
-  if (isNodeReleasePrompt(prompt)) {
-    entries.push("https://nodejs.org/en/download/current");
-  }
-  if (/\b(?:sweden|sverige|swedish|svensk(?:a|t)?)\b/i.test(prompt) && /\b(?:vat|moms|momssats|tax|skatt)\b/i.test(prompt)) {
-    entries.push("https://www.skatteverket.se/foretag/moms/saljavarorochtjanster/momssatspavarorochtjanster.4.58d555751259e4d66168000409.html");
+  if (isNodeReleasePrompt(prompt)) entries.push("https://nodejs.org/en/download/current");
+  if (isSwedishVatPrompt(prompt)) {
+    entries.push("https://www.skatteverket.se/foretag/moms/saljavarorochtjanster/momssatserochundantagfranmoms.4.58d555751259e4d66168000409.html");
   }
   return entries.map((url, index) => ({
     url,
@@ -168,9 +169,9 @@ function canonicalFreshnessCandidates(prompt: string): RankedSearchCandidate[] {
   }));
 }
 
-function mergeRankedCandidates(primary: RankedSearchCandidate[], secondary: RankedSearchCandidate[]): RankedSearchCandidate[] {
+function mergeRankedCandidates(...groups: RankedSearchCandidate[][]): RankedSearchCandidate[] {
   const seen = new Set<string>();
-  return [...primary, ...secondary].filter((candidate) => {
+  return groups.flat().filter((candidate) => {
     if (seen.has(candidate.url)) return false;
     seen.add(candidate.url);
     return true;
@@ -264,6 +265,16 @@ function orderEvidenceCandidates(candidates: RankedSearchCandidate[]): RankedSea
   return [...distinctHosts, ...repeatedHosts];
 }
 
+function appendToolEvidence(messages: ModelMessage[], call: ModelToolCall, output: unknown, maxSerializedChars?: number): void {
+  messages.push({ role: "assistant", content: "", toolCalls: [call] });
+  messages.push({
+    role: "tool",
+    name: call.name,
+    toolCallId: call.id,
+    content: compactToolOutput(output, maxSerializedChars)
+  });
+}
+
 async function executeRequiredTool(input: {
   queue: AgentQueue;
   tools: WorkerToolRuntime;
@@ -271,6 +282,8 @@ async function executeRequiredTool(input: {
   messages: ModelMessage[];
   trace: WorkerToolTrace[];
   call: ModelToolCall;
+  appendToMessages?: boolean;
+  maxSerializedChars?: number;
 }): Promise<unknown> {
   const { queue, tools, run, messages, trace, call } = input;
   await queue.step(run.runId, "tool", "waiting_for_tool", call.name, {
@@ -280,9 +293,18 @@ async function executeRequiredTool(input: {
   });
   const output = await tools.execute(run, call);
   trace.push({ sequence: trace.length + 1, name: call.name, input: call.input, output });
-  messages.push({ role: "assistant", content: "", toolCalls: [call] });
-  messages.push({ role: "tool", name: call.name, toolCallId: call.id, content: compactToolOutput(output) });
+  if (input.appendToMessages !== false) appendToolEvidence(messages, call, output, input.maxSerializedChars);
   return output;
+}
+
+function boundedEvidenceCandidates(candidates: RankedSearchCandidate[], canonical: RankedSearchCandidate[]): RankedSearchCandidate[] {
+  const ranked = orderEvidenceCandidates(candidates);
+  if (!canonical.length) return ranked.slice(0, MAX_FRESHNESS_FETCH_ATTEMPTS);
+  return mergeRankedCandidates(
+    ranked.slice(0, 2),
+    canonical,
+    ranked.slice(2, MAX_FRESHNESS_FETCH_ATTEMPTS)
+  ).slice(0, MAX_FRESHNESS_FETCH_ATTEMPTS);
 }
 
 export async function collectRequiredFreshnessEvidence(input: {
@@ -337,7 +359,8 @@ export async function collectRequiredFreshnessEvidence(input: {
           id: index === 0 ? `${run.requestId}:freshness:search` : `${run.requestId}:freshness:search:${index + 1}`,
           name: "web_search",
           input: { query, limit: 12 }
-        }
+        },
+        maxSerializedChars: 6_000
       });
       mergedResults.push(...searchResults(searchOutput));
       candidates = rankSearchCandidates({ results: mergedResults }, normalizedPrompt);
@@ -359,7 +382,7 @@ export async function collectRequiredFreshnessEvidence(input: {
 
   const targetPoolSize = candidates.length > 0 ? candidates.length : canonicalCandidates.length;
   const targetSources = Math.min(desiredSources, targetPoolSize);
-  const orderedCandidates = mergeRankedCandidates(orderEvidenceCandidates(candidates), canonicalCandidates);
+  const orderedCandidates = boundedEvidenceCandidates(candidates, canonicalCandidates);
   let fetched = 0;
   let fetchAttempt = 0;
   let lastError: unknown = null;
@@ -367,7 +390,13 @@ export async function collectRequiredFreshnessEvidence(input: {
 
   for (const candidate of orderedCandidates) {
     if (fetched >= targetSources && latestArtifactProofOpened) break;
+    if (fetchAttempt >= MAX_FRESHNESS_FETCH_ATTEMPTS) break;
     fetchAttempt += 1;
+    const call: ModelToolCall = {
+      id: `${run.requestId}:freshness:fetch:${fetchAttempt}`,
+      name: "web_fetch",
+      input: { url: candidate.url }
+    };
     try {
       const output = await executeRequiredTool({
         queue,
@@ -375,11 +404,8 @@ export async function collectRequiredFreshnessEvidence(input: {
         run,
         messages,
         trace,
-        call: {
-          id: `${run.requestId}:freshness:fetch:${fetchAttempt}`,
-          name: "web_fetch",
-          input: { url: candidate.url }
-        }
+        call,
+        appendToMessages: false
       });
       if (!isMateriallyRelevantOpenedEvidence(output, normalizedPrompt)) {
         lastError = new Error("opened_source_not_materially_relevant");
@@ -388,10 +414,14 @@ export async function collectRequiredFreshnessEvidence(input: {
           freshnessPreflight: true,
           fetchAttempt,
           url: candidate.url,
-          contentRelevanceScore: fetchedEvidenceRelevance(output, normalizedPrompt)
+          contentRelevanceScore: fetchedEvidenceRelevance(output, normalizedPrompt),
+          retainedInTrace: true,
+          addedToModelContext: false
         });
         continue;
       }
+
+      appendToolEvidence(messages, call, output, ACCEPTED_FETCH_CONTEXT_CHARS);
       fetched += 1;
       if (requiresLatestArtifactEvidence && hasLatestArtifactProof(output)) latestArtifactProofOpened = true;
     } catch (error) {
@@ -422,6 +452,7 @@ export async function collectRequiredFreshnessEvidence(input: {
       openedSources: fetched,
       desiredSources: targetSources,
       candidatesTried: fetchAttempt,
+      maxFetchAttempts: MAX_FRESHNESS_FETCH_ATTEMPTS,
       evidenceQualityTargetMet: fetched >= targetSources && latestArtifactProofOpened,
       latestArtifactProofOpened
     });

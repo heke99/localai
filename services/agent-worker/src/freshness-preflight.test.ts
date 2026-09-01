@@ -29,7 +29,7 @@ const vatAuthorities = [
   "https://taxation-customs.ec.europa.eu/taxation/vat/vat-rates_en"
 ].sort();
 
-const canonicalVatUrl = "https://www.skatteverket.se/foretag/moms/saljavarorochtjanster/momssatspavarorochtjanster.4.58d555751259e4d66168000409.html";
+const canonicalVatUrl = "https://www.skatteverket.se/foretag/moms/saljavarorochtjanster/momssatserochundantagfranmoms.4.58d555751259e4d66168000409.html";
 const canonicalNodeUrl = "https://nodejs.org/en/download/current";
 
 describe("freshnessSearchQueries", () => {
@@ -469,5 +469,81 @@ describe("collectRequiredFreshnessEvidence", () => {
       .map((call) => String(call.input.url));
     expect(fetchUrls.at(-1)).toBe(canonicalNodeUrl);
     expect(fetchUrls).toContain("https://nodejs.org/en/blog/release/v25.8.0");
+  });
+
+  it("keeps rejected fetches in audit trace but out of the model context", async () => {
+    const prompt = "What is the current standard VAT rate in Sweden? Verify it using current web research.";
+    const rejectedSentinel = "REJECTED_CONTEXT_SENTINEL";
+    const messages: Array<{ role: string; content?: string | null }> = [];
+    const trace: Array<{ sequence: number; name: string; input: Record<string, unknown>; output: unknown }> = [];
+    const execute = vi.fn(async (_run: ClaimedRun, call: { name: string; input: Record<string, unknown> }) => {
+      if (call.name === "web_search") {
+        return {
+          results: [
+            { url: "https://noise.example/vat", title: "VAT Sweden", snippet: "Current VAT Sweden", score: 100 },
+            { url: "https://noise2.example/moms", title: "Moms Sverige", snippet: "Momssats Sverige", score: 99 }
+          ]
+        };
+      }
+      const url = String(call.input.url);
+      if (url === canonicalVatUrl) {
+        return { url, title: "Momssatser och undantag från moms", text: "Moms och momssatser i Sverige. 25 procent moms på nästan alla varor och tjänster." };
+      }
+      return { url, title: "Unrelated", text: `${rejectedSentinel} gardening and weather only` };
+    });
+    const queue = { step: vi.fn(async () => undefined) } as unknown as AgentQueue;
+
+    await collectRequiredFreshnessEvidence({
+      task: webTask(),
+      normalizedPrompt: prompt,
+      definitions: webDefinitions(),
+      queue,
+      tools: { execute } as unknown as WorkerToolRuntime,
+      run: { runId: "run-trace-only", requestId: "request-trace-only" } as ClaimedRun,
+      messages: messages as never,
+      trace: trace as never
+    });
+
+    expect(JSON.stringify(trace)).toContain(rejectedSentinel);
+    expect(JSON.stringify(messages)).not.toContain(rejectedSentinel);
+    expect(JSON.stringify(messages)).toContain("Momssatser och undantag från moms");
+  });
+
+  it("bounds noisy latest-release fetches and reaches the canonical current page by attempt three", async () => {
+    const prompt = "Find the current latest Node.js release from official Node.js information. Search the web and open the relevant source.";
+    const noise = Array.from({ length: 20 }, (_, index) => ({
+      url: `https://noise-${index}.example/nodejs-release-${index}`,
+      title: `Node.js release result ${index}`,
+      snippet: `Node.js version 25.${index}.0 release notes`,
+      score: 100 - index
+    }));
+    const execute = vi.fn(async (_run: ClaimedRun, call: { name: string; input: Record<string, unknown> }) => {
+      if (call.name === "web_search") return { results: noise };
+      const url = String(call.input.url);
+      if (url === canonicalNodeUrl) {
+        return { url, title: "Node.js Download", text: "Node.js v26.8.1 Current. v26.8.1 Latest Release." };
+      }
+      return { url, title: "Node.js old release", text: "Node.js version 25.9.0 release notes." };
+    });
+    const queue = { step: vi.fn(async () => undefined) } as unknown as AgentQueue;
+
+    await collectRequiredFreshnessEvidence({
+      task: webTask(),
+      normalizedPrompt: prompt,
+      definitions: webDefinitions(),
+      queue,
+      tools: { execute } as unknown as WorkerToolRuntime,
+      run: { runId: "run-bounded-node", requestId: "request-bounded-node" } as ClaimedRun,
+      messages: [],
+      trace: []
+    });
+
+    const fetchUrls = execute.mock.calls
+      .map(([, call]) => call)
+      .filter((call) => call.name === "web_fetch")
+      .map((call) => String(call.input.url));
+    expect(fetchUrls.length).toBeLessThanOrEqual(6);
+    expect(fetchUrls.indexOf(canonicalNodeUrl)).toBeGreaterThanOrEqual(0);
+    expect(fetchUrls.indexOf(canonicalNodeUrl)).toBeLessThanOrEqual(2);
   });
 });
