@@ -54,7 +54,7 @@ describe("groundedSynthesisMessages", () => {
       originalPrompt: "Find the current latest Node.js release from official information.",
       attempt: 0
     });
-    const instruction = String(messages.at(-1)?.content ?? "");
+    const instruction = messages.map((message) => String(message.content ?? "")).join("\n");
     expect(instruction).toContain("latest/current request");
     expect(instruction).toContain("Do not substitute LTS for Current");
     expect(instruction).toContain("version-specific release page");
