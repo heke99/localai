@@ -109,6 +109,12 @@ function toolChoice(request: GenerateRequest): ToolChoice | undefined {
   return forced ? { type: "function", function: { name: forced } } : "auto";
 }
 
+function validateRequiredToolCall(request: GenerateRequest, toolCalls: ModelToolCall[]): void {
+  const required = request.requiredToolName?.trim();
+  if (!required) return;
+  if (toolCalls.length !== 1 || toolCalls[0]?.name !== required) throw new Error(`required_tool_call_mismatch:${required}`);
+}
+
 function encodeTools(tools: ModelToolDefinition[] | undefined) {
   return tools?.map((tool) => ({
     type: "function",
@@ -179,6 +185,7 @@ export class GenericOpenAiCompatibleAdapter implements ModelAdapter {
     const first = body.choices?.[0];
     if (!first?.message) throw new Error("Inference returned no choices");
     const toolCalls = parseToolCalls(first.message);
+    validateRequiredToolCall(request, toolCalls);
     return {
       modelVersionId: this.profile.modelVersionId,
       content: first.message.content ?? "",
