@@ -75,13 +75,10 @@ if (emitted.name !== "current_time") throw new Error(`unexpected_tool_call:${emi
 if (emitted.input.timezone !== "Europe/Stockholm") throw new Error(`unexpected_timezone:${String(emitted.input.timezone)}`);
 
 // Preserve the model-selected name/arguments but use a canary-owned id so the
-// service-only cleanup RPC can remove only this transient lifecycle record.
-const call: ModelToolCall = {
-  ...emitted,
-  id: `runtime-canary-${randomUUID()}`
-};
+// lifecycle row is identifiable without changing the arguments chosen by Qwen.
+const call: ModelToolCall = { ...emitted, id: `runtime-canary-${randomUUID()}` };
 const stableOperationId = operationId(run.runId, call.id);
-let cleanupAttempted = false;
+let passed = false;
 try {
   const output = await runtime.execute(run, call);
   if (!output || typeof output !== "object" || Array.isArray(output)) throw new Error("current_time_output_invalid");
@@ -104,17 +101,23 @@ try {
   if (final.finishReason === "tool_call") throw new Error("model_repeated_tool_after_result");
   if (!final.content.trim()) throw new Error("final_answer_empty");
 
+  // Keep exactly this successful canary as durable operational evidence and
+  // prune older canary-only lifecycle rows. Normal user tool executions are untouched.
+  await rpc("service_prune_runtime_canary_tool_executions", { target_keep_operation_id: stableOperationId });
+  passed = true;
   console.log(JSON.stringify({
     ok: true,
     modelToolCall: { name: emitted.name, input: emitted.input },
     lifecycleOperationId: stableOperationId,
+    durableCompletedCanary: true,
     toolResult: { timezone: record.timezone, localIso: record.localIso, utcIso: record.utcIso },
     finalAnswer: final.content.trim().slice(0, 800)
   }, null, 2));
 } finally {
-  cleanupAttempted = true;
-  await rpc("service_delete_runtime_canary_tool_execution", { target_operation_id: stableOperationId }).catch((error) => {
-    console.error(`[tool-canary] cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
-  });
-  await runtime.endRun?.(run, cleanupAttempted ? "canary_complete" : "canary_failed").catch(() => undefined);
+  if (!passed) {
+    await rpc("service_delete_runtime_canary_tool_execution", { target_operation_id: stableOperationId }).catch((error) => {
+      console.error(`[tool-canary] failed-row cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+  await runtime.endRun?.(run, passed ? "canary_complete" : "canary_failed").catch(() => undefined);
 }
