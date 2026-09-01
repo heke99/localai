@@ -46,6 +46,9 @@ describe("production RAG and tool runtime contract", () => {
     expect(upgrade).toContain("ensure-tool-calling-runtime.sh");
     expect(upgrade).toContain("ensure-embedding-runtime.sh");
     expect(recovery).toContain('LLAMA_ARG_JINJA="${LLAMA_ARG_JINJA:-true}"');
+    expect(recovery).toContain("PRECHECKOUT_WRAPPER=1");
+    expect(recovery).toContain("deferring embedding recovery until exact target checkout");
+    expect(recovery.indexOf('if [[ "$PRECHECKOUT_WRAPPER" -eq 1 ]]')).toBeLessThan(recovery.indexOf('EMBEDDING_SCRIPT="${REPO_DIR}/infra/runtime/ensure-embedding-runtime.sh"'));
     expect(recoveryV2).toContain("MODEL_CMD+=(--jinja)");
     expect(recoveryV2).toContain("wait_for_port_free");
     expect(profile).toContain("DIV3RSA_GPUHUB_PRODUCTION_JINJA=true");
