@@ -13,7 +13,7 @@ const run: ClaimedRun = {
   resourceContext: []
 };
 
-function runtime(execute: ReturnType<typeof vi.fn>): WorkerToolRuntime {
+function runtime(execute: WorkerToolRuntime["execute"]): WorkerToolRuntime {
   return {
     list: vi.fn(async () => [{
       name: "strict_tool",
