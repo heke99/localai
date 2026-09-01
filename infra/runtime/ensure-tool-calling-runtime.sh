@@ -21,7 +21,7 @@ probe() {
 {
   "model": "${MODEL_ALIAS}",
   "messages": [
-    {"role":"system","content":"This is a runtime protocol probe. Use the required tool exactly once and do not answer in plain text."},
+    {"role":"system","content":"This is a runtime protocol probe. You MUST call the only available tool exactly once and MUST NOT answer in plain text."},
     {"role":"user","content":"Call div3rsa_runtime_probe with nonce TOOL_CALL_OK."}
   ],
   "tools": [
@@ -39,7 +39,7 @@ probe() {
       }
     }
   ],
-  "tool_choice":"required",
+  "tool_choice":"auto",
   "temperature":0,
   "max_tokens":256,
   "stream":false,
@@ -74,12 +74,12 @@ curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${MODEL_PORT}/h
   || fatal "generation runtime is unhealthy before tool-call probe"
 
 if probe; then
-  log "structured OpenAI tool calling healthy on 127.0.0.1:${MODEL_PORT}"
+  log "Qwen3.8 structured tool calling healthy on llama.cpp auto path at 127.0.0.1:${MODEL_PORT}"
   exit 0
 fi
 
-log "structured tool-call probe failed; restarting llama-server with documented Jinja tool parsing enabled"
+log "tool-call probe failed; restarting llama-server with documented Jinja tool parsing enabled"
 LLAMA_ARG_JINJA=true DIV3RSA_MODEL_JINJA=true DIV3RSA_FORCE_MODEL_RESTART=1 bash "$RECOVERY_SCRIPT"
 
-probe || fatal "structured OpenAI tool calling still failed after Jinja-enabled recovery"
-log "structured OpenAI tool calling recovered and verified"
+probe || fatal "Qwen3.8 structured tool calling still failed after Jinja-enabled recovery"
+log "Qwen3.8 structured tool calling recovered and verified"

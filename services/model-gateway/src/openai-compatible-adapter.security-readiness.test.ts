@@ -7,7 +7,7 @@ const securityTool = {
   inputSchema: { type: "object", required: ["tool", "target"], properties: { tool: { type: "string" }, target: { type: "string" } } }
 };
 
-test("forces only security_scan before readiness tool evidence exists", async () => {
+test("scopes only security_scan before readiness tool evidence exists", async () => {
   const bodies: Array<Record<string, unknown>> = [];
   const fetcher: typeof fetch = async (_url, init) => {
     bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -23,7 +23,7 @@ test("forces only security_scan before readiness tool evidence exists", async ()
     ],
     tools: [securityTool, { name: "current_time", description: "time", inputSchema: { type: "object" } }]
   });
-  expect(bodies[0]?.tool_choice).toBe("required");
+  expect(bodies[0]?.tool_choice).toBe("auto");
   expect(bodies[0]?.tools).toEqual([
     { type: "function", function: { name: "security_scan", description: securityTool.description, parameters: securityTool.inputSchema } }
   ]);
@@ -43,7 +43,7 @@ test("forces only security_scan before readiness tool evidence exists", async ()
   expect(bodies[0]?.tool_choice).toBe("auto");
 });
 
-test("does not force security_scan without the reserved readiness marker", async () => {
+test("does not scope security_scan without the reserved readiness marker", async () => {
   const bodies: Array<Record<string, unknown>> = [];
   const fetcher: typeof fetch = async (_url, init) => {
     bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);

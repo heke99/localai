@@ -59,7 +59,8 @@ describe("production RAG and tool runtime contract", () => {
     expect(reconciler).toContain("TARGET_JINJA");
     expect(toolProbe).toContain("div3rsa_runtime_probe");
     expect(toolProbe).toContain("tool_calls");
-    expect(toolProbe).toContain('"tool_choice":"required"');
+    expect(toolProbe).toContain('"tool_choice":"auto"');
+    expect(toolProbe).not.toContain('"tool_choice":"required"');
     expect(toolProbe).not.toContain('"tool_choice":{"type":"function"');
     expect(embed).toContain('DIV3RSA_EMBEDDING_PORT:-16007');
     expect(embed).toContain("TensorBoard service");
