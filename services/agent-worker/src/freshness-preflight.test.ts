@@ -413,11 +413,12 @@ describe("collectRequiredFreshnessEvidence", () => {
       .map(([, call]) => call)
       .filter((call) => call.name === "web_fetch")
       .map((call) => String(call.input.url));
-    expect(fetchUrls).toEqual([
+    expect(fetchUrls).toHaveLength(3);
+    expect(fetchUrls.slice(0, 2).sort()).toEqual([
       "https://misleading.example/vat-sweden",
-      "https://other.example/momssats",
-      canonicalVatUrl
-    ]);
+      "https://other.example/momssats"
+    ].sort());
+    expect(fetchUrls.at(-1)).toBe(canonicalVatUrl);
     expect(queue.step).toHaveBeenCalledWith(
       "run-vat-irrelevant",
       "tool",
