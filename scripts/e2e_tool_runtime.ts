@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { processPrompt } from "@div3rsa/agent-runtime";
 import { OpenAiCompatibleAdapter } from "@div3rsa/model-gateway";
 import type { ModelMessage, ModelToolCall } from "@div3rsa/model-sdk";
 import { CompositeWorkerToolRuntime } from "../services/agent-worker/src/composite-tool-runtime";
 import { CoreToolRuntime } from "../services/agent-worker/src/core-tool-runtime";
+import { deterministicTimeResult } from "../services/agent-worker/src/final-grounding";
 import type { ClaimedRun } from "../services/agent-worker/src/processor";
 import { operationId } from "../services/agent-worker/src/tool-execution-lifecycle";
 
@@ -55,7 +57,7 @@ const model = new OpenAiCompatibleAdapter(inferenceBaseUrl, inferenceApiKey);
 const messages: ModelMessage[] = [
   {
     role: "system",
-    content: "LIVE INFORMATION REQUIRED: use an available deterministic/live tool. Never guess a realtime value from model memory. This is a production runtime canary. After receiving the tool result, return a concise final answer and do not call another tool."
+    content: "LIVE INFORMATION REQUIRED: use an available deterministic/live tool. Never guess a realtime value from model memory. This is a production runtime canary."
   },
   { role: "user", content: run.prompt }
 ];
@@ -87,19 +89,20 @@ try {
     throw new Error(`current_time_output_incomplete:${JSON.stringify(record).slice(0, 500)}`);
   }
 
-  messages.push({ role: "assistant", content: first.content, toolCalls: [call] });
-  messages.push({ role: "tool", name: call.name, toolCallId: call.id, content: JSON.stringify(output) });
-  const final = await model.generate({
-    requestId: `${run.requestId}:tool-result`,
-    alias: run.modelAlias,
-    messages,
-    tools: [currentTime],
-    temperature: 0,
-    maxOutputTokens: 256,
-    disableThinking: true
-  });
-  if (final.finishReason === "tool_call") throw new Error("model_repeated_tool_after_result");
-  if (!final.content.trim()) throw new Error("final_answer_empty");
+  // Match the production worker's fail-closed live-time path. Current-time
+  // answers are finalized from the executed tool evidence rather than asking
+  // the language model to restate a realtime value from memory.
+  const task = processPrompt(run.mode, run.prompt).analysis;
+  const final = deterministicTimeResult(task, run.prompt, [{
+    sequence: 1,
+    name: call.name,
+    input: call.input,
+    output
+  }]);
+  if (!final || final.finishReason !== "stop") throw new Error("deterministic_tool_continuation_missing");
+  if (!final.content.includes(record.localIso)) {
+    throw new Error(`final_answer_not_grounded_in_tool_result:${final.content.slice(0, 500)}`);
+  }
 
   // Keep exactly this successful canary as durable operational evidence and
   // prune older canary-only lifecycle rows. Normal user tool executions are untouched.
@@ -111,7 +114,8 @@ try {
     lifecycleOperationId: stableOperationId,
     durableCompletedCanary: true,
     toolResult: { timezone: record.timezone, localIso: record.localIso, utcIso: record.utcIso },
-    finalAnswer: final.content.trim().slice(0, 800)
+    finalAnswer: final.content.trim().slice(0, 800),
+    finalAnswerGroundedInToolResult: true
   }, null, 2));
 } finally {
   if (!passed) {
