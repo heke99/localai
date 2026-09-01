@@ -24,6 +24,12 @@ describe("execution policy v2", () => {
     expect(policy.requiredVerifiers).toEqual(expect.arrayContaining(["consequence-analysis", "targeted-tests", "completion-proof"]));
   });
 
+  it("allows five sequential dependent tool calls plus a final turn for explicit deep work", () => {
+    const policy = executionPolicyFor(analyzeTask("chat", "Run this end-to-end long-horizon task and follow every dependent step."));
+    expect(policy.tier).toBe("DEEP");
+    expect(policy).toMatchObject({ verificationRounds: 2, maxToolIterations: 6, maxModelTurns: 8, maxContextTokens: 32_000 });
+  });
+
   it("allocates a critical budget to production database deployment work", () => {
     const policy = executionPolicyFor(analyzeTask("code", "Migrate the production database RLS policy and deploy it"));
     expect(policy.tier).toBe("CRITICAL");
