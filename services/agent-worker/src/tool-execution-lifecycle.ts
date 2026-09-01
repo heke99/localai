@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { sanitizeToolOutput } from "./tool-output";
 
 export type ToolExecutionStatus =
   | "created"
@@ -85,15 +86,16 @@ export function normalizeToolResult(output: unknown): {
   data?: unknown;
   error?: { code: string; retryable: boolean };
 } {
-  if (output && typeof output === "object") {
-    const record = output as Record<string, unknown>;
+  const safeOutput = sanitizeToolOutput(output);
+  if (safeOutput && typeof safeOutput === "object") {
+    const record = safeOutput as Record<string, unknown>;
     if (record.status === "cancelled") return { ok: false, status: "cancelled", data: record.data, error: { code: String((record.error as Record<string, unknown> | undefined)?.code ?? "tool_cancelled"), retryable: false } };
     if (record.status === "blocked") return { ok: false, status: "blocked", data: record.data, error: { code: String((record.error as Record<string, unknown> | undefined)?.code ?? "tool_blocked"), retryable: false } };
     if (record.ok === false || record.status === "failed" || typeof record.error === "string") {
       const nested = record.error && typeof record.error === "object" ? record.error as Record<string, unknown> : undefined;
       return { ok: false, status: "failed", data: record.data, error: { code: String(nested?.code ?? record.error ?? "tool_failed"), retryable: nested?.retryable === true || record.retryable === true } };
     }
-    if (record.ok === true || record.status === "completed") return { ok: true, status: "completed", data: record.data ?? output };
+    if (record.ok === true || record.status === "completed") return { ok: true, status: "completed", data: record.data ?? safeOutput };
   }
-  return { ok: true, status: "completed", data: output };
+  return { ok: true, status: "completed", data: safeOutput };
 }
