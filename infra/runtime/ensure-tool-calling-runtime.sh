@@ -39,7 +39,7 @@ probe() {
       }
     }
   ],
-  "tool_choice":{"type":"function","function":{"name":"div3rsa_runtime_probe"}},
+  "tool_choice":"required",
   "temperature":0,
   "max_tokens":256,
   "stream":false,
