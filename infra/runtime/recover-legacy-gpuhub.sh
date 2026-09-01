@@ -20,10 +20,12 @@ if [[ ! -f "$V2_SCRIPT" ]]; then
   exec bash "$LEGACY_SCRIPT" "$@"
 fi
 
-# llama.cpp documents LLAMA_ARG_JINJA as the environment equivalent of --jinja.
-# Keep it on every post-cutover recovery so a later health recovery cannot silently
-# restart the generation server without structured function/tool-call parsing.
-export LLAMA_ARG_JINJA=1
+# llama.cpp exposes --jinja through LLAMA_ARG_JINJA, but boolean environment
+# arguments require a real true/false value on the pinned runtime. The v2
+# recovery also emits an explicit --jinja flag so this remains observable in the
+# active process profile and cannot silently regress after a restart.
+export LLAMA_ARG_JINJA="${LLAMA_ARG_JINJA:-true}"
+export DIV3RSA_MODEL_JINJA="${DIV3RSA_MODEL_JINJA:-true}"
 bash "$V2_SCRIPT" "$@"
 
 # On a post-checkout recovery, restore the independent embedding runtime too.

@@ -12,17 +12,22 @@ function request(messages: GenerateRequest["messages"]): GenerateRequest {
   return { requestId: "req", alias: "research-prod", messages, tools };
 }
 
-function toolChoiceName(value: unknown): string | null {
-  if (!value || typeof value !== "object") return null;
-  const choice = value as { function?: { name?: unknown } };
-  return typeof choice.function?.name === "string" ? choice.function.name : null;
+function requestedTool(body: Record<string, unknown>): string | null {
+  if (body.tool_choice === "auto") return "auto";
+  if (body.tool_choice !== "required" || !Array.isArray(body.tools) || body.tools.length !== 1) return null;
+  const tool = body.tools[0];
+  if (!tool || typeof tool !== "object" || Array.isArray(tool)) return null;
+  const fn = (tool as { function?: unknown }).function;
+  if (!fn || typeof fn !== "object" || Array.isArray(fn)) return null;
+  const name = (fn as { name?: unknown }).name;
+  return typeof name === "string" ? name : null;
 }
 
 describe("OpenAI-compatible runtime policy", () => {
   it("forces deterministic current_time before answering a live clock request", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as { tool_choice?: unknown };
-      expect(toolChoiceName(body.tool_choice)).toBe("current_time");
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(requestedTool(body)).toBe("current_time");
       return new Response(JSON.stringify({
         choices: [{ message: { content: null, tool_calls: [{ id: "time-1", type: "function", function: { name: "current_time", arguments: '{"timezone":"Europe/Stockholm"}' } }] }, finish_reason: "tool_calls" }]
       }), { status: 200 });
@@ -38,8 +43,8 @@ describe("OpenAI-compatible runtime policy", () => {
   it("forces search then opened source for changing current facts", async () => {
     const choices: Array<string | null> = [];
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as { tool_choice?: unknown };
-      choices.push(toolChoiceName(body.tool_choice) ?? (body.tool_choice === "auto" ? "auto" : null));
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      choices.push(requestedTool(body));
       return new Response(JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }), { status: 200 });
     });
     const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);
@@ -68,8 +73,8 @@ describe("OpenAI-compatible runtime policy", () => {
   it("requires two opened sources for deep current research", async () => {
     const choices: Array<string | null> = [];
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as { tool_choice?: unknown };
-      choices.push(toolChoiceName(body.tool_choice) ?? (body.tool_choice === "auto" ? "auto" : null));
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      choices.push(requestedTool(body));
       return new Response(JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }), { status: 200 });
     });
     const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);

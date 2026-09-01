@@ -7,7 +7,7 @@ const securityTool = {
   inputSchema: { type: "object", required: ["tool", "target"], properties: { tool: { type: "string" }, target: { type: "string" } } }
 };
 
-test("forces security_scan only before readiness tool evidence exists", async () => {
+test("forces only security_scan before readiness tool evidence exists", async () => {
   const bodies: Array<Record<string, unknown>> = [];
   const fetcher: typeof fetch = async (_url, init) => {
     bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -21,9 +21,12 @@ test("forces security_scan only before readiness tool evidence exists", async ()
       { role: "system", content: "SECURITY READINESS REQUIRED: execute the requested security operation." },
       { role: "user", content: "Run dns_lookup." }
     ],
-    tools: [securityTool]
+    tools: [securityTool, { name: "current_time", description: "time", inputSchema: { type: "object" } }]
   });
-  expect(bodies[0]?.tool_choice).toEqual({ type: "function", function: { name: "security_scan" } });
+  expect(bodies[0]?.tool_choice).toBe("required");
+  expect(bodies[0]?.tools).toEqual([
+    { type: "function", function: { name: "security_scan", description: securityTool.description, parameters: securityTool.inputSchema } }
+  ]);
 
   bodies.length = 0;
   await adapter.generate({

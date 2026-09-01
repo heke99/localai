@@ -39,7 +39,7 @@ probe() {
       }
     }
   ],
-  "tool_choice":{"type":"function","function":{"name":"div3rsa_runtime_probe"}},
+  "tool_choice":"required",
   "temperature":0,
   "max_tokens":256,
   "stream":false,
@@ -79,7 +79,7 @@ if probe; then
 fi
 
 log "structured tool-call probe failed; restarting llama-server with documented Jinja tool parsing enabled"
-LLAMA_ARG_JINJA=1 DIV3RSA_FORCE_MODEL_RESTART=1 bash "$RECOVERY_SCRIPT"
+LLAMA_ARG_JINJA=true DIV3RSA_MODEL_JINJA=true DIV3RSA_FORCE_MODEL_RESTART=1 bash "$RECOVERY_SCRIPT"
 
 probe || fatal "structured OpenAI tool calling still failed after Jinja-enabled recovery"
 log "structured OpenAI tool calling recovered and verified"

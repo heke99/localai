@@ -33,6 +33,7 @@ PID_FILE="${ROOT_DIR}/runtime/qwen.pid"
 REQUESTED_MODEL_PARALLEL="${DIV3RSA_MODEL_PARALLEL:-}"
 REQUESTED_MODEL_TOTAL_CONTEXT="${DIV3RSA_MODEL_CONTEXT_SIZE:-}"
 REQUESTED_MODEL_SPEC_TYPE="${DIV3RSA_MODEL_SPEC_TYPE:-}"
+REQUESTED_MODEL_JINJA="${DIV3RSA_MODEL_JINJA:-${LLAMA_ARG_JINJA:-}}"
 
 [[ -d "$REPO_DIR" ]] || fatal "repository missing: $REPO_DIR"
 [[ -f "$ENV_FILE" ]] || fatal "worker env missing: $ENV_FILE"
@@ -43,6 +44,15 @@ REQUESTED_MODEL_SPEC_TYPE="${DIV3RSA_MODEL_SPEC_TYPE:-}"
 command -v curl >/dev/null 2>&1 || fatal "curl is missing"
 command -v screen >/dev/null 2>&1 || fatal "screen is missing"
 mkdir -p "$LOG_DIR" "$(dirname "$PID_FILE")"
+
+normalize_bool() {
+  local raw="${1,,}"
+  case "$raw" in
+    1|true|yes|on) printf 'true\n' ;;
+    0|false|no|off) printf 'false\n' ;;
+    *) return 1 ;;
+  esac
+}
 
 set -a
 # shellcheck disable=SC1090
@@ -55,6 +65,7 @@ PROFILE_PARALLEL=8
 PROFILE_TOTAL_CONTEXT=262144
 PROFILE_CONTEXT_PER_SLOT=32768
 PROFILE_SPEC_TYPE=ngram-mod
+PROFILE_JINJA=true
 if [[ -f "$PROFILE_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$PROFILE_FILE"
@@ -62,22 +73,27 @@ if [[ -f "$PROFILE_FILE" ]]; then
   PROFILE_TOTAL_CONTEXT="${DIV3RSA_GPUHUB_PRODUCTION_TOTAL_CONTEXT:-$PROFILE_TOTAL_CONTEXT}"
   PROFILE_CONTEXT_PER_SLOT="${DIV3RSA_GPUHUB_PRODUCTION_CONTEXT_PER_SLOT:-$PROFILE_CONTEXT_PER_SLOT}"
   PROFILE_SPEC_TYPE="${DIV3RSA_GPUHUB_PRODUCTION_SPEC_TYPE:-$PROFILE_SPEC_TYPE}"
+  PROFILE_JINJA="${DIV3RSA_GPUHUB_PRODUCTION_JINJA:-$PROFILE_JINJA}"
 fi
 
 OVERRIDE_PARALLEL=""
 OVERRIDE_TOTAL_CONTEXT=""
 OVERRIDE_SPEC_TYPE=""
+OVERRIDE_JINJA=""
 if [[ -f "$OVERRIDE_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$OVERRIDE_FILE"
   OVERRIDE_PARALLEL="${DIV3RSA_GPUHUB_OVERRIDE_PARALLEL:-}"
   OVERRIDE_TOTAL_CONTEXT="${DIV3RSA_GPUHUB_OVERRIDE_TOTAL_CONTEXT:-}"
   OVERRIDE_SPEC_TYPE="${DIV3RSA_GPUHUB_OVERRIDE_SPEC_TYPE:-}"
+  OVERRIDE_JINJA="${DIV3RSA_GPUHUB_OVERRIDE_JINJA:-}"
 fi
 
 MODEL_PARALLEL="${REQUESTED_MODEL_PARALLEL:-${OVERRIDE_PARALLEL:-$PROFILE_PARALLEL}}"
 MODEL_TOTAL_CONTEXT="${REQUESTED_MODEL_TOTAL_CONTEXT:-${OVERRIDE_TOTAL_CONTEXT:-$PROFILE_TOTAL_CONTEXT}}"
 MODEL_SPEC_TYPE="${REQUESTED_MODEL_SPEC_TYPE:-${OVERRIDE_SPEC_TYPE:-$PROFILE_SPEC_TYPE}}"
+MODEL_JINJA="$(normalize_bool "${REQUESTED_MODEL_JINJA:-${OVERRIDE_JINJA:-$PROFILE_JINJA}}")" \
+  || fatal "invalid Jinja profile value: ${REQUESTED_MODEL_JINJA:-${OVERRIDE_JINJA:-$PROFILE_JINJA}}"
 
 for value_name in MODEL_PARALLEL MODEL_TOTAL_CONTEXT PROFILE_CONTEXT_PER_SLOT; do
   value="${!value_name}"
@@ -96,6 +112,29 @@ health() {
   curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${MODEL_PORT}/health" >/dev/null 2>&1
 }
 
+port_is_free() {
+  python3 - "$MODEL_PORT" <<'PY'
+import socket, sys
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", int(sys.argv[1])))
+except OSError:
+    sys.exit(1)
+finally:
+    sock.close()
+PY
+}
+
+wait_for_port_free() {
+  local attempts="${1:-80}"
+  for ((i=1; i<=attempts; i+=1)); do
+    port_is_free && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
 read_active_profile() {
   local pid cmd
   mapfile -t pids < <(pgrep -f 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf' || true)
@@ -106,6 +145,7 @@ read_active_profile() {
   ACTIVE_TOTAL_CONTEXT="$(sed -nE 's/.*--ctx-size[= ]+([0-9]+).*/\1/p' <<<"$cmd")"
   ACTIVE_SPEC_TYPE="$(sed -nE 's/.*--spec-type[= ]+([^ ]+).*/\1/p' <<<"$cmd")"
   [[ -n "$ACTIVE_SPEC_TYPE" ]] || ACTIVE_SPEC_TYPE=none
+  if [[ " $cmd " == *" --jinja "* ]]; then ACTIVE_JINJA=true; else ACTIVE_JINJA=false; fi
   [[ "$ACTIVE_PARALLEL" =~ ^[0-9]+$ && "$ACTIVE_TOTAL_CONTEXT" =~ ^[0-9]+$ ]] || return 1
   (( ACTIVE_TOTAL_CONTEXT % ACTIVE_PARALLEL == 0 )) || return 1
   ACTIVE_CONTEXT_PER_SLOT=$((ACTIVE_TOTAL_CONTEXT / ACTIVE_PARALLEL))
@@ -141,9 +181,9 @@ if health && [[ "$FORCE_MODEL_RESTART" != "1" ]]; then
 fi
 
 if [[ "$FORCE_MODEL_RESTART" == "1" ]]; then
-  log "forced profile reconciliation requested: parallel=${MODEL_PARALLEL} total_context=${MODEL_TOTAL_CONTEXT} context_per_slot=${MODEL_CONTEXT_PER_SLOT} spec_type=${MODEL_SPEC_TYPE}"
+  log "forced profile reconciliation requested: parallel=${MODEL_PARALLEL} total_context=${MODEL_TOTAL_CONTEXT} context_per_slot=${MODEL_CONTEXT_PER_SLOT} spec_type=${MODEL_SPEC_TYPE} jinja=${MODEL_JINJA}"
 else
-  log "Qwen is unhealthy; beginning recovery with parallel=${MODEL_PARALLEL} total_context=${MODEL_TOTAL_CONTEXT} spec_type=${MODEL_SPEC_TYPE}"
+  log "Qwen is unhealthy; beginning recovery with parallel=${MODEL_PARALLEL} total_context=${MODEL_TOTAL_CONTEXT} spec_type=${MODEL_SPEC_TYPE} jinja=${MODEL_JINJA}"
 fi
 screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
 
@@ -156,7 +196,11 @@ for _ in {1..60}; do
 done
 mapfile -t stale_pids < <(pgrep -f 'llama-server.*Qwen3\.8-27B-OBLITERATED-Q8_0\.gguf' || true)
 for pid in "${stale_pids[@]}"; do kill -KILL "$pid" >/dev/null 2>&1 || true; done
-sleep 3
+if ! wait_for_port_free 80; then
+  log "generation port ${MODEL_PORT} remains occupied after stopping the tracked Qwen process"
+  command -v ss >/dev/null 2>&1 && ss -ltnp "sport = :${MODEL_PORT}" >&2 || true
+  fatal "refusing recovery while generation port ${MODEL_PORT} is owned by an unrecognized listener"
+fi
 
 MODEL_CMD=(
   "$MODEL_BIN"
@@ -174,13 +218,19 @@ MODEL_CMD=(
   --ubatch-size "$MODEL_UBATCH_SIZE"
   --no-webui
 )
+if [[ "$MODEL_JINJA" == "true" ]]; then MODEL_CMD+=(--jinja); else MODEL_CMD+=(--no-jinja); fi
 if [[ "$MODEL_SPEC_TYPE" != "none" ]]; then
   MODEL_CMD+=(--spec-type "$MODEL_SPEC_TYPE")
 fi
 
 for ((attempt=1; attempt<=MODEL_RECOVERY_ATTEMPTS; attempt+=1)); do
-  printf '\n=== %s recovery-v2 attempt %d/%d parallel=%s total_context=%s spec_type=%s ===\n' \
-    "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$attempt" "$MODEL_RECOVERY_ATTEMPTS" "$MODEL_PARALLEL" "$MODEL_TOTAL_CONTEXT" "$MODEL_SPEC_TYPE" >>"$RECOVERY_LOG"
+  if ! wait_for_port_free 40; then
+    log "generation port ${MODEL_PORT} is still occupied before recovery attempt ${attempt}"
+    command -v ss >/dev/null 2>&1 && ss -ltnp "sport = :${MODEL_PORT}" >&2 || true
+    fatal "generation port ownership conflict"
+  fi
+  printf '\n=== %s recovery-v2 attempt %d/%d parallel=%s total_context=%s spec_type=%s jinja=%s ===\n' \
+    "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$attempt" "$MODEL_RECOVERY_ATTEMPTS" "$MODEL_PARALLEL" "$MODEL_TOTAL_CONTEXT" "$MODEL_SPEC_TYPE" "$MODEL_JINJA" >>"$RECOVERY_LOG"
   nohup "${MODEL_CMD[@]}" </dev/null >>"$RECOVERY_LOG" 2>&1 &
   model_pid=$!
   printf '%s\n' "$model_pid" >"$PID_FILE"
@@ -188,7 +238,7 @@ for ((attempt=1; attempt<=MODEL_RECOVERY_ATTEMPTS; attempt+=1)); do
 
   while true; do
     if health; then
-      log "Qwen recovered on attempt ${attempt}; pid=${model_pid} parallel=${MODEL_PARALLEL} total_context=${MODEL_TOTAL_CONTEXT} spec_type=${MODEL_SPEC_TYPE}"
+      log "Qwen recovered on attempt ${attempt}; pid=${model_pid} parallel=${MODEL_PARALLEL} total_context=${MODEL_TOTAL_CONTEXT} spec_type=${MODEL_SPEC_TYPE} jinja=${MODEL_JINJA}"
       start_worker "$MODEL_PARALLEL" "$MODEL_CONTEXT_PER_SLOT"
       health || fatal "Qwen became unhealthy after worker restart"
       log "recovery complete; Qwen and agent worker are healthy"
@@ -197,6 +247,7 @@ for ((attempt=1; attempt<=MODEL_RECOVERY_ATTEMPTS; attempt+=1)); do
     if ! kill -0 "$model_pid" 2>/dev/null; then
       log "llama-server exited during recovery attempt ${attempt}"
       tail -n 80 "$RECOVERY_LOG" >&2 || true
+      wait_for_port_free 40 || true
       break
     fi
     if (( SECONDS >= deadline )); then
@@ -204,6 +255,7 @@ for ((attempt=1; attempt<=MODEL_RECOVERY_ATTEMPTS; attempt+=1)); do
       kill -TERM "$model_pid" >/dev/null 2>&1 || true
       sleep 2
       kill -KILL "$model_pid" >/dev/null 2>&1 || true
+      wait_for_port_free 40 || true
       break
     fi
     sleep 2

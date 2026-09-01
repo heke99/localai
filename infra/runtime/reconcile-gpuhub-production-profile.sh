@@ -21,6 +21,7 @@ ENV_BACKUP=""
 BEFORE_PARALLEL=""
 BEFORE_TOTAL_CONTEXT=""
 BEFORE_SPEC_TYPE=""
+BEFORE_JINJA=""
 MUTATED=0
 PROFILE_READ_DETAIL="not_checked"
 VERIFY_DETAIL="not_checked"
@@ -32,12 +33,23 @@ VERIFY_DETAIL="not_checked"
 [[ -r "$API_KEY_FILE" ]] || fatal "inference API key file missing: $API_KEY_FILE"
 [[ "$VERIFY_ATTEMPTS" =~ ^[0-9]+$ && "$VERIFY_ATTEMPTS" -ge 1 ]] || fatal "invalid verification attempts: $VERIFY_ATTEMPTS"
 [[ "$VERIFY_POLL_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || fatal "invalid verification poll seconds: $VERIFY_POLL_SECONDS"
+
+normalize_bool() {
+  local raw="${1,,}"
+  case "$raw" in
+    1|true|yes|on) printf 'true\n' ;;
+    0|false|no|off) printf 'false\n' ;;
+    *) return 1 ;;
+  esac
+}
+
 # shellcheck disable=SC1090
 source "$PROFILE_FILE"
 TARGET_PARALLEL="${DIV3RSA_GPUHUB_PRODUCTION_PARALLEL:-}"
 TARGET_TOTAL_CONTEXT="${DIV3RSA_GPUHUB_PRODUCTION_TOTAL_CONTEXT:-}"
 TARGET_CONTEXT_PER_SLOT="${DIV3RSA_GPUHUB_PRODUCTION_CONTEXT_PER_SLOT:-}"
 TARGET_SPEC_TYPE="${DIV3RSA_GPUHUB_PRODUCTION_SPEC_TYPE:-none}"
+TARGET_JINJA="$(normalize_bool "${DIV3RSA_GPUHUB_PRODUCTION_JINJA:-true}")" || fatal "invalid tracked Jinja profile"
 for name in TARGET_PARALLEL TARGET_TOTAL_CONTEXT TARGET_CONTEXT_PER_SLOT; do
   value="${!name}"
   [[ "$value" =~ ^[0-9]+$ && "$value" -ge 1 ]] || fatal "invalid $name: $value"
@@ -77,11 +89,12 @@ read_active_profile() {
   ACTIVE_TOTAL_CONTEXT="$(sed -nE 's/.*--ctx-size[= ]+([0-9]+).*/\1/p' <<<"$cmd")"
   ACTIVE_SPEC_TYPE="$(sed -nE 's/.*--spec-type[= ]+([^ ]+).*/\1/p' <<<"$cmd")"
   [[ -n "$ACTIVE_SPEC_TYPE" ]] || ACTIVE_SPEC_TYPE=none
+  if [[ " $cmd " == *" --jinja "* ]]; then ACTIVE_JINJA=true; else ACTIVE_JINJA=false; fi
   if [[ ! "$ACTIVE_PARALLEL" =~ ^[0-9]+$ || ! "$ACTIVE_TOTAL_CONTEXT" =~ ^[0-9]+$ ]]; then
     PROFILE_READ_DETAIL="llama_profile_flags_unreadable"
     return 1
   fi
-  PROFILE_READ_DETAIL="parallel=${ACTIVE_PARALLEL} total_context=${ACTIVE_TOTAL_CONTEXT} spec_type=${ACTIVE_SPEC_TYPE}"
+  PROFILE_READ_DETAIL="parallel=${ACTIVE_PARALLEL} total_context=${ACTIVE_TOTAL_CONTEXT} spec_type=${ACTIVE_SPEC_TYPE} jinja=${ACTIVE_JINJA}"
 }
 
 verify_target_once() {
@@ -90,8 +103,8 @@ verify_target_once() {
     VERIFY_DETAIL="$PROFILE_READ_DETAIL"
     return 1
   fi
-  if [[ "$ACTIVE_PARALLEL" != "$TARGET_PARALLEL" || "$ACTIVE_TOTAL_CONTEXT" != "$TARGET_TOTAL_CONTEXT" || "$ACTIVE_SPEC_TYPE" != "$TARGET_SPEC_TYPE" ]]; then
-    VERIFY_DETAIL="profile_mismatch active=${ACTIVE_PARALLEL}/${ACTIVE_TOTAL_CONTEXT}/${ACTIVE_SPEC_TYPE} target=${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}/${TARGET_SPEC_TYPE}"
+  if [[ "$ACTIVE_PARALLEL" != "$TARGET_PARALLEL" || "$ACTIVE_TOTAL_CONTEXT" != "$TARGET_TOTAL_CONTEXT" || "$ACTIVE_SPEC_TYPE" != "$TARGET_SPEC_TYPE" || "$ACTIVE_JINJA" != "$TARGET_JINJA" ]]; then
+    VERIFY_DETAIL="profile_mismatch active=${ACTIVE_PARALLEL}/${ACTIVE_TOTAL_CONTEXT}/${ACTIVE_SPEC_TYPE}/jinja=${ACTIVE_JINJA} target=${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}/${TARGET_SPEC_TYPE}/jinja=${TARGET_JINJA}"
     return 1
   fi
   if ! curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${MODEL_PORT}/health" >/dev/null; then
@@ -116,7 +129,7 @@ verify_target_once() {
     VERIFY_DETAIL="reported_context_too_small reported=${reported:-missing} required=${TARGET_CONTEXT_PER_SLOT}"
     return 1
   fi
-  VERIFY_DETAIL="ok active=${ACTIVE_PARALLEL}/${ACTIVE_TOTAL_CONTEXT}/${ACTIVE_SPEC_TYPE} reported_context=${reported}"
+  VERIFY_DETAIL="ok active=${ACTIVE_PARALLEL}/${ACTIVE_TOTAL_CONTEXT}/${ACTIVE_SPEC_TYPE}/jinja=${ACTIVE_JINJA} reported_context=${reported}"
 }
 
 verify_target() {
@@ -137,12 +150,13 @@ rollback_on_exit() {
   trap - EXIT
   if [[ "$status" -eq 0 || "$MUTATED" -ne 1 ]]; then exit "$status"; fi
   set +e
-  log "profile reconciliation failed; restoring previous runtime parallel=${BEFORE_PARALLEL} total_context=${BEFORE_TOTAL_CONTEXT} spec_type=${BEFORE_SPEC_TYPE}"
+  log "profile reconciliation failed; restoring previous runtime parallel=${BEFORE_PARALLEL} total_context=${BEFORE_TOTAL_CONTEXT} spec_type=${BEFORE_SPEC_TYPE} jinja=${BEFORE_JINJA}"
   [[ -n "$ENV_BACKUP" && -f "$ENV_BACKUP" ]] && cp "$ENV_BACKUP" "$ENV_FILE" && chmod 600 "$ENV_FILE"
   DIV3RSA_FORCE_MODEL_RESTART=1 \
   DIV3RSA_MODEL_PARALLEL="$BEFORE_PARALLEL" \
   DIV3RSA_MODEL_CONTEXT_SIZE="$BEFORE_TOTAL_CONTEXT" \
   DIV3RSA_MODEL_SPEC_TYPE="$BEFORE_SPEC_TYPE" \
+  DIV3RSA_MODEL_JINJA="$BEFORE_JINJA" \
     bash "$RECOVERY_SCRIPT"
   if [[ $? -eq 0 ]]; then log "previous runtime profile restored after failed promotion"; else log "CRITICAL: failed to restore previous runtime profile"; fi
   [[ -n "$ENV_BACKUP" ]] && rm -f "$ENV_BACKUP"
@@ -154,6 +168,7 @@ read_active_profile || fatal "could not read active llama.cpp profile before rec
 BEFORE_PARALLEL="$ACTIVE_PARALLEL"
 BEFORE_TOTAL_CONTEXT="$ACTIVE_TOTAL_CONTEXT"
 BEFORE_SPEC_TYPE="$ACTIVE_SPEC_TYPE"
+BEFORE_JINJA="$ACTIVE_JINJA"
 ENV_BACKUP="$(mktemp /tmp/div3rsa-gpuhub-env.XXXXXX)"
 cp "$ENV_FILE" "$ENV_BACKUP"
 chmod 600 "$ENV_BACKUP"
@@ -163,21 +178,23 @@ rm -f "$OVERRIDE_FILE"
 ensure_env_value DIV3RSA_MODEL_PARALLEL "$TARGET_PARALLEL"
 # Worker-side model context is per request/slot, not llama.cpp total context.
 ensure_env_value DIV3RSA_MODEL_CONTEXT_SIZE "$TARGET_CONTEXT_PER_SLOT"
+ensure_env_value DIV3RSA_MODEL_JINJA "$TARGET_JINJA"
 MUTATED=1
 
-if [[ "$BEFORE_PARALLEL" != "$TARGET_PARALLEL" || "$BEFORE_TOTAL_CONTEXT" != "$TARGET_TOTAL_CONTEXT" || "$BEFORE_SPEC_TYPE" != "$TARGET_SPEC_TYPE" ]]; then
-  log "reconciling llama.cpp ${BEFORE_PARALLEL}/${BEFORE_TOTAL_CONTEXT}/${BEFORE_SPEC_TYPE} -> ${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}/${TARGET_SPEC_TYPE}"
+if [[ "$BEFORE_PARALLEL" != "$TARGET_PARALLEL" || "$BEFORE_TOTAL_CONTEXT" != "$TARGET_TOTAL_CONTEXT" || "$BEFORE_SPEC_TYPE" != "$TARGET_SPEC_TYPE" || "$BEFORE_JINJA" != "$TARGET_JINJA" ]]; then
+  log "reconciling llama.cpp ${BEFORE_PARALLEL}/${BEFORE_TOTAL_CONTEXT}/${BEFORE_SPEC_TYPE}/jinja=${BEFORE_JINJA} -> ${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}/${TARGET_SPEC_TYPE}/jinja=${TARGET_JINJA}"
   DIV3RSA_FORCE_MODEL_RESTART=1 \
   DIV3RSA_MODEL_PARALLEL="$TARGET_PARALLEL" \
   DIV3RSA_MODEL_CONTEXT_SIZE="$TARGET_TOTAL_CONTEXT" \
   DIV3RSA_MODEL_SPEC_TYPE="$TARGET_SPEC_TYPE" \
+  DIV3RSA_MODEL_JINJA="$TARGET_JINJA" \
     bash "$RECOVERY_SCRIPT"
 else
-  log "llama.cpp already matches tracked production profile ${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}/${TARGET_SPEC_TYPE}"
+  log "llama.cpp already matches tracked production profile ${TARGET_PARALLEL}/${TARGET_TOTAL_CONTEXT}/${TARGET_SPEC_TYPE}/jinja=${TARGET_JINJA}"
 fi
 
 verify_target || fatal "tracked production profile verification failed after ${VERIFY_ATTEMPTS} attempts: ${VERIFY_DETAIL}"
 MUTATED=0
 rm -f "$ENV_BACKUP"
 trap - EXIT
-log "production profile active: parallel=${TARGET_PARALLEL} total_context=${TARGET_TOTAL_CONTEXT} context_per_slot=${TARGET_CONTEXT_PER_SLOT} spec_type=${TARGET_SPEC_TYPE}"
+log "production profile active: parallel=${TARGET_PARALLEL} total_context=${TARGET_TOTAL_CONTEXT} context_per_slot=${TARGET_CONTEXT_PER_SLOT} spec_type=${TARGET_SPEC_TYPE} jinja=${TARGET_JINJA}"
