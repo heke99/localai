@@ -135,13 +135,14 @@ export interface RegisteredModelVersion {
   artifact: string;
   artifactSha256: string;
   artifactBytes: number;
-  quantization: "Q8_0";
+  /** Runtime-native quantization or precision label, e.g. Q8_0, Q6_K, BF16. */
+  quantization: string;
   tokenizerSha256: string | null;
   chatTemplateSha256: string | null;
   license: string;
   contextWindow: number;
   capabilities: ModelCapability[];
-  runtime: { adapter: "llama.cpp-openai"; containerDigest: string | null; cudaVersion: string | null };
+  runtime: { adapter: "llama.cpp-openai" | "openai-compatible"; containerDigest: string | null; cudaVersion: string | null };
   /** Optional portable protocol declaration; legacy registrations remain valid. */
   protocol?: ModelProtocolProfile;
   lifecycle: "registered" | "verified" | "canary" | "production" | "retired";
