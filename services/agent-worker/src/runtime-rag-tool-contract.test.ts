@@ -18,7 +18,9 @@ describe("production RAG and tool runtime contract", () => {
       "infra/runtime/ensure-tool-calling-runtime.sh",
       "infra/runtime/e2e-rag-tool-runtime.sh",
       "infra/runtime/upgrade-legacy-gpuhub.sh",
-      "infra/runtime/recover-legacy-gpuhub.sh"
+      "infra/runtime/recover-legacy-gpuhub.sh",
+      "infra/runtime/recover-legacy-gpuhub-v2.sh",
+      "infra/runtime/reconcile-gpuhub-production-profile.sh"
     ]) bashSyntax(path);
   });
 
@@ -36,11 +38,19 @@ describe("production RAG and tool runtime contract", () => {
   it("makes structured tool parsing and embeddings deployment gates", () => {
     const upgrade = read("infra/runtime/upgrade-legacy-gpuhub.sh");
     const recovery = read("infra/runtime/recover-legacy-gpuhub.sh");
+    const recoveryV2 = read("infra/runtime/recover-legacy-gpuhub-v2.sh");
+    const reconciler = read("infra/runtime/reconcile-gpuhub-production-profile.sh");
+    const profile = read("infra/runtime/gpuhub-production-profile.env");
     const toolProbe = read("infra/runtime/ensure-tool-calling-runtime.sh");
     const embed = read("infra/runtime/ensure-embedding-runtime.sh");
     expect(upgrade).toContain("ensure-tool-calling-runtime.sh");
     expect(upgrade).toContain("ensure-embedding-runtime.sh");
-    expect(recovery).toContain("LLAMA_ARG_JINJA=1");
+    expect(recovery).toContain('LLAMA_ARG_JINJA="${LLAMA_ARG_JINJA:-true}"');
+    expect(recoveryV2).toContain("MODEL_CMD+=(--jinja)");
+    expect(recoveryV2).toContain("wait_for_port_free");
+    expect(profile).toContain("DIV3RSA_GPUHUB_PRODUCTION_JINJA=true");
+    expect(reconciler).toContain("ACTIVE_JINJA");
+    expect(reconciler).toContain("TARGET_JINJA");
     expect(toolProbe).toContain("div3rsa_runtime_probe");
     expect(toolProbe).toContain("tool_calls");
     expect(toolProbe).toContain('"tool_choice":"required"');
