@@ -30,6 +30,24 @@ function hasSecurityToolResult(request: GenerateRequest): boolean {
   return request.messages.some((message) => message.role === "tool" && message.name === "security_scan");
 }
 
+function systemInstructions(request: GenerateRequest): string {
+  return request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n");
+}
+
+function hasOpenedCurrentEvidence(request: GenerateRequest): boolean {
+  return request.messages.some((message) => message.role === "tool" && message.name === "web_fetch");
+}
+
+function boundedCurrentEvidenceRequest(request: GenerateRequest): GenerateRequest {
+  if (!systemInstructions(request).includes("CURRENT INFORMATION REQUIRED") || !hasOpenedCurrentEvidence(request)) return request;
+  return {
+    ...request,
+    temperature: 0,
+    maxOutputTokens: Math.min(request.maxOutputTokens ?? 800, 800),
+    disableThinking: true
+  };
+}
+
 function latestUserContent(request: GenerateRequest): string {
   return [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
 }
@@ -188,9 +206,10 @@ function groundScopeBoundaryFinal(request: GenerateRequest, result: GenerateResu
  */
 export class ExecutionGroundedOpenAiCompatibleAdapter extends SecurityAwareOpenAiCompatibleAdapter {
   async generate(request: GenerateRequest): Promise<GenerateResult> {
-    const generated = await super.generate(request);
-    const continued = deterministicInitialContinuation(request, generated);
-    return groundScopeBoundaryFinal(request, continued);
+    const boundedRequest = boundedCurrentEvidenceRequest(request);
+    const generated = await super.generate(boundedRequest);
+    const continued = deterministicInitialContinuation(boundedRequest, generated);
+    return groundScopeBoundaryFinal(boundedRequest, continued);
   }
 
   async generateStreamed(request: GenerateRequest, onDelta: ModelStreamDeltaHandler): Promise<GenerateResult> {
