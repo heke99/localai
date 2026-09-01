@@ -56,12 +56,16 @@ function compactSearchSentence(sentence: string): string {
   return normalizedSearchQuery(compact, 180);
 }
 
+function isNodeReleasePrompt(prompt: string): boolean {
+  return /\bnode\.?js\b/i.test(prompt) && /\b(?:release|version(?:en)?)\b/i.test(prompt);
+}
+
 function authorityFocusedQuery(prompt: string, compact: string): string | null {
   const sweden = /\b(?:sweden|sverige|swedish|svensk(?:a|t)?)\b/i.test(prompt);
   if (sweden && /\b(?:vat|moms|momssats|tax|skatt)\b/i.test(prompt)) return `site:skatteverket.se ${compact}`;
   if (sweden && /\b(?:visa|visum|immigration|residence\s+permit|uppehållstillstånd|work\s+permit|arbetstillstånd)\b/i.test(prompt)) return `site:migrationsverket.se ${compact}`;
   if (sweden && /\b(?:law|legal|regulation|legislation|lag|förordning|regelverk)\b/i.test(prompt)) return `site:riksdagen.se ${compact}`;
-  if (/\bnode\.?js\b/i.test(prompt) && /\b(?:release|version)\b/i.test(prompt)) return `site:nodejs.org ${compact}`;
+  if (isNodeReleasePrompt(prompt)) return `site:nodejs.org ${compact}`;
   return null;
 }
 
@@ -90,7 +94,7 @@ function promptSearchTerms(prompt: string): string[] {
 }
 
 function topicEvidenceTerms(prompt: string): string[] {
-  if (/\bnode\.?js\b/i.test(prompt) && /\b(?:release|version)\b/i.test(prompt)) {
+  if (isNodeReleasePrompt(prompt)) {
     return ["node.js", "nodejs", "release", "version"];
   }
   if (/\b(?:sweden|sverige|swedish|svensk(?:a|t)?)\b/i.test(prompt) && /\b(?:vat|moms|momssats|tax|skatt)\b/i.test(prompt)) {
@@ -148,7 +152,7 @@ export interface RankedSearchCandidate {
 
 function canonicalFreshnessCandidates(prompt: string): RankedSearchCandidate[] {
   const entries: string[] = [];
-  if (/\bnode\.?js\b/i.test(prompt) && /\b(?:release|version)\b/i.test(prompt)) {
+  if (isNodeReleasePrompt(prompt)) {
     entries.push("https://nodejs.org/en/download/current");
   }
   if (/\b(?:sweden|sverige|swedish|svensk(?:a|t)?)\b/i.test(prompt) && /\b(?:vat|moms|momssats|tax|skatt)\b/i.test(prompt)) {
@@ -407,18 +411,18 @@ export async function collectRequiredFreshnessEvidence(input: {
     throw new Error(`current_information_source_fetch_failed:0/${targetSources}:${detail}`);
   }
 
-  if (!latestArtifactProofOpened) {
+  if (!latestArtifactProofOpened && canonicalCandidates.length > 0) {
     throw new Error("current_information_latest_artifact_proof_missing");
   }
 
-  if (fetched < targetSources) {
+  if (fetched < targetSources || !latestArtifactProofOpened) {
     await queue.step(run.runId, "tool", "completed", "Freshness evidence partially satisfied", {
       runtimeRequired: true,
       freshnessPreflight: true,
       openedSources: fetched,
       desiredSources: targetSources,
       candidatesTried: fetchAttempt,
-      evidenceQualityTargetMet: false,
+      evidenceQualityTargetMet: fetched >= targetSources && latestArtifactProofOpened,
       latestArtifactProofOpened
     });
   }
