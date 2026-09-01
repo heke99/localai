@@ -318,8 +318,7 @@ export async function collectRequiredFreshnessEvidence(input: {
   const requiresLatestArtifactEvidence = latestArtifactIntentPattern.test(normalizedPrompt);
   const desiredSources = desiredFreshnessSources(task);
   const mergedResults: unknown[] = [];
-  const canonicalCandidates = canonicalFreshnessCandidates(normalizedPrompt);
-  let candidates: RankedSearchCandidate[] = [...canonicalCandidates];
+  let candidates: RankedSearchCandidate[] = [];
 
   for (let index = 0; index < searchQueries.length; index += 1) {
     const query = searchQueries[index]!;
@@ -337,10 +336,7 @@ export async function collectRequiredFreshnessEvidence(input: {
         }
       });
       mergedResults.push(...searchResults(searchOutput));
-      candidates = mergeRankedCandidates(
-        canonicalCandidates,
-        rankSearchCandidates({ results: mergedResults }, normalizedPrompt)
-      );
+      candidates = rankSearchCandidates({ results: mergedResults }, normalizedPrompt);
       const materiallyRelevant = candidates.filter((candidate) => candidate.relevanceScore >= 2);
       if (!requiresLatestArtifactEvidence && materiallyRelevant.length >= desiredSources) break;
     } catch (error) {
@@ -354,10 +350,12 @@ export async function collectRequiredFreshnessEvidence(input: {
     }
   }
 
-  if (!candidates.length) throw new Error("current_information_search_returned_no_sources");
+  const canonicalCandidates = canonicalFreshnessCandidates(normalizedPrompt);
+  if (!candidates.length && !canonicalCandidates.length) throw new Error("current_information_search_returned_no_sources");
 
-  const targetSources = Math.min(desiredSources, candidates.length);
-  const orderedCandidates = orderEvidenceCandidates(candidates);
+  const targetPoolSize = candidates.length > 0 ? candidates.length : canonicalCandidates.length;
+  const targetSources = Math.min(desiredSources, targetPoolSize);
+  const orderedCandidates = mergeRankedCandidates(orderEvidenceCandidates(candidates), canonicalCandidates);
   let fetched = 0;
   let fetchAttempt = 0;
   let lastError: unknown = null;
