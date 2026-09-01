@@ -1,9 +1,50 @@
 import { describe, expect, it } from "vitest";
 import {
+  deterministicTimeResult,
   groundedEvidenceReviewMessages,
   groundedSynthesisMessages,
   parseGroundedEvidenceReview
 } from "./final-grounding";
+
+const liveTimeTask = {
+  requiresCurrentInformation: true,
+  liveDataKind: "time"
+} as Parameters<typeof deterministicTimeResult>[0];
+
+const liveTimeTrace = [{
+  sequence: 1,
+  name: "current_time",
+  input: { timezone: "Europe/Stockholm" },
+  output: {
+    timezone: "Europe/Stockholm",
+    localDate: "2026-09-01",
+    localTime: "17:10:00",
+    localIso: "2026-09-01T17:10:00+02:00",
+    utcIso: "2026-09-01T15:10:00.000Z"
+  }
+}];
+
+describe("deterministicTimeResult", () => {
+  it("returns the exact live localIso for the production current date-and-time prompt", () => {
+    const result = deterministicTimeResult(
+      liveTimeTask,
+      "What is the current date and time in Europe/Stockholm? Use the current_time tool.",
+      liveTimeTrace
+    );
+
+    expect(result?.content).toBe("The current date and time in Europe/Stockholm is 2026-09-01T17:10:00+02:00.");
+  });
+
+  it("keeps both date and time for Swedish combined phrasing", () => {
+    const result = deterministicTimeResult(
+      liveTimeTask,
+      "Vad är datum och tid i Stockholm?",
+      liveTimeTrace
+    );
+
+    expect(result?.content).toBe("The current date and time in Europe/Stockholm is 2026-09-01T17:10:00+02:00.");
+  });
+});
 
 describe("groundedSynthesisMessages", () => {
   it("tightens synthesis for latest/current requests", () => {
@@ -13,7 +54,7 @@ describe("groundedSynthesisMessages", () => {
       originalPrompt: "Find the current latest Node.js release from official information.",
       attempt: 0
     });
-    const instruction = String(messages.at(-1)?.content ?? "");
+    const instruction = messages.map((message) => String(message.content ?? "")).join("\n");
     expect(instruction).toContain("latest/current request");
     expect(instruction).toContain("Do not substitute LTS for Current");
     expect(instruction).toContain("version-specific release page");
@@ -42,6 +83,31 @@ describe("groundedSynthesisMessages", () => {
     });
     expect(String(messages.at(-1)?.content ?? "")).toContain("Independent evidence reviewer feedback:");
     expect(String(messages.at(-1)?.content ?? "")).toContain("Canonical Current page says v26.8.1");
+  });
+
+  it("converts tool protocol history into clean-room evidence data", () => {
+    const messages = groundedSynthesisMessages({
+      messages: [
+        { role: "system", content: "CURRENT INFORMATION REQUIRED" },
+        { role: "user", content: "What is the current VAT rate?" },
+        { role: "assistant", content: "", toolCalls: [{ id: "s1", name: "web_search", input: { query: "VAT" } }] },
+        { role: "tool", name: "web_search", toolCallId: "s1", content: '{"results":[{"url":"https://www.skatteverket.se"}]}' },
+        { role: "assistant", content: "", toolCalls: [{ id: "f1", name: "web_fetch", input: { url: "https://www.skatteverket.se" } }] },
+        { role: "tool", name: "web_fetch", toolCallId: "f1", content: '{"url":"https://www.skatteverket.se","text":"25 procent"}' }
+      ],
+      draft: "25%",
+      originalPrompt: "What is the current VAT rate?",
+      attempt: 0
+    });
+
+    expect(messages.map((message) => message.role)).toEqual(["system", "user"]);
+    expect(messages.some((message) => message.role === "tool")).toBe(false);
+    expect(messages.some((message) => message.role === "assistant" && message.toolCalls?.length)).toBe(false);
+    const payload = String(messages[1]?.content ?? "");
+    expect(payload).toContain("Opened tool evidence:");
+    expect(payload).toContain("web_search");
+    expect(payload).toContain("web_fetch");
+    expect(payload).toContain("25 procent");
   });
 });
 

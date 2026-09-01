@@ -163,10 +163,14 @@ function isDirectClockRequest(text: string): boolean { return /\b(?:klockan|vad\
 function toolResultCount(request: GenerateRequest, name: string): number { return request.messages.filter((message) => message.role === "tool" && message.name === name).length; }
 function hasTool(request: GenerateRequest, name: string): boolean { return Boolean(request.tools?.some((tool) => tool.name === name)); }
 function systemInstructions(request: GenerateRequest): string { return request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n"); }
+function deterministicEvidencePass(request: GenerateRequest): boolean {
+  const system = systemInstructions(request);
+  return /\b(?:clean-room final-answer synthesizer|independent current-information evidence reviewer)\b/i.test(system);
+}
 
 type QwenReasoningEffort = "none" | "low" | "medium" | "xhigh" | undefined;
 function reasoningEffort(request: GenerateRequest): QwenReasoningEffort {
-  if (request.disableThinking) return "none";
+  if (request.disableThinking || deterministicEvidencePass(request)) return "none";
   const system = systemInstructions(request);
   const fast = /Reasoning policy:\s*FAST(?:\b|:)/i.test(system);
   const standard = /Reasoning policy:\s*STANDARD(?:\b|:)/i.test(system);
@@ -274,13 +278,14 @@ function requestBody(request: GenerateRequest, stream: boolean) {
       json_schema: forcedToolSchema(forcedTool)
     };
   }
+  const evidencePass = deterministicEvidencePass(request);
   return {
     model: QWEN_RUNTIME_MODEL,
     messages: encodedMessages(request),
-    max_tokens: request.maxOutputTokens,
+    max_tokens: evidencePass ? Math.min(request.maxOutputTokens ?? 600, 600) : request.maxOutputTokens,
     temperature: request.temperature,
     reasoning_effort: reasoningEffort(request),
-    chat_template_kwargs: request.disableThinking ? { enable_thinking: false } : undefined,
+    chat_template_kwargs: request.disableThinking || evidencePass ? { enable_thinking: false } : undefined,
     cache_prompt: true,
     stream,
     stream_options: stream ? { include_usage: true } : undefined,

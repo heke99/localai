@@ -121,6 +121,30 @@ describe("OpenAI-compatible runtime policy", () => {
     expect(choices).toEqual(["web_fetch", "auto"]);
   });
 
+  it("disables thinking and caps output for clean-room evidence synthesis", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.reasoning_effort).toBe("none");
+      expect(body.chat_template_kwargs).toEqual({ enable_thinking: false });
+      expect(body.max_tokens).toBe(600);
+      expect(body.tools).toEqual([]);
+      return new Response(JSON.stringify({ choices: [{ message: { content: "25% according to Skatteverket." }, finish_reason: "stop" }] }), { status: 200 });
+    });
+    const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);
+    const result = await adapter.generate({
+      requestId: "evidence-synthesis",
+      alias: "research-prod",
+      messages: [
+        { role: "system", content: "You are a clean-room final-answer synthesizer. Tool execution is finished and no tools are available." },
+        { role: "user", content: "Use only the opened evidence and answer directly." }
+      ],
+      tools: [],
+      temperature: 0,
+      maxOutputTokens: 1200
+    });
+    expect(result.content).toContain("25%");
+  });
+
   it("does not stream forced-tool schema JSON to the user", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -151,8 +175,7 @@ describe("OpenAI-compatible runtime policy", () => {
     const deltas: string[] = [];
     const result = await adapter.generateStreamed!(
       { requestId: "reasoning-hidden", alias: "general-prod", messages: [{ role: "user", content: "hello" }] },
-      (delta) => { deltas.push(delta); }
-    );
+      (delta) => { deltas.push(delta); });
     expect(deltas.join("")).toBe("Visible answer");
     expect(result.content).toBe("Visible answer");
     expect(result.content).not.toContain("hidden");
