@@ -27,7 +27,7 @@ function asksForDate(prompt: string): boolean {
 }
 
 function asksForClock(prompt: string): boolean {
-  return /\b(?:what\s+time|current\s+time|local\s+time|vilken\s+tid|klockan|vad\s+är\s+klockan|hur\s+mycket\s+är\s+klockan|hh:mm)\b/i.test(prompt);
+  return /\b(?:what\s+time|current\s+time|local\s+time|date\s+(?:and|&)\s+time|time\s+(?:and|&)\s+date|datum\s+och\s+tid|tid\s+och\s+datum|vilken\s+tid|klockan|vad\s+är\s+klockan|hur\s+mycket\s+är\s+klockan|hh:mm)\b/i.test(prompt);
 }
 
 function asksForLatestValue(prompt: string): boolean {
