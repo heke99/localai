@@ -18,6 +18,7 @@ const SECURITY_OPERATIONS = new Set<SecurityOperation>([
   "content_discovery"
 ]);
 const PSEUDO_TOOL_PROTOCOL = /<\/?tool_call\b|<function=|<\/function>|<\/?parameter=/i;
+const EVIDENCE_REPAIR_PREFIX = "The independent current-information evidence reviewer rejected the candidate answer because the opened evidence is not sufficient.";
 
 function hasAnyTool(request: GenerateRequest): boolean {
   return Boolean(request.tools?.length);
@@ -111,6 +112,22 @@ function deterministicSecurityRecovery(request: GenerateRequest, result: Generat
   };
 }
 
+function isInternalEvidenceRepair(request: GenerateRequest): boolean {
+  const toolNames = new Set((request.tools ?? []).map((tool) => tool.name));
+  if (!toolNames.has("web_search") || !toolNames.has("web_fetch")) return false;
+  return latestUserContent(request).startsWith(EVIDENCE_REPAIR_PREFIX);
+}
+
+function deterministicEvidenceFallbackSignal(first: GenerateResult, second: GenerateResult): GenerateResult {
+  return {
+    ...second,
+    content: "",
+    finishReason: "stop",
+    toolCalls: undefined,
+    usage: mergeUsage(first.usage, second.usage)
+  };
+}
+
 function toolSchemaSummary(tools: ModelToolDefinition[] | undefined): string {
   return (tools ?? []).map((tool) => {
     const required = Array.isArray(tool.inputSchema.required)
@@ -154,6 +171,11 @@ function mergeUsage(first: GenerateResult["usage"], second: GenerateResult["usag
  * The sole exception is the reserved internal production-readiness protocol. Its harness owns a
  * deterministic bridge from raw Qwen serialization to the exact schema-narrowed readiness call,
  * so this outer user-facing guard must not intercept that protocol.
+ *
+ * Internal evidence-repair turns have one additional fail-safe: if Qwen emits malformed web tool
+ * protocol twice, return a blank stop signal. The agent worker recognizes that signal and invokes
+ * its deterministic ranked web_search -> web_fetch fallback. No malformed call is executed and no
+ * model-generated URL/query is guessed by this boundary.
  */
 export class StrictToolProtocolOpenAiCompatibleAdapter extends ExecutionGroundedOpenAiCompatibleAdapter {
   async generate(request: GenerateRequest): Promise<GenerateResult> {
@@ -166,7 +188,10 @@ export class StrictToolProtocolOpenAiCompatibleAdapter extends ExecutionGrounded
     if (deterministic) return deterministic;
 
     const second = await super.generate(repairRequest(request, first));
-    if (malformedToolProtocol(second)) throw new Error("model_invalid_tool_protocol_after_repair");
+    if (malformedToolProtocol(second)) {
+      if (isInternalEvidenceRepair(request)) return deterministicEvidenceFallbackSignal(first, second);
+      throw new Error("model_invalid_tool_protocol_after_repair");
+    }
     return { ...second, usage: mergeUsage(first.usage, second.usage) };
   }
 
