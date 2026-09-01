@@ -159,7 +159,7 @@ function visibleContent(content: string): string {
   return filter.push(content) + filter.finish();
 }
 function latestUserContent(request: GenerateRequest): string { return [...request.messages].reverse().find((message) => message.role === "user")?.content ?? ""; }
-function isDirectClockRequest(text: string): boolean { return /\b(?:klockan|vad\s+är\s+tiden|vilken\s+tid|aktuella\s+tiden|current\s+time|what\s+time|time\s+is\s+it|vilket\s+datum|dagens\s+datum|today'?s\s+date)\b/i.test(text); }
+function isDirectClockRequest(text: string): boolean { return /\b(?:klockan|vad\s+är\s+tiden|vilken\s+tid|aktuella\s+tiden|datum\s+och\s+tid|dagens\s+datum|vilket\s+datum|current\s+(?:date(?:\s+(?:and|&)\s+time)?|time(?:\s+(?:and|&)\s+date)?)|date\s+(?:and|&)\s+time|what\s+(?:time|date)|time\s+is\s+it|today'?s\s+date)\b/i.test(text); }
 function toolResultCount(request: GenerateRequest, name: string): number { return request.messages.filter((message) => message.role === "tool" && message.name === name).length; }
 function hasTool(request: GenerateRequest, name: string): boolean { return Boolean(request.tools?.some((tool) => tool.name === name)); }
 function systemInstructions(request: GenerateRequest): string { return request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n"); }

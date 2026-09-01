@@ -55,6 +55,23 @@ describe("OpenAI-compatible runtime policy", () => {
     expect(result.toolCalls?.[0]).toMatchObject({ name: "current_time", input: { timezone: "Europe/Stockholm" } });
   });
 
+  it("forces current_time for the exact production date-and-time canary phrasing", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(requestedTool(body)).toBe("current_time");
+      expect(body.tools).toBeUndefined();
+      expect(body.tool_choice).toBeUndefined();
+      return new Response(JSON.stringify(responseFor(body)), { status: 200 });
+    });
+    const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);
+    const result = await adapter.generate(request([
+      { role: "system", content: "LIVE INFORMATION REQUIRED: use an available deterministic/live tool. Never guess a realtime value from model memory." },
+      { role: "user", content: "What is the current date and time in Europe/Stockholm? Use the current_time tool." }
+    ]));
+    expect(result.finishReason).toBe("tool_call");
+    expect(result.toolCalls?.[0]).toMatchObject({ name: "current_time", input: { timezone: "Europe/Stockholm" } });
+  });
+
   it("forces search then opened source through schemas for changing current facts", async () => {
     const choices: Array<string | null> = [];
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
