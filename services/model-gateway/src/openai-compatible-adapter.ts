@@ -190,6 +190,11 @@ function requiredTool(name: string): ToolDirective {
 }
 
 function toolDirective(request: GenerateRequest): ToolDirective | undefined {
+  const explicitRequired = request.requiredToolName?.trim();
+  if (explicitRequired) {
+    if (!hasTool(request, explicitRequired)) throw new Error(`required_tool_definition_missing:${explicitRequired}`);
+    return requiredTool(explicitRequired);
+  }
   if (!request.tools?.length) return undefined;
   const system = systemInstructions(request);
   const currentRequired = system.includes("CURRENT INFORMATION REQUIRED") || system.includes("LIVE INFORMATION REQUIRED");
