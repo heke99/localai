@@ -43,6 +43,9 @@ describe("production RAG and tool runtime contract", () => {
     const profile = read("infra/runtime/gpuhub-production-profile.env");
     const toolProbe = read("infra/runtime/ensure-tool-calling-runtime.sh");
     const embed = read("infra/runtime/ensure-embedding-runtime.sh");
+    const canary = read("infra/runtime/e2e-rag-tool-runtime.sh");
+    const retrieval = read("services/agent-worker/src/knowledge-retrieval.ts");
+    const ingestion = read("scripts/ingest_knowledge.mjs");
     expect(upgrade).toContain("ensure-tool-calling-runtime.sh");
     expect(upgrade).toContain("ensure-embedding-runtime.sh");
     expect(recovery).toContain('LLAMA_ARG_JINJA="${LLAMA_ARG_JINJA:-true}"');
@@ -58,6 +61,8 @@ describe("production RAG and tool runtime contract", () => {
     expect(toolProbe).toContain("tool_calls");
     expect(toolProbe).toContain('"tool_choice":"required"');
     expect(toolProbe).not.toContain('"tool_choice":{"type":"function"');
+    expect(embed).toContain('DIV3RSA_EMBEDDING_PORT:-16007');
+    expect(embed).toContain("TensorBoard service");
     expect(embed).toContain("--embedding");
     expect(embed).toContain("--pooling last");
     expect(embed).toContain("len(e)==1024");
@@ -65,6 +70,9 @@ describe("production RAG and tool runtime contract", () => {
     expect(embed).toContain("stop_pid_if_embedding");
     expect(embed).toContain('--batch-size "$EMBED_BATCH_SIZE"');
     expect(embed).toContain('--ubatch-size "$EMBED_BATCH_SIZE"');
+    expect(canary).toContain('DIV3RSA_EMBEDDING_PORT:-16007');
+    expect(retrieval).toContain("http://127.0.0.1:16007/v1");
+    expect(ingestion).toContain("http://127.0.0.1:16007/v1");
   });
 
   it("runs a real disposable production canary for both paths", () => {

@@ -8,8 +8,6 @@ ROOT_DIR="${DIV3RSA_LEGACY_ROOT_DIR:-/root/autodl-tmp/localai}"
 REPO_DIR="${DIV3RSA_LEGACY_APP_DIR:-${ROOT_DIR}/app}"
 ENV_FILE="${DIV3RSA_LEGACY_ENV_FILE:-${ROOT_DIR}/secrets/gpuhub-worker.env}"
 NODE_BIN="${DIV3RSA_LEGACY_NODE_BIN:-${ROOT_DIR}/runtime/node-current/bin/node}"
-MODEL_PORT="${DIV3RSA_MODEL_PORT:-6006}"
-EMBED_PORT="${DIV3RSA_EMBEDDING_PORT:-6007}"
 
 [[ -d "$REPO_DIR/.git" ]] || fatal "GPUHub repository missing: $REPO_DIR"
 [[ -f "$ENV_FILE" ]] || fatal "GPUHub worker environment missing: $ENV_FILE"
@@ -19,6 +17,11 @@ set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 set +a
+
+# Resolve runtime ports after sourcing the persistent worker environment. The
+# dedicated embedding default deliberately avoids GPUHub TensorBoard on 6007.
+MODEL_PORT="${DIV3RSA_MODEL_PORT:-6006}"
+EMBED_PORT="${DIV3RSA_EMBEDDING_PORT:-16007}"
 
 : "${SUPABASE_URL:?SUPABASE_URL missing}"
 : "${SUPABASE_SECRET_KEY:?SUPABASE_SECRET_KEY missing}"

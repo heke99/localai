@@ -26,7 +26,7 @@ export interface KnowledgeRetrievalDependencies {
 
 export const KNOWLEDGE_EMBEDDING_MODEL = "qwen3-embedding-0.6b-q8_0-d20cf9c";
 const QUERY_TASK = "Given a user request to the DIV3RSA local AI agent, retrieve passages that contain factual or procedural evidence useful for answering or completing the request.";
-const DEFAULT_EMBEDDING_BASE_URL = "http://127.0.0.1:6007/v1";
+const DEFAULT_EMBEDDING_BASE_URL = "http://127.0.0.1:16007/v1";
 const MAX_CONTEXT_CHARS = 18_000;
 
 function enabledFromEnvironment(): boolean {
