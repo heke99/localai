@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { LlamaCppAdmissionController, OpenAiCompatibleAdapter } from "@div3rsa/model-gateway";
+import { createInferenceAdapter, LlamaCppAdmissionController, modelProtocolProfileFromEnvironment } from "@div3rsa/model-gateway";
 import { SkillEngine, type SkillManifest } from "@div3rsa/skill-engine";
 import type { ModelAlias } from "@div3rsa/model-sdk";
 import { AgentWorkerProcessor, type AgentQueue, type ClaimedRun } from "../services/agent-worker/src/processor";
@@ -119,6 +119,7 @@ const inferenceBaseUrl = process.env.DIV3RSA_INFERENCE_BASE_URL?.trim()
   || process.env.QWEN_INFERENCE_BASE_URL?.trim()
   || `http://127.0.0.1:${modelPort}/v1`;
 const inferenceApiKey = requiredAny(["DIV3RSA_INFERENCE_API_KEY", "QWEN_INFERENCE_API_KEY"]);
+const modelProtocolProfile = modelProtocolProfileFromEnvironment();
 const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApiKey, {
   contextLimit: numericEnvironment("DIV3RSA_MODEL_CONTEXT_SIZE", 32768),
   batchSize: numericEnvironment("DIV3RSA_MODEL_BATCH_SIZE", 2048),
@@ -136,7 +137,7 @@ const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApi
   telemetryTimeoutMs: numericEnvironment("DIV3RSA_ADMISSION_TELEMETRY_TIMEOUT_MS", 1000),
   gpuMetricsUrl: process.env.DIV3RSA_GPU_METRICS_URL?.trim() || null
 });
-const adapter = new OpenAiCompatibleAdapter(inferenceBaseUrl, inferenceApiKey, fetch, admission);
+const adapter = createInferenceAdapter({ baseUrl: inferenceBaseUrl, apiKey: inferenceApiKey, profile: modelProtocolProfile, fetcher: fetch, admission });
 const health = await adapter.healthCheck();
 if (!health.ok) throw new Error(`model_unhealthy:${health.detail ?? "unknown"}`);
 
@@ -237,6 +238,8 @@ const summary = {
   repositoryCommit: process.env.DIV3RSA_EVAL_COMMIT_SHA?.trim() || null,
   inferenceBaseUrl: new URL(inferenceBaseUrl).origin,
   modelParallel,
+  modelProtocol: modelProtocolProfile.protocol,
+  configuredModelVersionId: modelProtocolProfile.modelVersionId,
   cases: results.length,
   passed,
   failed: results.length - passed,

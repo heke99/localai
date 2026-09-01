@@ -57,7 +57,10 @@ export class RuntimeInferenceRouter implements ModelAdapter {
     private readonly adapterFactory: AdapterFactory = (endpoint) => new OpenAiCompatibleAdapter(endpoint, apiKey, fetcher),
     options: RuntimeInferenceRouterOptions = {}
   ) {
-    this.localCapabilities = new OpenAiCompatibleAdapter("http://127.0.0.1", apiKey, fetcher).getCapabilities();
+    // Derive advertised capabilities from the same factory used for actual routed
+    // requests. A replacement model therefore cannot silently inherit Qwen's
+    // capability set merely because the control plane route is healthy.
+    this.localCapabilities = this.adapterFactory("http://127.0.0.1").getCapabilities();
     this.staleSeconds = Math.min(900, Math.max(30, Math.trunc(options.staleSeconds ?? 90)));
     this.reapIntervalMs = Math.max(5_000, Math.trunc(options.reapIntervalMs ?? 30_000));
   }

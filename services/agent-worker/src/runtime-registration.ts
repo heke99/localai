@@ -17,6 +17,8 @@ export type RuntimeRegistrationConfig = {
   gpuCount: number | null;
   vramTotalBytes: number | null;
   runtimeRole: "combined" | "inference";
+  inferenceProtocol: "qwen-llamacpp" | "generic-openai";
+  modelVersionId: string | null;
 };
 
 function integer(value: string | undefined, fallback: number) {
@@ -46,6 +48,12 @@ function aliases() {
     .split(",")
     .map((value) => value.trim())
     .filter((value) => /^[a-z0-9][a-z0-9_-]{0,159}$/.test(value)))];
+}
+
+function inferenceProtocol(): RuntimeRegistrationConfig["inferenceProtocol"] {
+  const value = process.env.DIV3RSA_INFERENCE_PROTOCOL?.trim().toLowerCase() || "qwen-llamacpp";
+  if (value === "qwen-llamacpp" || value === "generic-openai") return value;
+  throw new Error(`unsupported_inference_protocol:${value}`);
 }
 
 export function runtimeRegistrationConfigFromEnvironment(modelPort: number): RuntimeRegistrationConfig | null {
@@ -81,7 +89,9 @@ export function runtimeRegistrationConfigFromEnvironment(modelPort: number): Run
     gpuType: process.env.DIV3RSA_RUNTIME_GPU_TYPE?.trim() || null,
     gpuCount,
     vramTotalBytes: Number.isFinite(vramGb) && vramGb >= 0 ? Math.round(vramGb * 1024 ** 3) : null,
-    runtimeRole
+    runtimeRole,
+    inferenceProtocol: inferenceProtocol(),
+    modelVersionId: process.env.DIV3RSA_INFERENCE_MODEL_VERSION_ID?.trim() || null
   };
 }
 
@@ -104,6 +114,9 @@ export class RuntimeRegistration {
       workerId: this.workerId,
       runtimeRole: this.config.runtimeRole,
       runtimeContract: "div3rsa-runtime-v1",
+      modelProtocolContractVersion: 1,
+      inferenceProtocol: this.config.inferenceProtocol,
+      modelVersionId: this.config.modelVersionId,
       ...extra
     };
   }

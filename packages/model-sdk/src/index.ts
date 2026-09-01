@@ -1,6 +1,28 @@
 export type ModelCapability = "general" | "reasoning" | "coding" | "security" | "research" | "long_context" | "tool_use" | "verification";
 export type ModelAlias = "general-prod" | "code-prod" | "lab-prod" | "reasoner-prod" | "research-prod" | "verifier-prod";
 
+/**
+ * Wire-level model protocol. Agent/task code must depend on ModelAdapter, never on
+ * a protocol implementation or a concrete model family.
+ */
+export type ModelInferenceProtocol = "qwen-llamacpp" | "generic-openai";
+export type ModelProtocolCapability =
+  | "text_generation"
+  | "streaming"
+  | "native_tool_calls"
+  | "tool_result_continuation"
+  | "structured_json"
+  | "reasoning_control";
+
+export interface ModelProtocolProfile {
+  contractVersion: 1;
+  protocol: ModelInferenceProtocol;
+  runtimeModel: string;
+  modelVersionId: string;
+  capabilities: ModelCapability[];
+  protocolCapabilities: ModelProtocolCapability[];
+}
+
 export interface ModelToolDefinition {
   name: string;
   description: string;
@@ -113,12 +135,15 @@ export interface RegisteredModelVersion {
   artifact: string;
   artifactSha256: string;
   artifactBytes: number;
-  quantization: "Q8_0";
+  /** Runtime-native quantization or precision label, e.g. Q8_0, Q6_K, BF16. */
+  quantization: string;
   tokenizerSha256: string | null;
   chatTemplateSha256: string | null;
   license: string;
   contextWindow: number;
   capabilities: ModelCapability[];
-  runtime: { adapter: "llama.cpp-openai"; containerDigest: string | null; cudaVersion: string | null };
+  runtime: { adapter: "llama.cpp-openai" | "openai-compatible"; containerDigest: string | null; cudaVersion: string | null };
+  /** Optional portable protocol declaration; legacy registrations remain valid. */
+  protocol?: ModelProtocolProfile;
   lifecycle: "registered" | "verified" | "canary" | "production" | "retired";
 }

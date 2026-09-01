@@ -62,7 +62,10 @@ function runtimeBudget(task: TaskAnalysis): Pick<AgentExecutionPolicy, "verifica
   if (task.requiresCurrentInformation) return task.researchDepth === "deep"
     ? { verificationRounds: 2, maxToolIterations: 6, maxModelTurns: 8 }
     : { verificationRounds: 1, maxToolIterations: 4, maxModelTurns: 6 };
-  if (task.reasoningLevel === "deep") return { verificationRounds: 2, maxToolIterations: 5, maxModelTurns: 7 };
+  // Six loop iterations allow five sequential dependent tool calls followed by
+  // the required final model turn. This is the minimum useful long-horizon
+  // budget for deep stable tasks while LoopGuard and verification remain bound.
+  if (task.reasoningLevel === "deep") return { verificationRounds: 2, maxToolIterations: 6, maxModelTurns: 8 };
   return { verificationRounds: 1, maxToolIterations: 2, maxModelTurns: 3 };
 }
 
