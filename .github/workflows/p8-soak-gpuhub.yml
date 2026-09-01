@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: gpuhub-production
+  group: gpuhub-p8-soak
   cancel-in-progress: false
 
 jobs:
