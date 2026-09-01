@@ -188,12 +188,6 @@ function requiredTool(name: string): ToolDirective {
 function toolDirective(request: GenerateRequest): ToolDirective | undefined {
   if (!request.tools?.length) return undefined;
   const system = systemInstructions(request);
-  const securityReadinessRequired = system.includes("SECURITY READINESS REQUIRED");
-  if (securityReadinessRequired && hasTool(request, "security_scan")) {
-    return toolResultCount(request, "security_scan") === 0
-      ? requiredTool("security_scan")
-      : { choice: "auto" };
-  }
   const currentRequired = system.includes("CURRENT INFORMATION REQUIRED") || system.includes("LIVE INFORMATION REQUIRED");
   if (!currentRequired) return { choice: "auto" };
   const directClock = system.includes("LIVE INFORMATION REQUIRED") && isDirectClockRequest(latestUserContent(request));
