@@ -28,6 +28,17 @@ const webSearchTool: ModelToolDefinition = {
   }
 };
 
+const webFetchTool: ModelToolDefinition = {
+  name: "web_fetch",
+  description: "Open public research source",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["url"],
+    properties: { url: { type: "string" } }
+  }
+};
+
 function completion(content: string, finishReason = "stop") {
   return new Response(JSON.stringify({
     choices: [{ message: { content }, finish_reason: finishReason }],
@@ -136,7 +147,34 @@ describe("strict tool protocol boundary", () => {
     expect(output.content).toBe("");
   });
 
-  it("fails closed when the repair attempt emits malformed tool protocol again", async () => {
+  it("returns a blank stop signal for deterministic worker fallback when internal evidence repair malforms twice", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(completion(malformedEmptyWebSearch))
+      .mockResolvedValueOnce(completion(malformedEmptyWebSearch));
+    const adapter = new StrictToolProtocolOpenAiCompatibleAdapter("http://worker/v1", "internal", fetcher as typeof fetch);
+
+    const output = await adapter.generate({
+      requestId: "current-evidence-malformed-twice",
+      alias: "general-prod",
+      messages: [
+        { role: "user", content: "Vad är den aktuella svenska momssatsen?" },
+        { role: "assistant", content: "25%." },
+        {
+          role: "user",
+          content: "The independent current-information evidence reviewer rejected the candidate answer because the opened evidence is not sufficient. Reviewer reason: stronger primary evidence required.\n\nDo not merely rewrite the answer and do not use model memory as a substitute for evidence. Gather additional or stronger current evidence now."
+        }
+      ],
+      tools: [webSearchTool, webFetchTool]
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(output.finishReason).toBe("stop");
+    expect(output.content).toBe("");
+    expect(output.toolCalls).toBeUndefined();
+    expect(output.usage).toEqual({ inputTokens: 20, outputTokens: 8, cachedTokens: 0 });
+  });
+
+  it("fails closed when a non-internal repair attempt emits malformed tool protocol again", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(completion(malformedEmptyWebSearch))
       .mockResolvedValueOnce(completion(malformedEmptyWebSearch));
