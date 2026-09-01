@@ -188,8 +188,10 @@ describe("AgentWorkerProcessor execution policy", () => {
     expect(verifierGenerate).toHaveBeenCalledOnce();
     expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["current_time", "web_search", "web_fetch"]);
     expect(requests[1]?.tools).toEqual([]);
-    expect(execute).toHaveBeenCalledTimes(2);
-    expect(execute.mock.calls.map((call) => call[1].name)).toEqual(["web_search", "web_fetch"]);
+    const toolNames = execute.mock.calls.map((call) => call[1].name);
+    expect(toolNames.filter((name) => name === "web_search").length).toBeGreaterThanOrEqual(1);
+    expect(toolNames.filter((name) => name === "web_fetch")).toHaveLength(1);
+    expect(toolNames).not.toContain("current_time");
     expect(jobs.complete).toHaveBeenCalledWith(run, expect.objectContaining({ content: expect.stringContaining("v24.7.0") }));
     expect(jobs.recordVerificationRun).toHaveBeenCalledOnce();
     expect(jobs.fail).not.toHaveBeenCalled();

@@ -29,6 +29,9 @@ const vatAuthorities = [
   "https://taxation-customs.ec.europa.eu/taxation/vat/vat-rates_en"
 ].sort();
 
+const canonicalVatUrl = "https://www.skatteverket.se/foretag/moms/saljavarorochtjanster/momssatspavarorochtjanster.4.58d555751259e4d66168000409.html";
+const canonicalNodeUrl = "https://nodejs.org/en/download/current";
+
 describe("freshnessSearchQueries", () => {
   it("focuses a verbose latest-release request on the official authority and compact intent", () => {
     const queries = freshnessSearchQueries("Find the current latest Node.js release from official Node.js information. Search the web, open the relevant source, and report the version you verified and that the information was checked now. Do not rely on model memory.");
@@ -141,14 +144,19 @@ describe("collectRequiredFreshnessEvidence", () => {
         if (query === queries[1]) return { results: [] };
         return {
           results: [{
-            url: "https://nodejs.org/en/download/current",
+            url: canonicalNodeUrl,
             title: "Download Node.js - Current",
             snippet: "Latest Release v26.8.1",
             score: 10
           }]
         };
       }
-      if (call.name === "web_fetch") return { url: call.input.url, status: 200, text: "verified source" };
+      if (call.name === "web_fetch") {
+        const url = String(call.input.url);
+        return url === canonicalNodeUrl
+          ? { url, status: 200, title: "Node.js Download", text: "Node.js v26.8.1 Current. Latest Release v26.8.1." }
+          : { url, status: 200, title: "Node.js release", text: "Node.js version 25.8.0 release notes." };
+      }
       throw new Error(`unexpected tool:${call.name}`);
     });
     const queue = { step: vi.fn(async () => undefined) } as unknown as AgentQueue;
@@ -175,7 +183,7 @@ describe("collectRequiredFreshnessEvidence", () => {
       "web_fetch"
     ]);
     expect(calls.filter((call) => call.name === "web_search").map((call) => String(call.input.query))).toEqual(queries);
-    expect(String(calls[3]?.input.url)).toBe("https://nodejs.org/en/download/current");
+    expect(String(calls[3]?.input.url)).toBe(canonicalNodeUrl);
     expect(String(calls[4]?.input.url)).toBe("https://nodejs.org/en/blog/release/v25.8.0");
   });
 
@@ -200,7 +208,12 @@ describe("collectRequiredFreshnessEvidence", () => {
           ]
         };
       }
-      if (call.name === "web_fetch") return { url: call.input.url, status: 200, text: "release evidence" };
+      if (call.name === "web_fetch") {
+        const url = String(call.input.url);
+        return url.endsWith("/current")
+          ? { url, status: 200, text: "Acme runtime current release version 8.2.1. Latest release 8.2.1." }
+          : { url, status: 200, text: "Acme runtime release index with supported versions." };
+      }
       throw new Error(`unexpected tool:${call.name}`);
     });
     const queue = { step: vi.fn(async () => undefined) } as unknown as AgentQueue;
@@ -249,7 +262,7 @@ describe("collectRequiredFreshnessEvidence", () => {
           ]
         };
       }
-      if (call.name === "web_fetch") return { url: call.input.url, status: 200, text: "25 percent" };
+      if (call.name === "web_fetch") return { url: call.input.url, status: 200, text: "Sweden VAT moms standard rate and momssats 25 percent." };
       throw new Error(`unexpected tool:${call.name}`);
     });
     const queue = { step: vi.fn(async () => undefined) } as unknown as AgentQueue;
@@ -298,7 +311,7 @@ describe("collectRequiredFreshnessEvidence", () => {
           }]
         };
       }
-      if (call.name === "web_fetch") return { url: call.input.url, status: 200, text: "25 percent" };
+      if (call.name === "web_fetch") return { url: call.input.url, status: 200, text: "Sweden VAT moms standard rate and momssats 25 percent." };
       throw new Error(`unexpected tool:${call.name}`);
     });
     const queue = { step: vi.fn(async () => undefined) } as unknown as AgentQueue;
@@ -336,7 +349,7 @@ describe("collectRequiredFreshnessEvidence", () => {
           }]
         };
       }
-      if (call.name === "web_fetch") return { url: call.input.url, status: 200, text: "25 percent" };
+      if (call.name === "web_fetch") return { url: call.input.url, status: 200, text: "Sweden VAT moms standard rate and momssats 25 percent." };
       throw new Error(`unexpected tool:${call.name}`);
     });
     const queue = { step: vi.fn(async () => undefined) } as unknown as AgentQueue;
@@ -359,5 +372,102 @@ describe("collectRequiredFreshnessEvidence", () => {
     expect(calls.filter((call) => call.name === "web_fetch").map((call) => String(call.input.url))).toEqual([
       "https://www.skatteverket.se/foretag/moms/momssatser.html"
     ]);
+  });
+
+  it("does not count irrelevant HTTP 200 pages and falls through to the canonical VAT authority", async () => {
+    const prompt = "What is the current standard VAT rate (normal momssats) in Sweden? Verify it using current web research, open an authoritative source such as Skatteverket, and state the source in the answer.";
+    const execute = vi.fn(async (_run: ClaimedRun, call: { name: string; input: Record<string, unknown> }) => {
+      if (call.name === "web_search") {
+        return {
+          results: [
+            { url: "https://misleading.example/vat-sweden", title: "Sweden VAT authority", snippet: "Current standard VAT rate Sweden", score: 100 },
+            { url: "https://other.example/momssats", title: "Normal momssats Sweden", snippet: "Authoritative VAT information", score: 99 }
+          ]
+        };
+      }
+      if (call.name === "web_fetch") {
+        const url = String(call.input.url);
+        if (url === canonicalVatUrl) {
+          return { url, status: 200, title: "Momssatser och undantag från moms", text: "Moms och momssatser i Sverige. Den vanliga skattesatsen för moms beskrivs här." };
+        }
+        return { url, status: 200, title: "Unrelated page", text: "Gardening, weather forecasts and flower care." };
+      }
+      throw new Error(`unexpected tool:${call.name}`);
+    });
+    const queue = { step: vi.fn(async () => undefined) } as unknown as AgentQueue;
+    const tools = { execute } as unknown as WorkerToolRuntime;
+    const run = { runId: "run-vat-irrelevant", requestId: "request-vat-irrelevant" } as ClaimedRun;
+
+    await expect(collectRequiredFreshnessEvidence({
+      task: webTask(),
+      normalizedPrompt: prompt,
+      definitions: webDefinitions(),
+      queue,
+      tools,
+      run,
+      messages: [],
+      trace: []
+    })).resolves.toBeUndefined();
+
+    const fetchUrls = execute.mock.calls
+      .map(([, call]) => call)
+      .filter((call) => call.name === "web_fetch")
+      .map((call) => String(call.input.url));
+    expect(fetchUrls).toHaveLength(3);
+    expect(fetchUrls.slice(0, 2).sort()).toEqual([
+      "https://misleading.example/vat-sweden",
+      "https://other.example/momssats"
+    ].sort());
+    expect(fetchUrls.at(-1)).toBe(canonicalVatUrl);
+    expect(queue.step).toHaveBeenCalledWith(
+      "run-vat-irrelevant",
+      "tool",
+      "blocked",
+      "Fetched page did not materially address current-information request",
+      expect.any(Object)
+    );
+  });
+
+  it("requires a real current-version proof and falls through stale Node release pages to the canonical current page", async () => {
+    const prompt = "Find the current latest Node.js release from official Node.js information. Search the web, open the relevant source, and report the version you verified and that the information was checked now. Do not rely on model memory.";
+    const execute = vi.fn(async (_run: ClaimedRun, call: { name: string; input: Record<string, unknown> }) => {
+      if (call.name === "web_search") {
+        return {
+          results: [
+            { url: "https://nodejs.org/en/blog/release/v25.8.0", title: "Node.js v25.8.0", snippet: "Version 25.8.0 release notes", score: 100 },
+            { url: "https://nodejs.org/en/blog/release/v25.7.0", title: "Node.js v25.7.0", snippet: "Version 25.7.0 release notes", score: 99 }
+          ]
+        };
+      }
+      if (call.name === "web_fetch") {
+        const url = String(call.input.url);
+        if (url === canonicalNodeUrl) {
+          return { url, status: 200, title: "Node.js Download", text: "Node.js v26.8.1 Current. v26.8.1 Latest Release." };
+        }
+        return { url, status: 200, title: "Node.js release", text: `Node.js version ${url.endsWith("25.8.0") ? "25.8.0" : "25.7.0"} release notes.` };
+      }
+      throw new Error(`unexpected tool:${call.name}`);
+    });
+    const queue = { step: vi.fn(async () => undefined) } as unknown as AgentQueue;
+    const tools = { execute } as unknown as WorkerToolRuntime;
+    const run = { runId: "run-node-stale", requestId: "request-node-stale" } as ClaimedRun;
+
+    await expect(collectRequiredFreshnessEvidence({
+      task: webTask(),
+      normalizedPrompt: prompt,
+      definitions: webDefinitions(),
+      queue,
+      tools,
+      run,
+      messages: [],
+      trace: []
+    })).resolves.toBeUndefined();
+
+    const fetchUrls = execute.mock.calls
+      .map(([, call]) => call)
+      .filter((call) => call.name === "web_fetch")
+      .map((call) => String(call.input.url));
+    expect(fetchUrls.at(-1)).toBe(canonicalNodeUrl);
+    expect(fetchUrls).toContain("https://nodejs.org/en/blog/release/v25.8.0");
   });
 });
