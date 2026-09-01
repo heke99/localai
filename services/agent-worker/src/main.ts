@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@div3rsa/db";
 import type { ModelAdapter } from "@div3rsa/model-sdk";
-import { LlamaCppAdmissionController, OpenAiCompatibleAdapter } from "@div3rsa/model-gateway";
+import { createInferenceAdapter, LlamaCppAdmissionController, modelProtocolProfileFromEnvironment } from "@div3rsa/model-gateway";
 import { AgentWorkerProcessor } from "./processor";
 import { SupabaseAgentQueue } from "./supabase-queue";
 import { AgentKernelShadowQueue } from "./agent-kernel/shadow-queue";
@@ -94,6 +94,7 @@ const inferenceBaseUrl = process.env.DIV3RSA_INFERENCE_BASE_URL?.trim()
   || process.env.QWEN_INFERENCE_BASE_URL?.trim()
   || `http://127.0.0.1:${modelPort}/v1`;
 const inferenceApiKey = requiredAny(["DIV3RSA_INFERENCE_API_KEY", "QWEN_INFERENCE_API_KEY"]);
+const modelProtocolProfile = modelProtocolProfileFromEnvironment();
 const agentKernelConfig = agentKernelConfigFromEnvironment();
 const verifiedMemoryEnabled = booleanEnvironment("DIV3RSA_VERIFIED_MEMORY_ENABLED", false);
 const verifiedLearningEnabled = booleanEnvironment("DIV3RSA_VERIFIED_LEARNING_ENABLED", false);
@@ -115,9 +116,20 @@ const admission = new LlamaCppAdmissionController(inferenceBaseUrl, inferenceApi
   telemetryTimeoutMs: numericEnvironment("DIV3RSA_ADMISSION_TELEMETRY_TIMEOUT_MS", 1000),
   gpuMetricsUrl: process.env.DIV3RSA_GPU_METRICS_URL?.trim() || null
 });
-const directAdapter = new OpenAiCompatibleAdapter(inferenceBaseUrl, inferenceApiKey, fetch, admission);
+const directAdapter = createInferenceAdapter({
+  baseUrl: inferenceBaseUrl,
+  apiKey: inferenceApiKey,
+  profile: modelProtocolProfile,
+  fetcher: fetch,
+  admission
+});
 const inferenceAdapter: ModelAdapter = routingMode === "registry"
-  ? new RuntimeInferenceRouter(supabase as unknown as RuntimeInferenceRpcClient, inferenceApiKey)
+  ? new RuntimeInferenceRouter(
+      supabase as unknown as RuntimeInferenceRpcClient,
+      inferenceApiKey,
+      fetch,
+      (endpoint) => createInferenceAdapter({ baseUrl: endpoint, apiKey: inferenceApiKey, profile: modelProtocolProfile, fetcher: fetch })
+    )
   : directAdapter;
 const canaryAdapter: ModelAdapter = new AgentKernelActiveCanaryAdapter(inferenceAdapter, agentKernelConfig);
 const adapter: ModelAdapter = new VerifiedMemoryAdapter(canaryAdapter, kernelStore, verifiedMemoryEnabled);
@@ -215,7 +227,7 @@ async function waitForHealthyModel() {
       const health = await adapter.healthCheck();
       if (health.ok) {
         const endpointDetail = routingMode === "registry" ? (health.detail ?? "registered-route") : new URL(inferenceBaseUrl).origin;
-        console.info(`[agent-worker] model ready; worker=${workerId}; routing=${routingMode}; endpoint=${endpointDetail}; parallel=${modelParallel}`);
+        console.info(`[agent-worker] model ready; worker=${workerId}; routing=${routingMode}; protocol=${modelProtocolProfile.protocol}; modelVersion=${modelProtocolProfile.modelVersionId}; endpoint=${endpointDetail}; parallel=${modelParallel}`);
         return;
       }
       lastDetail = health.detail ?? "unhealthy";
@@ -252,7 +264,7 @@ const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BAC
 const kernelStatus = agentKernelConfig.enabled
   ? `${agentKernelConfig.mode}${agentKernelConfig.mode === "active" ? `-${agentKernelConfig.activeCanaryBasisPoints}bps` : ""}`
   : "disabled";
-console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; aggregateIdlePollMs=${idlePollMs}; agentKernel=${kernelStatus}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}; dynamicToolDiscovery=${dynamicToolDiscoveryEnabled ? "enabled" : "disabled"}; securityToolRuntime=${securityToolRuntimeEnabled ? "scoped-remote" : "disabled"}; checkpointRewind=${checkpointRewindEnabled ? "enabled" : "disabled"}; verifiedMemory=${verifiedMemoryEnabled ? "enabled" : "disabled"}; verifiedLearning=${verifiedLearningEnabled ? "enabled" : "disabled"}; trainingEligibility=${trainingEligibilityEnabled ? "enabled" : "disabled"}; rag=${process.env.DIV3RSA_RAG_ENABLED?.trim() === "0" ? "disabled" : "enabled"}`);
+console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; modelProtocol=${modelProtocolProfile.protocol}; modelVersion=${modelProtocolProfile.modelVersionId}; aggregateIdlePollMs=${idlePollMs}; agentKernel=${kernelStatus}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}; dynamicToolDiscovery=${dynamicToolDiscoveryEnabled ? "enabled" : "disabled"}; securityToolRuntime=${securityToolRuntimeEnabled ? "scoped-remote" : "disabled"}; checkpointRewind=${checkpointRewindEnabled ? "enabled" : "disabled"}; verifiedMemory=${verifiedMemoryEnabled ? "enabled" : "disabled"}; verifiedLearning=${verifiedLearningEnabled ? "enabled" : "disabled"}; trainingEligibility=${trainingEligibilityEnabled ? "enabled" : "disabled"}; rag=${process.env.DIV3RSA_RAG_ENABLED?.trim() === "0" ? "disabled" : "enabled"}`);
 
 await runWorkerLanes({
   concurrency: workerConcurrency,
