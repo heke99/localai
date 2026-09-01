@@ -20,7 +20,7 @@ class ConformantFixtureAdapter implements ModelAdapter {
     const toolResult = request.messages.find((message) => message.role === "tool");
     if (toolResult) {
       const parsed = JSON.parse(toolResult.content) as { continuationToken: string };
-      return { modelVersionId: profile.modelVersionId, content: parsed.continuationToken, finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
+      return { modelVersionId: profile.modelVersionId, content: `Verified tool evidence: ${parsed.continuationToken}`, finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
     }
     const currentTime = request.tools?.find((candidate) => candidate.name === "current_time");
     if (currentTime) {
@@ -46,8 +46,17 @@ class BrokenToolAdapter extends ConformantFixtureAdapter {
   }
 }
 
+class UngroundedContinuationAdapter extends ConformantFixtureAdapter {
+  override async generate(request: GenerateRequest): Promise<GenerateResult> {
+    if (request.messages.some((message) => message.role === "tool")) {
+      return { modelVersionId: profile.modelVersionId, content: "I received a tool result.", finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
+    }
+    return super.generate(request);
+  }
+}
+
 describe("model conformance", () => {
-  it("accepts an adapter based only on the shared ModelAdapter contract", async () => {
+  it("accepts a continuation that proves opaque tool-result grounding even with harmless prose", async () => {
     const report = await runModelConformance(new ConformantFixtureAdapter(), profile, { tokenSeed: "unit" });
     expect(report.allowed).toBe(true);
     expect(report.passed).toBe(report.cases);
@@ -61,5 +70,13 @@ describe("model conformance", () => {
     expect(report.allowed).toBe(false);
     expect(report.results.find((result) => result.id === "native-tool-call")?.passed).toBe(false);
     expect(report.results.find((result) => result.id === "tool-result-continuation")?.passed).toBe(false);
+  });
+
+  it("fails closed when the continuation does not contain the opaque tool-result token", async () => {
+    const report = await runModelConformance(new UngroundedContinuationAdapter(), profile, { tokenSeed: "ungrounded" });
+    expect(report.allowed).toBe(false);
+    expect(report.results.find((result) => result.id === "native-tool-call")?.passed).toBe(true);
+    expect(report.results.find((result) => result.id === "tool-result-continuation")?.passed).toBe(false);
+    expect(report.results.find((result) => result.id === "tool-result-continuation")?.failures).toContain("tool_result_token_missing");
   });
 });
