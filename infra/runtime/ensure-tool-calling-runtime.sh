@@ -21,28 +21,27 @@ probe() {
 {
   "model": "${MODEL_ALIAS}",
   "messages": [
-    {"role":"system","content":"This is a runtime protocol probe. You MUST call the only available tool exactly once and MUST NOT answer in plain text."},
-    {"role":"user","content":"Call div3rsa_runtime_probe with nonce TOOL_CALL_OK."}
+    {"role":"system","content":"RUNTIME FORCED TOOL CALL MODE. Do not answer normally. Return only the JSON object required by the output grammar."},
+    {"role":"user","content":"Select div3rsa_runtime_probe with nonce TOOL_CALL_OK."}
   ],
-  "tools": [
-    {
-      "type":"function",
-      "function":{
-        "name":"div3rsa_runtime_probe",
-        "description":"Deterministic protocol probe.",
-        "parameters":{
-          "type":"object",
-          "additionalProperties":false,
-          "required":["nonce"],
-          "properties":{"nonce":{"type":"string"}}
-        }
+  "json_schema": {
+    "type":"object",
+    "additionalProperties":false,
+    "required":["name","arguments"],
+    "properties":{
+      "name":{"type":"string","enum":["div3rsa_runtime_probe"]},
+      "arguments":{
+        "type":"object",
+        "additionalProperties":false,
+        "required":["nonce"],
+        "properties":{"nonce":{"type":"string","enum":["TOOL_CALL_OK"]}}
       }
     }
-  ],
-  "tool_choice":"auto",
+  },
   "temperature":0,
   "max_tokens":256,
   "stream":false,
+  "reasoning_effort":"none",
   "chat_template_kwargs":{"enable_thinking":false}
 }
 JSON
@@ -58,28 +57,28 @@ body=json.loads(sys.argv[1])
 choices=body.get("choices") or []
 assert choices, "choices_missing"
 message=choices[0].get("message") or {}
-calls=message.get("tool_calls") or []
-assert calls, f"tool_calls_missing:{message}"
-call=calls[0]
-fn=call.get("function") or {}
-assert fn.get("name")=="div3rsa_runtime_probe", f"tool_name_mismatch:{fn.get('name')}"
-args=fn.get("arguments")
-if isinstance(args,str): args=json.loads(args)
+content=message.get("content")
+assert isinstance(content,str) and content.strip(), f"schema_content_missing:{message}"
+call=json.loads(content)
+assert call.get("name")=="div3rsa_runtime_probe", f"tool_name_mismatch:{call.get('name')}"
+args=call.get("arguments")
 assert isinstance(args,dict), "tool_arguments_invalid"
 assert args.get("nonce")=="TOOL_CALL_OK", f"tool_nonce_mismatch:{args}"
+assert set(call)=={"name","arguments"}, f"tool_envelope_extra_fields:{call}"
+assert set(args)=={"nonce"}, f"tool_arguments_extra_fields:{args}"
 PY
 }
 
 curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${MODEL_PORT}/health" >/dev/null \
-  || fatal "generation runtime is unhealthy before tool-call probe"
+  || fatal "generation runtime is unhealthy before forced-tool schema probe"
 
 if probe; then
-  log "Qwen3.8 structured tool calling healthy on llama.cpp auto path at 127.0.0.1:${MODEL_PORT}"
+  log "Qwen3.8 forced-tool JSON-schema protocol healthy on 127.0.0.1:${MODEL_PORT}"
   exit 0
 fi
 
-log "tool-call probe failed; restarting llama-server with documented Jinja tool parsing enabled"
+log "forced-tool schema probe failed; restarting llama-server with the tracked Jinja profile"
 LLAMA_ARG_JINJA=true DIV3RSA_MODEL_JINJA=true DIV3RSA_FORCE_MODEL_RESTART=1 bash "$RECOVERY_SCRIPT"
 
-probe || fatal "Qwen3.8 structured tool calling still failed after Jinja-enabled recovery"
-log "Qwen3.8 structured tool calling recovered and verified"
+probe || fatal "Qwen3.8 forced-tool JSON-schema protocol still failed after recovery"
+log "Qwen3.8 forced-tool JSON-schema protocol recovered and verified"
