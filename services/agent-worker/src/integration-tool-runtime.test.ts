@@ -15,6 +15,19 @@ describe("PermissionedIntegrationToolRuntime", () => {
     expect((await runtime.list(run)).map((tool) => tool.name)).toEqual(["div3rsa_list_project_resources", "div3rsa_remember_resource_link"]);
   });
 
+  it("keeps provider writes out of chat mode and blocks direct write execution", async () => {
+    const chatRun: ClaimedRun = { ...run, mode: "chat", modelAlias: "general-prod", prompt: "explain the repository" };
+    const rpc = vi.fn();
+    const execute = vi.fn();
+    const runtime = new PermissionedIntegrationToolRuntime({ rpc }, new Map([["github", { execute }]]));
+    const names = (await runtime.list(chatRun)).map((tool) => tool.name);
+    expect(names).toContain("github_read_file");
+    expect(names).not.toContain("github_write_file");
+    await expect(runtime.execute(chatRun, { id: "write-in-chat", name: "github_write_file", input: { resourceId: "repo-1", path: "x", content: "x", message: "x", branch: "main" } })).rejects.toThrow("tool_mode_denied:github_write_file:chat");
+    expect(rpc).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("lists the project directory without granting provider access", async () => {
     const rpc = vi.fn(async () => ({ data: { projectId: "project", resources: [], links: [] }, error: null }));
     const runtime = new PermissionedIntegrationToolRuntime({ rpc }, new Map());
