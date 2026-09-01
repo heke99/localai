@@ -37,14 +37,15 @@ export interface ModelConformanceOptions {
   requiredCapabilities?: ModelCapability[];
 }
 
-const tool: ModelToolDefinition = {
-  name: "conformance_echo",
-  description: "Protocol conformance probe. Echo the supplied token exactly through a native tool call.",
+const CONFORMANCE_TIMEZONE = "Europe/Stockholm";
+const currentTimeTool: ModelToolDefinition = {
+  name: "current_time",
+  description: "Return the current date and time for an IANA timezone. This deterministic runtime-required tool is used to verify native tool-call wire compatibility.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["token"],
-    properties: { token: { type: "string" } }
+    required: ["timezone"],
+    properties: { timezone: { type: "string", enum: [CONFORMANCE_TIMEZONE] } }
   }
 };
 
@@ -52,8 +53,8 @@ function hiddenReasoningExposed(result: GenerateResult): boolean {
   return /<think\b|<\/think>/i.test(result.content);
 }
 
-function matchingToolCall(result: GenerateResult, token: string): ModelToolCall | null {
-  return result.toolCalls?.find((call) => call.name === tool.name && call.input.token === token) ?? null;
+function matchingToolCall(result: GenerateResult): ModelToolCall | null {
+  return result.toolCalls?.find((call) => call.name === currentTimeTool.name && call.input.timezone === CONFORMANCE_TIMEZONE) ?? null;
 }
 
 async function probe(id: ModelConformanceCaseId, operation: () => Promise<{ failures: string[]; modelVersionId?: string | null }>): Promise<ModelConformanceCaseResult> {
@@ -86,7 +87,6 @@ export async function runModelConformance(
   const alias = options.alias ?? "general-prod";
   const seed = (options.tokenSeed ?? `${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64) || "probe";
   const textToken = `MODEL_CONFORMANCE_TEXT_${seed}`;
-  const toolToken = `MODEL_CONFORMANCE_TOOL_${seed}`;
   const continuationToken = `MODEL_CONFORMANCE_CONTINUATION_${seed}`;
   const requiredCapabilities = options.requiredCapabilities ?? ["general", "tool_use"];
   const results: ModelConformanceCaseResult[] = [];
@@ -131,13 +131,13 @@ export async function runModelConformance(
       maxOutputTokens: 128,
       disableThinking: true,
       messages: [
-        { role: "system", content: "This is a tool protocol conformance probe. Use the exposed native function. Do not print XML, pseudo tool markup, or a prose answer." },
-        { role: "user", content: `Call conformance_echo exactly once with token ${toolToken}.` }
+        { role: "system", content: "LIVE INFORMATION REQUIRED: this is a deterministic model protocol conformance probe. Use the exposed native runtime function. Do not print XML, pseudo tool markup, or a prose answer." },
+        { role: "user", content: `What is the current date and time in ${CONFORMANCE_TIMEZONE}? Use the current_time tool.` }
       ],
-      tools: [tool]
+      tools: [currentTimeTool]
     });
     const failures: string[] = [];
-    acceptedToolCall = matchingToolCall(result, toolToken);
+    acceptedToolCall = matchingToolCall(result);
     if (result.finishReason !== "tool_call") failures.push(`finish_reason_not_tool_call:${result.finishReason}`);
     if (!acceptedToolCall) failures.push("native_tool_call_missing_or_invalid");
     if ((result.toolCalls?.length ?? 0) !== 1) failures.push(`tool_call_count:${result.toolCalls?.length ?? 0}`);
@@ -155,15 +155,15 @@ export async function runModelConformance(
       maxOutputTokens: 96,
       disableThinking: true,
       messages: [
-        { role: "system", content: "This is a tool-result continuation conformance probe. The tool result is authoritative. Reply with only the continuation token contained in the tool result." },
-        { role: "user", content: `Call conformance_echo exactly once with token ${toolToken}.` },
+        { role: "system", content: "This is a tool-result continuation conformance probe. The tool result is authoritative. Reply with only the opaque continuation token contained in the tool result. Do not call another tool." },
+        { role: "user", content: `What is the current date and time in ${CONFORMANCE_TIMEZONE}?` },
         { role: "assistant", content: "", toolCalls: [acceptedToolCall] },
-        { role: "tool", name: tool.name, toolCallId: acceptedToolCall.id, content: JSON.stringify({ echo: toolToken, continuationToken }) }
+        { role: "tool", name: currentTimeTool.name, toolCallId: acceptedToolCall.id, content: JSON.stringify({ timezone: CONFORMANCE_TIMEZONE, iso: "2026-09-01T22:00:00+02:00", continuationToken }) }
       ],
-      tools: [tool]
+      tools: []
     });
     const failures: string[] = [];
-    if (!result.content.includes(continuationToken)) failures.push("tool_result_not_grounded");
+    if (result.content.trim() !== continuationToken) failures.push("tool_result_not_grounded_exactly");
     if (result.finishReason === "tool_call" || result.toolCalls?.length) failures.push("unexpected_second_tool_call");
     if (hiddenReasoningExposed(result)) failures.push("hidden_reasoning_exposed");
     if (result.modelVersionId !== profile.modelVersionId) failures.push(`model_version_mismatch:${result.modelVersionId}`);
