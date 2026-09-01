@@ -8,9 +8,20 @@ const tools: ModelToolDefinition[] = [
   { name: "web_fetch", description: "fetch", inputSchema: { type: "object" } }
 ];
 
-function response() {
+function schemaToolName(body: Record<string, unknown>): string | null {
+  const schema = body.json_schema;
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return null;
+  const properties = (schema as { properties?: Record<string, unknown> }).properties;
+  const name = properties?.name;
+  if (!name || typeof name !== "object" || Array.isArray(name)) return null;
+  const values = (name as { enum?: unknown }).enum;
+  return Array.isArray(values) && typeof values[0] === "string" ? values[0] : null;
+}
+
+function response(body: Record<string, unknown>) {
+  const forced = schemaToolName(body);
   return new Response(JSON.stringify({
-    choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+    choices: [{ message: { content: forced ? JSON.stringify({ name: forced, arguments: { timezone: "Europe/Stockholm" } }) : "ok" }, finish_reason: "stop" }],
     usage: { prompt_tokens: 1, completion_tokens: 1 }
   }), { status: 200 });
 }
@@ -19,7 +30,7 @@ async function bodyFor(messages: GenerateRequest["messages"], requestTools: Mode
   let body: Record<string, unknown> | null = null;
   const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
     body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    return response();
+    return response(body);
   });
   const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);
   await adapter.generate({ requestId: "req", alias: "general-prod", messages, tools: requestTools });
@@ -38,12 +49,14 @@ describe("latency-aware Qwen reasoning routing", () => {
     expect(body.tool_choice).toBe("auto");
   });
 
-  it("uses low reasoning for FAST live-information work instead of Qwen's deepest default", async () => {
+  it("uses no hidden reasoning for schema-constrained FAST live tool selection", async () => {
     const body = await bodyFor([
       { role: "system", content: "Task risk: low. Reasoning policy: FAST: solve directly. LIVE INFORMATION REQUIRED: use an available deterministic/live tool. Research depth: fast." },
       { role: "user", content: "Vad är klockan i Stockholm just nu?" }
     ]);
-    expect(body.reasoning_effort).toBe("low");
+    expect(body.reasoning_effort).toBe("none");
+    expect(body.json_schema).toBeDefined();
+    expect(body.tools).toBeUndefined();
   });
 
   it("preserves the model default for STANDARD work when lower efforts do not improve measured latency", async () => {

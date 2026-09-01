@@ -1,4 +1,4 @@
-import type { GenerateRequest, GenerateResult, ModelAdapter, ModelCapability, ModelHealth, ModelMessage, ModelStreamDeltaHandler, ModelToolCall } from "@div3rsa/model-sdk";
+import type { GenerateRequest, GenerateResult, ModelAdapter, ModelCapability, ModelHealth, ModelMessage, ModelStreamDeltaHandler, ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import type { AdmissionController, ModelTimingObservation } from "./admission-control";
 import { QWEN_Q8, QWEN_RUNTIME_MODEL } from "./registry";
 
@@ -182,21 +182,12 @@ function reasoningEffort(request: GenerateRequest): QwenReasoningEffort {
 }
 
 function requiredTool(name: string): ToolDirective {
-  // Qwen3.8's XML tool format is parsed reliably by llama.cpp on the auto path,
-  // while the pinned build's required grammar truncates calls after <tool_call>.
-  // Keep fail-closed scope by exposing only the required tool for this turn.
   return { choice: "auto", forcedToolName: name };
 }
 
 function toolDirective(request: GenerateRequest): ToolDirective | undefined {
   if (!request.tools?.length) return undefined;
   const system = systemInstructions(request);
-  const securityReadinessRequired = system.includes("SECURITY READINESS REQUIRED");
-  if (securityReadinessRequired && hasTool(request, "security_scan")) {
-    return toolResultCount(request, "security_scan") === 0
-      ? requiredTool("security_scan")
-      : { choice: "auto" };
-  }
   const currentRequired = system.includes("CURRENT INFORMATION REQUIRED") || system.includes("LIVE INFORMATION REQUIRED");
   if (!currentRequired) return { choice: "auto" };
   const directClock = system.includes("LIVE INFORMATION REQUIRED") && isDirectClockRequest(latestUserContent(request));
@@ -210,14 +201,82 @@ function toolDirective(request: GenerateRequest): ToolDirective | undefined {
   return { choice: "auto" };
 }
 
+function forcedToolDefinition(request: GenerateRequest): ModelToolDefinition | undefined {
+  const name = toolDirective(request)?.forcedToolName;
+  if (!name) return undefined;
+  const tool = request.tools?.find((candidate) => candidate.name === name);
+  if (!tool) throw new Error(`forced_tool_definition_missing:${name}`);
+  return tool;
+}
+
+function forcedToolSchema(tool: ModelToolDefinition): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["name", "arguments"],
+    properties: {
+      name: { type: "string", enum: [tool.name] },
+      arguments: tool.inputSchema
+    }
+  };
+}
+
+function forcedToolInstruction(tool: ModelToolDefinition): string {
+  return [
+    "RUNTIME FORCED TOOL CALL MODE.",
+    "Do not answer the user's request yet.",
+    `Select exactly the runtime tool named ${JSON.stringify(tool.name)}.`,
+    `Tool description: ${tool.description}`,
+    `Arguments JSON schema: ${JSON.stringify(tool.inputSchema)}`,
+    "Return only the JSON object required by the runtime output grammar with fields name and arguments."
+  ].join(" ");
+}
+
+function encodedMessages(request: GenerateRequest, forcedTool?: ModelToolDefinition): Record<string, unknown>[] {
+  const encoded = request.messages.map(encodeMessage);
+  if (!forcedTool) return encoded;
+  const instruction = forcedToolInstruction(forcedTool);
+  const systemIndex = request.messages.findIndex((message) => message.role === "system");
+  if (systemIndex >= 0) {
+    const current = encoded[systemIndex] ?? { role: "system", content: "" };
+    encoded[systemIndex] = { ...current, content: `${request.messages[systemIndex]?.content ?? ""}\n\n${instruction}` };
+    return encoded;
+  }
+  return [{ role: "system", content: instruction }, ...encoded];
+}
+
+function parseForcedToolCall(message: OpenAiMessage, request: GenerateRequest, tool: ModelToolDefinition): ModelToolCall {
+  const raw = visibleContent(message.content ?? "").trim();
+  if (!raw) throw new Error("forced_tool_output_empty");
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch { throw new Error("forced_tool_output_not_json"); }
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("forced_tool_output_invalid");
+  const record = parsed as Record<string, unknown>;
+  if (record.name !== tool.name) throw new Error(`forced_tool_name_mismatch:${String(record.name ?? "missing")}`);
+  if (!record.arguments || Array.isArray(record.arguments) || typeof record.arguments !== "object") throw new Error("forced_tool_arguments_invalid");
+  return { id: `${request.requestId}:forced-tool`, name: tool.name, input: record.arguments as Record<string, unknown> };
+}
+
 function requestBody(request: GenerateRequest, stream: boolean) {
   const directive = toolDirective(request);
-  const requestTools = directive?.forcedToolName
-    ? request.tools?.filter((tool) => tool.name === directive.forcedToolName)
-    : request.tools;
+  const forcedTool = forcedToolDefinition(request);
+  if (forcedTool) {
+    return {
+      model: QWEN_RUNTIME_MODEL,
+      messages: encodedMessages(request, forcedTool),
+      max_tokens: request.maxOutputTokens ?? 512,
+      temperature: 0,
+      reasoning_effort: "none",
+      chat_template_kwargs: { enable_thinking: false },
+      cache_prompt: true,
+      stream: false,
+      json_schema: forcedToolSchema(forcedTool)
+    };
+  }
   return {
     model: QWEN_RUNTIME_MODEL,
-    messages: request.messages.map(encodeMessage),
+    messages: encodedMessages(request),
     max_tokens: request.maxOutputTokens,
     temperature: request.temperature,
     reasoning_effort: reasoningEffort(request),
@@ -225,7 +284,7 @@ function requestBody(request: GenerateRequest, stream: boolean) {
     cache_prompt: true,
     stream,
     stream_options: stream ? { include_usage: true } : undefined,
-    tools: requestTools?.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
+    tools: request.tools?.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
     tool_choice: directive?.choice
   };
 }
@@ -248,13 +307,16 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
       if (observation) this.admission?.observeTimings(observation);
       const first = body.choices[0];
       if (!first) throw new Error("Inference returned no choices");
-      const toolCalls = parseToolCalls(first.message);
-      return { modelVersionId: QWEN_Q8.id, content: visibleContent(first.message.content ?? ""), finishReason: toolCalls.length || first.finish_reason === "tool_calls" ? "tool_call" as const : first.finish_reason === "length" ? "length" as const : "stop" as const, toolCalls: toolCalls.length ? toolCalls : undefined, usage: { inputTokens: body.usage?.prompt_tokens ?? 0, outputTokens: body.usage?.completion_tokens ?? 0, cachedTokens: body.usage?.prompt_tokens_details?.cached_tokens ?? 0 } };
+      const forcedTool = forcedToolDefinition(request);
+      const toolCalls = forcedTool ? [parseForcedToolCall(first.message, request, forcedTool)] : parseToolCalls(first.message);
+      const content = forcedTool ? "" : visibleContent(first.message.content ?? "");
+      return { modelVersionId: QWEN_Q8.id, content, finishReason: toolCalls.length || first.finish_reason === "tool_calls" ? "tool_call" as const : first.finish_reason === "length" ? "length" as const : "stop" as const, toolCalls: toolCalls.length ? toolCalls : undefined, usage: { inputTokens: body.usage?.prompt_tokens ?? 0, outputTokens: body.usage?.completion_tokens ?? 0, cachedTokens: body.usage?.prompt_tokens_details?.cached_tokens ?? 0 } };
     })();
     return raceWithWatchdog(operation, this.watchdog.nonStreamingTimeoutMs, "inference_timeout:request", controller);
   }
 
   async generateStreamed(request: GenerateRequest, onDelta: ModelStreamDeltaHandler): Promise<GenerateResult> {
+    if (forcedToolDefinition(request)) return this.generate(request);
     await this.admission?.waitForAdmission(this.estimateRequestContextTokens(request), request.signal);
     const requestStartedAt = performance.now();
     const controller = new AbortController();

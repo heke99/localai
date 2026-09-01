@@ -12,40 +12,55 @@ function request(messages: GenerateRequest["messages"]): GenerateRequest {
   return { requestId: "req", alias: "research-prod", messages, tools };
 }
 
+function schemaToolName(body: Record<string, unknown>): string | null {
+  const schema = body.json_schema;
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return null;
+  const properties = (schema as { properties?: unknown }).properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return null;
+  const name = (properties as { name?: unknown }).name;
+  if (!name || typeof name !== "object" || Array.isArray(name)) return null;
+  const values = (name as { enum?: unknown }).enum;
+  return Array.isArray(values) && typeof values[0] === "string" ? values[0] : null;
+}
+
 function requestedTool(body: Record<string, unknown>): string | null {
-  if (body.tool_choice !== "auto" || !Array.isArray(body.tools)) return null;
-  if (body.tools.length !== 1) return "auto";
-  const tool = body.tools[0];
-  if (!tool || typeof tool !== "object" || Array.isArray(tool)) return null;
-  const fn = (tool as { function?: unknown }).function;
-  if (!fn || typeof fn !== "object" || Array.isArray(fn)) return null;
-  const name = (fn as { name?: unknown }).name;
-  return typeof name === "string" ? name : null;
+  const schemaName = schemaToolName(body);
+  if (schemaName) return schemaName;
+  if (body.tool_choice === "auto" && Array.isArray(body.tools)) return "auto";
+  return null;
+}
+
+function responseFor(body: Record<string, unknown>) {
+  const forced = schemaToolName(body);
+  return forced
+    ? { choices: [{ message: { content: JSON.stringify({ name: forced, arguments: forced === "current_time" ? { timezone: "Europe/Stockholm" } : {} }) }, finish_reason: "stop" }] }
+    : { choices: [{ message: { content: "ok" }, finish_reason: "stop" }] };
 }
 
 describe("OpenAI-compatible runtime policy", () => {
-  it("scopes deterministic current_time before answering a live clock request", async () => {
+  it("forces deterministic current_time through a schema before answering a live clock request", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       expect(requestedTool(body)).toBe("current_time");
-      return new Response(JSON.stringify({
-        choices: [{ message: { content: null, tool_calls: [{ id: "time-1", type: "function", function: { name: "current_time", arguments: '{"timezone":"Europe/Stockholm"}' } }] }, finish_reason: "tool_calls" }]
-      }), { status: 200 });
+      expect(body.tools).toBeUndefined();
+      expect(body.tool_choice).toBeUndefined();
+      return new Response(JSON.stringify(responseFor(body)), { status: 200 });
     });
     const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);
     const result = await adapter.generate(request([
       { role: "system", content: "Task risk: low. Reasoning policy: FAST. LIVE INFORMATION REQUIRED: use an available deterministic/live tool. Research depth: fast." },
       { role: "user", content: "Vad är klockan i Stockholm just nu?" }
     ]));
-    expect(result.toolCalls?.[0]?.name).toBe("current_time");
+    expect(result.finishReason).toBe("tool_call");
+    expect(result.toolCalls?.[0]).toMatchObject({ name: "current_time", input: { timezone: "Europe/Stockholm" } });
   });
 
-  it("scopes search then opened source for changing current facts", async () => {
+  it("forces search then opened source through schemas for changing current facts", async () => {
     const choices: Array<string | null> = [];
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       choices.push(requestedTool(body));
-      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }), { status: 200 });
+      return new Response(JSON.stringify(responseFor(body)), { status: 200 });
     });
     const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);
     const system = { role: "system" as const, content: "Task risk: low. Reasoning policy: STANDARD. CURRENT INFORMATION REQUIRED: verify current claims. Research depth: standard." };
@@ -75,7 +90,7 @@ describe("OpenAI-compatible runtime policy", () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       choices.push(requestedTool(body));
-      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }), { status: 200 });
+      return new Response(JSON.stringify(responseFor(body)), { status: 200 });
     });
     const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);
     const messages: GenerateRequest["messages"] = [
@@ -87,6 +102,22 @@ describe("OpenAI-compatible runtime policy", () => {
     await adapter.generate(request(messages));
     await adapter.generate(request([...messages, { role: "tool", name: "web_fetch", toolCallId: "f2", content: '{"url":"https://deno.com"}' }]));
     expect(choices).toEqual(["web_fetch", "auto"]);
+  });
+
+  it("does not stream forced-tool schema JSON to the user", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.stream).toBe(false);
+      return new Response(JSON.stringify(responseFor(body)), { status: 200 });
+    });
+    const adapter = new OpenAiCompatibleAdapter("http://worker/v1", "secret", fetcher as typeof fetch);
+    const deltas: string[] = [];
+    const result = await adapter.generateStreamed!(request([
+      { role: "system", content: "Task risk: low. Reasoning policy: FAST. LIVE INFORMATION REQUIRED: use an available deterministic/live tool. Research depth: fast." },
+      { role: "user", content: "Vad är klockan i Stockholm just nu?" }
+    ]), (delta) => { deltas.push(delta); });
+    expect(deltas).toEqual([]);
+    expect(result.finishReason).toBe("tool_call");
   });
 
   it("never streams internal think blocks or reasoning_content", async () => {
