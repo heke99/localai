@@ -82,6 +82,11 @@ function hasTool(request: GenerateRequest, name: string): boolean {
 }
 
 function forcedToolName(request: GenerateRequest): string | null {
+  const explicitRequired = request.requiredToolName?.trim();
+  if (explicitRequired) {
+    if (!hasTool(request, explicitRequired)) throw new Error(`required_tool_definition_missing:${explicitRequired}`);
+    return explicitRequired;
+  }
   if (!request.tools?.length) return null;
   const system = systemInstructions(request);
   const currentRequired = system.includes("CURRENT INFORMATION REQUIRED") || system.includes("LIVE INFORMATION REQUIRED");
@@ -99,8 +104,8 @@ function forcedToolName(request: GenerateRequest): string | null {
 }
 
 function toolChoice(request: GenerateRequest): ToolChoice | undefined {
-  if (!request.tools?.length) return undefined;
   const forced = forcedToolName(request);
+  if (!request.tools?.length) return undefined;
   return forced ? { type: "function", function: { name: forced } } : "auto";
 }
 
