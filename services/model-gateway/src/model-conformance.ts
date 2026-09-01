@@ -38,7 +38,7 @@ export interface ModelConformanceOptions {
 }
 
 const CONFORMANCE_TIMEZONE = "Europe/Stockholm";
-const CONTINUATION_PROBE_KIND = "opaque-continuation";
+const NONCE_PROBE_KIND = "copy-once";
 
 const currentTimeTool: ModelToolDefinition = {
   name: "current_time",
@@ -51,28 +51,28 @@ const currentTimeTool: ModelToolDefinition = {
   }
 };
 
-const continuationSourceTool: ModelToolDefinition = {
-  name: "continuation_probe_source",
-  description: "Start a neutral protocol-continuation probe. The runtime will return an opaque continuationToken in the tool result; this tool has no date, time, search, or domain semantics.",
+const nonceSourceTool: ModelToolDefinition = {
+  name: "probe_nonce_source",
+  description: "Start a neutral two-step protocol probe. The runtime returns an opaque nonce in the tool result. The nonce has no date, time, identifier, search, or domain meaning.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["probe"],
-    properties: { probe: { type: "string", enum: [CONTINUATION_PROBE_KIND] } }
+    properties: { probe: { type: "string", enum: [NONCE_PROBE_KIND] } }
   }
 };
 
-const recordToolResultTool: ModelToolDefinition = {
-  name: "record_tool_result",
-  description: "Record the opaque continuationToken from the immediately preceding authoritative tool result. Copy only that field value verbatim; never substitute a timestamp, timezone, placeholder, or derived value.",
+const submitNonceTool: ModelToolDefinition = {
+  name: "submit_probe_nonce",
+  description: "Submit the nonce from the immediately preceding tool result. Copy the nonce field character-for-character. Do not generate, derive, normalize, reformat, prefix, suffix, or replace it.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["continuationToken"],
+    required: ["nonce"],
     properties: {
-      continuationToken: {
+      nonce: {
         type: "string",
-        description: "Verbatim continuationToken string from the immediately preceding tool message. Copy character-for-character and do not derive or normalize it."
+        description: "Exact nonce string from the immediately preceding tool message. Copy it verbatim."
       }
     }
   }
@@ -86,18 +86,18 @@ function matchingCurrentTimeCall(result: GenerateResult): ModelToolCall | null {
   return result.toolCalls?.find((call) => call.name === currentTimeTool.name && call.input.timezone === CONFORMANCE_TIMEZONE) ?? null;
 }
 
-function matchingContinuationSourceCall(result: GenerateResult): ModelToolCall | null {
-  return result.toolCalls?.find((call) => call.name === continuationSourceTool.name && call.input.probe === CONTINUATION_PROBE_KIND) ?? null;
+function matchingNonceSourceCall(result: GenerateResult): ModelToolCall | null {
+  return result.toolCalls?.find((call) => call.name === nonceSourceTool.name && call.input.probe === NONCE_PROBE_KIND) ?? null;
 }
 
-function matchingContinuationCall(result: GenerateResult, continuationToken: string): ModelToolCall | null {
-  return result.toolCalls?.find((call) => call.name === recordToolResultTool.name && call.input.continuationToken === continuationToken) ?? null;
+function matchingNonceSubmission(result: GenerateResult, nonce: string): ModelToolCall | null {
+  return result.toolCalls?.find((call) => call.name === submitNonceTool.name && call.input.nonce === nonce) ?? null;
 }
 
-function observedContinuationToken(result: GenerateResult): string | null {
-  const call = result.toolCalls?.find((candidate) => candidate.name === recordToolResultTool.name);
+function observedNonce(result: GenerateResult): string | null {
+  const call = result.toolCalls?.find((candidate) => candidate.name === submitNonceTool.name);
   if (!call) return null;
-  const value = call.input.continuationToken;
+  const value = call.input.nonce;
   if (typeof value !== "string") return value == null ? null : String(value);
   return value.slice(0, 160);
 }
@@ -132,7 +132,7 @@ export async function runModelConformance(
   const alias = options.alias ?? "general-prod";
   const seed = (options.tokenSeed ?? `${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64) || "probe";
   const textToken = `MODEL_CONFORMANCE_TEXT_${seed}`;
-  const continuationToken = `MODEL_CONFORMANCE_CONTINUATION_${seed}`;
+  const nonce = `NX_${seed}`;
   const requiredCapabilities = options.requiredCapabilities ?? ["general", "tool_use"];
   const results: ModelConformanceCaseResult[] = [];
 
@@ -194,65 +194,65 @@ export async function runModelConformance(
   }));
 
   results.push(await probe("tool-result-continuation", async () => {
-    const sourcePrompt = "Call continuation_probe_source to start the opaque continuation protocol probe. Do not infer or invent the token; it will arrive only in the runtime tool result.";
+    const sourcePrompt = "Call probe_nonce_source to start the neutral copy probe. Do not create a nonce yourself; wait for the runtime tool result.";
     const sourceResult = await adapter.generate({
-      requestId: `conformance-continuation-source-${seed}`,
+      requestId: `conformance-nonce-source-${seed}`,
       alias,
       temperature: 0,
       maxOutputTokens: 128,
       disableThinking: true,
-      requiredToolName: continuationSourceTool.name,
+      requiredToolName: nonceSourceTool.name,
       messages: [
         {
           role: "system",
-          content: "This is a neutral tool-result continuation probe with no clock, search, or domain semantics. Call only the required continuation source tool and wait for its runtime result."
+          content: "This is a neutral two-step tool-result protocol probe. Call only the required source tool and wait for its runtime result."
         },
         { role: "user", content: sourcePrompt }
       ],
-      tools: [continuationSourceTool]
+      tools: [nonceSourceTool]
     });
 
     const failures: string[] = [];
-    const sourceCall = matchingContinuationSourceCall(sourceResult);
-    if (sourceResult.finishReason !== "tool_call") failures.push(`continuation_source_finish_reason_not_tool_call:${sourceResult.finishReason}`);
-    if (!sourceCall) failures.push("continuation_source_tool_missing_or_invalid");
-    if ((sourceResult.toolCalls?.length ?? 0) !== 1) failures.push(`continuation_source_tool_call_count:${sourceResult.toolCalls?.length ?? 0}`);
-    if (sourceResult.content && /<tool_call\b|<function=|<parameter=/i.test(sourceResult.content)) failures.push("continuation_source_textual_tool_protocol_exposed");
-    if (hiddenReasoningExposed(sourceResult)) failures.push("continuation_source_hidden_reasoning_exposed");
-    if (sourceResult.modelVersionId !== profile.modelVersionId) failures.push(`continuation_source_model_version_mismatch:${sourceResult.modelVersionId}`);
+    const sourceCall = matchingNonceSourceCall(sourceResult);
+    if (sourceResult.finishReason !== "tool_call") failures.push(`nonce_source_finish_reason_not_tool_call:${sourceResult.finishReason}`);
+    if (!sourceCall) failures.push("nonce_source_tool_missing_or_invalid");
+    if ((sourceResult.toolCalls?.length ?? 0) !== 1) failures.push(`nonce_source_tool_call_count:${sourceResult.toolCalls?.length ?? 0}`);
+    if (sourceResult.content && /<tool_call\b|<function=|<parameter=/i.test(sourceResult.content)) failures.push("nonce_source_textual_tool_protocol_exposed");
+    if (hiddenReasoningExposed(sourceResult)) failures.push("nonce_source_hidden_reasoning_exposed");
+    if (sourceResult.modelVersionId !== profile.modelVersionId) failures.push(`nonce_source_model_version_mismatch:${sourceResult.modelVersionId}`);
     if (!sourceCall) return { failures, modelVersionId: sourceResult.modelVersionId };
 
     const result = await adapter.generate({
-      requestId: `conformance-continuation-${seed}`,
+      requestId: `conformance-nonce-submit-${seed}`,
       alias,
       temperature: 0,
       maxOutputTokens: 128,
       disableThinking: true,
-      requiredToolName: recordToolResultTool.name,
+      requiredToolName: submitNonceTool.name,
       messages: [
         {
           role: "system",
-          content: "This is a neutral tool-result continuation protocol probe. The immediately preceding tool message is authoritative. Call record_tool_result and copy only its continuationToken field value verbatim into the continuationToken argument. Do not derive, transform, normalize, or replace it."
+          content: "This is a neutral tool-result copy probe. The immediately preceding tool message is authoritative. Call submit_probe_nonce and copy its nonce field exactly into the nonce argument. Do not create or infer a nonce."
         },
         { role: "user", content: sourcePrompt },
         { role: "assistant", content: "", toolCalls: [sourceCall] },
-        { role: "tool", name: continuationSourceTool.name, toolCallId: sourceCall.id, content: JSON.stringify({ continuationToken }) },
+        { role: "tool", name: nonceSourceTool.name, toolCallId: sourceCall.id, content: JSON.stringify({ nonce }) },
         {
           role: "user",
-          content: "Read the continuationToken field from the immediately preceding tool message and call record_tool_result now. Copy that exact opaque string character-for-character."
+          content: "Read the nonce field from the immediately preceding tool message and call submit_probe_nonce now. Copy the exact string unchanged."
         }
       ],
-      tools: [recordToolResultTool]
+      tools: [submitNonceTool]
     });
 
-    const continuationCall = matchingContinuationCall(result, continuationToken);
-    if (result.finishReason !== "tool_call") failures.push(`continuation_finish_reason_not_tool_call:${result.finishReason}`);
-    if (!continuationCall) {
-      failures.push("tool_result_token_missing");
-      const observed = observedContinuationToken(result);
-      if (observed !== null) failures.push(`tool_result_token_observed:${observed}`);
+    const nonceCall = matchingNonceSubmission(result, nonce);
+    if (result.finishReason !== "tool_call") failures.push(`nonce_finish_reason_not_tool_call:${result.finishReason}`);
+    if (!nonceCall) {
+      failures.push("tool_result_nonce_missing");
+      const observed = observedNonce(result);
+      if (observed !== null) failures.push(`tool_result_nonce_observed:${observed}`);
     }
-    if ((result.toolCalls?.length ?? 0) !== 1) failures.push(`continuation_tool_call_count:${result.toolCalls?.length ?? 0}`);
+    if ((result.toolCalls?.length ?? 0) !== 1) failures.push(`nonce_tool_call_count:${result.toolCalls?.length ?? 0}`);
     if (result.content && /<tool_call\b|<function=|<parameter=/i.test(result.content)) failures.push("textual_tool_protocol_exposed");
     if (hiddenReasoningExposed(result)) failures.push("hidden_reasoning_exposed");
     if (result.modelVersionId !== profile.modelVersionId) failures.push(`model_version_mismatch:${result.modelVersionId}`);

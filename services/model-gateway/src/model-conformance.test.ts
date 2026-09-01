@@ -29,24 +29,24 @@ class ConformantFixtureAdapter implements ModelAdapter {
           usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }
         };
       }
-      if (requiredTool === "continuation_probe_source") {
+      if (requiredTool === "probe_nonce_source") {
         return {
           modelVersionId: profile.modelVersionId,
           content: "",
           finishReason: "tool_call",
-          toolCalls: [{ id: "fixture-continuation-source-call", name: "continuation_probe_source", input: { probe: "opaque-continuation" } }],
+          toolCalls: [{ id: "fixture-nonce-source-call", name: "probe_nonce_source", input: { probe: "copy-once" } }],
           usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }
         };
       }
-      if (requiredTool === "record_tool_result") {
+      if (requiredTool === "submit_probe_nonce") {
         const toolResult = [...request.messages].reverse().find((message) => message.role === "tool");
         if (!toolResult) throw new Error("fixture_tool_result_missing");
-        const parsed = JSON.parse(toolResult.content) as { continuationToken: string };
+        const parsed = JSON.parse(toolResult.content) as { nonce: string };
         return {
           modelVersionId: profile.modelVersionId,
           content: "",
           finishReason: "tool_call",
-          toolCalls: [{ id: "fixture-record-call", name: "record_tool_result", input: { continuationToken: parsed.continuationToken } }],
+          toolCalls: [{ id: "fixture-nonce-submit-call", name: "submit_probe_nonce", input: { nonce: parsed.nonce } }],
           usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }
         };
       }
@@ -58,7 +58,7 @@ class ConformantFixtureAdapter implements ModelAdapter {
 
 class BrokenToolAdapter extends ConformantFixtureAdapter {
   override async generate(request: GenerateRequest): Promise<GenerateResult> {
-    if (request.requiredToolName === "current_time" || request.requiredToolName === "continuation_probe_source") {
+    if (request.requiredToolName === "current_time" || request.requiredToolName === "probe_nonce_source") {
       return { modelVersionId: profile.modelVersionId, content: "<tool_call>broken</tool_call>", finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
     }
     return super.generate(request);
@@ -67,12 +67,12 @@ class BrokenToolAdapter extends ConformantFixtureAdapter {
 
 class UngroundedContinuationAdapter extends ConformantFixtureAdapter {
   override async generate(request: GenerateRequest): Promise<GenerateResult> {
-    if (request.requiredToolName === "record_tool_result") {
+    if (request.requiredToolName === "submit_probe_nonce") {
       return {
         modelVersionId: profile.modelVersionId,
         content: "",
         finishReason: "tool_call",
-        toolCalls: [{ id: "fixture-bad-record-call", name: "record_tool_result", input: { continuationToken: "INVENTED_TOKEN" } }],
+        toolCalls: [{ id: "fixture-bad-nonce-call", name: "submit_probe_nonce", input: { nonce: "INVENTED_NONCE" } }],
         usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }
       };
     }
@@ -86,16 +86,12 @@ class ClockBiasedContinuationAdapter extends ConformantFixtureAdapter {
       message.role === "tool" && message.name === "current_time"
       || message.role === "assistant" && message.toolCalls?.some((call) => call.name === "current_time")
     );
-    if (request.requiredToolName === "record_tool_result" && clockContaminated) {
+    if (request.requiredToolName === "submit_probe_nonce" && clockContaminated) {
       return {
         modelVersionId: profile.modelVersionId,
         content: "",
         finishReason: "tool_call",
-        toolCalls: [{
-          id: "fixture-clock-biased-record-call",
-          name: "record_tool_result",
-          input: { continuationToken: "2026-07-08T19:00:00Z" }
-        }],
+        toolCalls: [{ id: "fixture-clock-biased-nonce-call", name: "submit_probe_nonce", input: { nonce: "2026-07-08T19:00:00Z" } }],
         usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }
       };
     }
@@ -103,18 +99,19 @@ class ClockBiasedContinuationAdapter extends ConformantFixtureAdapter {
   }
 }
 
-class TokenLeakAwareAdapter extends ConformantFixtureAdapter {
+class NonceLeakAwareAdapter extends ConformantFixtureAdapter {
   override async generate(request: GenerateRequest): Promise<GenerateResult> {
-    if (request.requiredToolName === "record_tool_result") {
-      const leaked = request.messages.some((message) =>
-        message.role !== "tool" && /MODEL_CONFORMANCE_CONTINUATION_[A-Za-z0-9_-]+/.test(message.content)
-      );
+    if (request.requiredToolName === "submit_probe_nonce") {
+      const toolResult = [...request.messages].reverse().find((message) => message.role === "tool");
+      if (!toolResult) throw new Error("fixture_tool_result_missing");
+      const parsed = JSON.parse(toolResult.content) as { nonce: string };
+      const leaked = request.messages.some((message) => message.role !== "tool" && message.content.includes(parsed.nonce));
       if (leaked) {
         return {
           modelVersionId: profile.modelVersionId,
           content: "",
           finishReason: "tool_call",
-          toolCalls: [{ id: "fixture-leaked-record-call", name: "record_tool_result", input: { continuationToken: "LEAKED" } }],
+          toolCalls: [{ id: "fixture-leaked-nonce-call", name: "submit_probe_nonce", input: { nonce: "LEAKED" } }],
           usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }
         };
       }
@@ -139,8 +136,8 @@ describe("model conformance", () => {
     expect(report.results.find((result) => result.id === "tool-result-continuation")?.passed).toBe(true);
   });
 
-  it("keeps the opaque continuation token exclusive to the tool result", async () => {
-    const report = await runModelConformance(new TokenLeakAwareAdapter(), profile, { tokenSeed: "secret" });
+  it("keeps the opaque nonce exclusive to the tool result", async () => {
+    const report = await runModelConformance(new NonceLeakAwareAdapter(), profile, { tokenSeed: "secret" });
     expect(report.allowed).toBe(true);
     expect(report.results.find((result) => result.id === "tool-result-continuation")?.passed).toBe(true);
   });
@@ -152,13 +149,13 @@ describe("model conformance", () => {
     expect(report.results.find((result) => result.id === "tool-result-continuation")?.passed).toBe(false);
   });
 
-  it("fails closed when the continuation tool call invents the opaque token and reports the observed value", async () => {
+  it("fails closed when the continuation tool call invents the opaque nonce and reports the observed value", async () => {
     const report = await runModelConformance(new UngroundedContinuationAdapter(), profile, { tokenSeed: "ungrounded" });
     const continuation = report.results.find((result) => result.id === "tool-result-continuation");
     expect(report.allowed).toBe(false);
     expect(report.results.find((result) => result.id === "native-tool-call")?.passed).toBe(true);
     expect(continuation?.passed).toBe(false);
-    expect(continuation?.failures).toContain("tool_result_token_missing");
-    expect(continuation?.failures).toContain("tool_result_token_observed:INVENTED_TOKEN");
+    expect(continuation?.failures).toContain("tool_result_nonce_missing");
+    expect(continuation?.failures).toContain("tool_result_nonce_observed:INVENTED_NONCE");
   });
 });
