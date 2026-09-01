@@ -24,6 +24,7 @@ import { SandboxVerificationRuntime } from "./sandbox-verification";
 import { RuntimeRegistration, runtimeRegistrationConfigFromEnvironment, type RuntimeRpcClient } from "./runtime-registration";
 import { RuntimeInferenceRouter, type RuntimeInferenceRpcClient } from "./runtime-inference-router";
 import { boundedWorkerConcurrency, runWorkerLanes } from "./worker-loop";
+import { KnowledgeAwareSkillRuntime, RunTrackingAgentQueue } from "./knowledge-aware-runtime";
 import { SkillEngine, type SkillManifest } from "@div3rsa/skill-engine";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -179,16 +180,20 @@ const toolRuntime = new RewindAwareToolRuntime(discoveredToolRuntime, rewindCoor
 const rewindQueue = new RewindAwareAgentQueue(shadowQueue, rewindCoordinator, checkpointRewindEnabled);
 const queue = new VerifiedLearningAgentQueue(rewindQueue, kernelStore, verifiedLearningEnabled, trainingEligibilityEnabled);
 const sandboxRuntime = new SandboxVerificationRuntime(process.env.DIV3RSA_SANDBOX_IMAGE_DIGEST?.trim() || null);
-const skillRuntime = { prepare: prepareSkills };
-const processors = Array.from({ length: workerConcurrency }, (_, lane) => new AgentWorkerProcessor(
-  queue,
-  { resolve: () => adapter },
-  `${workerId}:lane-${lane + 1}`,
-  skillRuntime,
-  toolRuntime,
-  repositoryRuntime,
-  sandboxRuntime
-));
+const baseSkillRuntime = { prepare: prepareSkills };
+const processors = Array.from({ length: workerConcurrency }, (_, lane) => {
+  const laneQueue = new RunTrackingAgentQueue(queue);
+  const laneSkillRuntime = new KnowledgeAwareSkillRuntime(baseSkillRuntime, laneQueue);
+  return new AgentWorkerProcessor(
+    laneQueue,
+    { resolve: () => adapter },
+    `${workerId}:lane-${lane + 1}`,
+    laneSkillRuntime,
+    toolRuntime,
+    repositoryRuntime,
+    sandboxRuntime
+  );
+});
 let stopping = false;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -247,7 +252,7 @@ const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BAC
 const kernelStatus = agentKernelConfig.enabled
   ? `${agentKernelConfig.mode}${agentKernelConfig.mode === "active" ? `-${agentKernelConfig.activeCanaryBasisPoints}bps` : ""}`
   : "disabled";
-console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; aggregateIdlePollMs=${idlePollMs}; agentKernel=${kernelStatus}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}; dynamicToolDiscovery=${dynamicToolDiscoveryEnabled ? "enabled" : "disabled"}; securityToolRuntime=${securityToolRuntimeEnabled ? "scoped-remote" : "disabled"}; checkpointRewind=${checkpointRewindEnabled ? "enabled" : "disabled"}; verifiedMemory=${verifiedMemoryEnabled ? "enabled" : "disabled"}; verifiedLearning=${verifiedLearningEnabled ? "enabled" : "disabled"}; trainingEligibility=${trainingEligibilityEnabled ? "enabled" : "disabled"}`);
+console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; aggregateIdlePollMs=${idlePollMs}; agentKernel=${kernelStatus}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}; dynamicToolDiscovery=${dynamicToolDiscoveryEnabled ? "enabled" : "disabled"}; securityToolRuntime=${securityToolRuntimeEnabled ? "scoped-remote" : "disabled"}; checkpointRewind=${checkpointRewindEnabled ? "enabled" : "disabled"}; verifiedMemory=${verifiedMemoryEnabled ? "enabled" : "disabled"}; verifiedLearning=${verifiedLearningEnabled ? "enabled" : "disabled"}; trainingEligibility=${trainingEligibilityEnabled ? "enabled" : "disabled"}; rag=${process.env.DIV3RSA_RAG_ENABLED?.trim() === "0" ? "disabled" : "enabled"}`);
 
 await runWorkerLanes({
   concurrency: workerConcurrency,

@@ -20,4 +20,16 @@ if [[ ! -f "$V2_SCRIPT" ]]; then
   exec bash "$LEGACY_SCRIPT" "$@"
 fi
 
-exec bash "$V2_SCRIPT" "$@"
+# llama.cpp documents LLAMA_ARG_JINJA as the environment equivalent of --jinja.
+# Keep it on every post-cutover recovery so a later health recovery cannot silently
+# restart the generation server without structured function/tool-call parsing.
+export LLAMA_ARG_JINJA=1
+bash "$V2_SCRIPT" "$@"
+
+# On a post-checkout recovery, restore the independent embedding runtime too.
+# First-deploy pre-checkout recovery intentionally exits through the legacy path
+# above because the embedding provisioner does not exist on the old revision yet.
+EMBEDDING_SCRIPT="${REPO_DIR}/infra/runtime/ensure-embedding-runtime.sh"
+if [[ -f "$EMBEDDING_SCRIPT" ]]; then
+  DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" bash "$EMBEDDING_SCRIPT"
+fi
