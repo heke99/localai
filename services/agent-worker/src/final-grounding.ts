@@ -34,6 +34,104 @@ function asksForLatestValue(prompt: string): boolean {
   return /\b(?:latest|current|newest|most\s+recent|senaste|nyaste|aktuell(?:a|t)?)\b/i.test(prompt);
 }
 
+const EVIDENCE_STOP_WORDS = new Set([
+  "what", "which", "find", "search", "look", "verify", "check", "tell", "show", "please", "using", "from", "with", "that", "this", "the", "and", "for", "now", "current", "latest", "newest", "recent", "official", "information", "source", "sources", "web", "open", "relevant", "report", "answer", "memory", "today", "right", "currently", "senaste", "nyaste", "aktuell", "aktuellt", "idag", "sök", "söka", "källa", "källor"
+]);
+const GENERIC_ARTIFACT_TERMS = new Set([
+  "release", "releases", "version", "versions", "build", "firmware", "download", "downloads", "standard", "rate", "status", "value"
+]);
+
+function promptEvidenceTerms(prompt: string): string[] {
+  const matches = prompt.toLowerCase().match(/[\p{L}\p{N}.+-]+/gu) ?? [];
+  const terms = matches
+    .map((term) => term.replace(/^[.+-]+|[.+-]+$/g, ""))
+    .filter((term) => term.length >= 3 && !EVIDENCE_STOP_WORDS.has(term));
+  return [...new Set(terms)].slice(0, 20);
+}
+
+function promptSubjectTerms(prompt: string): string[] {
+  const terms = promptEvidenceTerms(prompt).filter((term) => !GENERIC_ARTIFACT_TERMS.has(term));
+  return terms.length ? terms : promptEvidenceTerms(prompt);
+}
+
+function relevantExcerpt(text: string, prompt: string, maxChars = 1_800): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length <= maxChars) return normalized.slice(0, maxChars);
+
+  const anchors = [
+    ...promptSubjectTerms(prompt),
+    ...(asksForLatestValue(prompt) ? ["latest", "current", "newest", "release", "version", "lts"] : [])
+  ];
+  const lower = normalized.toLowerCase();
+  const windows: Array<{ start: number; end: number }> = [];
+  for (const anchor of anchors) {
+    let offset = 0;
+    for (let count = 0; count < 3; count += 1) {
+      const index = lower.indexOf(anchor.toLowerCase(), offset);
+      if (index < 0) break;
+      windows.push({ start: Math.max(0, index - 260), end: Math.min(normalized.length, index + Math.max(700, anchor.length + 420)) });
+      offset = index + anchor.length;
+    }
+  }
+  if (!windows.length) return normalized.slice(0, maxChars);
+
+  windows.sort((a, b) => a.start - b.start || a.end - b.end);
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const window of windows) {
+    const previous = merged.at(-1);
+    if (previous && window.start <= previous.end + 80) previous.end = Math.max(previous.end, window.end);
+    else merged.push({ ...window });
+  }
+
+  let excerpt = "";
+  for (const window of merged) {
+    const part = normalized.slice(window.start, window.end).trim();
+    if (!part) continue;
+    const next = excerpt ? `${excerpt} … ${part}` : part;
+    if (next.length > maxChars) {
+      if (!excerpt) return part.slice(0, maxChars);
+      break;
+    }
+    excerpt = next;
+  }
+  return excerpt || normalized.slice(0, maxChars);
+}
+
+function openedWebEvidence(item: GroundingToolTrace, prompt: string) {
+  const output = record(item.output);
+  const url = stringField(output, "url") ?? (typeof item.input.url === "string" ? item.input.url : null);
+  const title = stringField(output, "title");
+  const text = stringField(output, "text") ?? "";
+  const retrievedAt = stringField(output, "retrievedAt");
+  const haystack = `${url ?? ""} ${title ?? ""} ${text}`.toLowerCase();
+  const subjectMatches = promptSubjectTerms(prompt).filter((term) => haystack.includes(term));
+  const allMatches = promptEvidenceTerms(prompt).filter((term) => haystack.includes(term));
+  const excerpt = relevantExcerpt(text, prompt);
+  const currentSignal = asksForLatestValue(prompt)
+    && /\b(?:latest|current|newest|most\s+recent|senaste|nyaste|aktuell(?:a|t)?|lts)\b/i.test(`${url ?? ""} ${title ?? ""} ${excerpt}`)
+    ? 1
+    : 0;
+  const projected = {
+    url,
+    title,
+    retrievedAt,
+    subjectMatches,
+    relevanceScore: allMatches.length,
+    currentSignal,
+    excerpt,
+    truncated: output?.truncated === true
+  };
+  return {
+    sequence: item.sequence,
+    tool: item.name,
+    relevant: subjectMatches.length > 0 || allMatches.length >= 2,
+    subjectMatches: subjectMatches.length,
+    relevanceScore: allMatches.length,
+    currentSignal,
+    output: compactToolOutput(projected, 4_000)
+  };
+}
+
 function evidenceResolutionPolicy(): string {
   return [
     "Resolve evidence before answering; source count is not a vote.",
@@ -46,16 +144,26 @@ function evidenceResolutionPolicy(): string {
   ].join(" ");
 }
 
-function evidenceForReview(trace: GroundingToolTrace[]) {
-  return trace
-    .filter((item) => item.name === "web_search" || item.name === "web_fetch")
-    .slice(-10)
+function evidenceForReview(trace: GroundingToolTrace[], prompt: string) {
+  const opened = trace
+    .filter((item) => item.name === "web_fetch")
+    .map((item) => openedWebEvidence(item, prompt));
+  const relevantOpened = opened.filter((item) => item.relevant);
+  const selectedOpened = (relevantOpened.length ? relevantOpened : opened)
+    .sort((a, b) => b.currentSignal - a.currentSignal || b.subjectMatches - a.subjectMatches || b.relevanceScore - a.relevanceScore || b.sequence - a.sequence)
+    .slice(0, 6)
+    .sort((a, b) => a.sequence - b.sequence)
+    .map(({ relevant: _relevant, subjectMatches: _subjectMatches, relevanceScore: _relevanceScore, currentSignal: _currentSignal, ...item }) => item);
+  const searches = trace
+    .filter((item) => item.name === "web_search")
+    .slice(-3)
     .map((item) => ({
       sequence: item.sequence,
       tool: item.name,
       input: item.input,
-      output: compactToolOutput(item.output, 2_000)
+      output: compactToolOutput(item.output, 1_500)
     }));
+  return [...searches, ...selectedOpened];
 }
 
 function cleanRepairEvidence(messages: ModelMessage[]) {
@@ -151,7 +259,7 @@ export function groundedEvidenceReviewMessages(input: {
       content: JSON.stringify({
         originalPrompt: input.originalPrompt,
         candidateAnswer: input.answer.slice(0, 12_000),
-        evidence: evidenceForReview(input.trace)
+        evidence: evidenceForReview(input.trace, input.originalPrompt)
       })
     }
   ];
