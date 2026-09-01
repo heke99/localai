@@ -49,6 +49,10 @@ const currentTimeTool: ModelToolDefinition = {
   }
 };
 
+function continuationPrompt(): string {
+  return `What is the current date and time in ${CONFORMANCE_TIMEZONE}? Use the current_time tool. After the runtime returns the tool result, report the continuationToken field from that result. Do not invent or omit it.`;
+}
+
 function hiddenReasoningExposed(result: GenerateResult): boolean {
   return /<think\b|<\/think>/i.test(result.content);
 }
@@ -123,6 +127,7 @@ export async function runModelConformance(
   }));
 
   let acceptedToolCall: ModelToolCall | null = null;
+  const toolUserPrompt = continuationPrompt();
   results.push(await probe("native-tool-call", async () => {
     const result = await adapter.generate({
       requestId: `conformance-tool-${seed}`,
@@ -131,8 +136,8 @@ export async function runModelConformance(
       maxOutputTokens: 128,
       disableThinking: true,
       messages: [
-        { role: "system", content: "LIVE INFORMATION REQUIRED: this is a deterministic model protocol conformance probe. Use the exposed native runtime function. Do not print XML, pseudo tool markup, or a prose answer." },
-        { role: "user", content: `What is the current date and time in ${CONFORMANCE_TIMEZONE}? Use the current_time tool.` }
+        { role: "system", content: "LIVE INFORMATION REQUIRED: this is a deterministic model protocol conformance probe. Use the exposed native runtime function before answering. Do not print XML, pseudo tool markup, or a prose answer before the tool result arrives." },
+        { role: "user", content: toolUserPrompt }
       ],
       tools: [currentTimeTool]
     });
@@ -155,8 +160,8 @@ export async function runModelConformance(
       maxOutputTokens: 96,
       disableThinking: true,
       messages: [
-        { role: "system", content: "This is a tool-result continuation conformance probe. The tool result is authoritative. State the opaque continuation token contained in the tool result. Do not call another tool." },
-        { role: "user", content: `What is the current date and time in ${CONFORMANCE_TIMEZONE}?` },
+        { role: "system", content: "This is a tool-result continuation conformance probe. The tool result is authoritative. Follow the user's original post-tool instruction and ground the response in the returned tool payload. Do not call another tool." },
+        { role: "user", content: toolUserPrompt },
         { role: "assistant", content: "", toolCalls: [acceptedToolCall] },
         { role: "tool", name: currentTimeTool.name, toolCallId: acceptedToolCall.id, content: JSON.stringify({ timezone: CONFORMANCE_TIMEZONE, iso: "2026-09-01T22:00:00+02:00", continuationToken }) }
       ],
