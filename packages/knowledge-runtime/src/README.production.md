@@ -1,0 +1,1 @@
+Production RAG components on this branch are intentionally split behind interfaces so the agent runtime can be tested without network or database dependencies. The concrete Supabase/pgvector implementation is wired at the application boundary.
