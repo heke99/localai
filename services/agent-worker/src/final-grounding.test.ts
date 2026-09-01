@@ -84,6 +84,31 @@ describe("groundedSynthesisMessages", () => {
     expect(String(messages.at(-1)?.content ?? "")).toContain("Independent evidence reviewer feedback:");
     expect(String(messages.at(-1)?.content ?? "")).toContain("Canonical Current page says v26.8.1");
   });
+
+  it("converts tool protocol history into clean-room evidence data", () => {
+    const messages = groundedSynthesisMessages({
+      messages: [
+        { role: "system", content: "CURRENT INFORMATION REQUIRED" },
+        { role: "user", content: "What is the current VAT rate?" },
+        { role: "assistant", content: "", toolCalls: [{ id: "s1", name: "web_search", input: { query: "VAT" } }] },
+        { role: "tool", name: "web_search", toolCallId: "s1", content: '{"results":[{"url":"https://www.skatteverket.se"}]}' },
+        { role: "assistant", content: "", toolCalls: [{ id: "f1", name: "web_fetch", input: { url: "https://www.skatteverket.se" } }] },
+        { role: "tool", name: "web_fetch", toolCallId: "f1", content: '{"url":"https://www.skatteverket.se","text":"25 procent"}' }
+      ],
+      draft: "25%",
+      originalPrompt: "What is the current VAT rate?",
+      attempt: 0
+    });
+
+    expect(messages.map((message) => message.role)).toEqual(["system", "user"]);
+    expect(messages.some((message) => message.role === "tool")).toBe(false);
+    expect(messages.some((message) => message.role === "assistant" && message.toolCalls?.length)).toBe(false);
+    const payload = String(messages[1]?.content ?? "");
+    expect(payload).toContain("Opened tool evidence:");
+    expect(payload).toContain("web_search");
+    expect(payload).toContain("web_fetch");
+    expect(payload).toContain("25 procent");
+  });
 });
 
 describe("groundedEvidenceReviewMessages", () => {
