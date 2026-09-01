@@ -1,6 +1,6 @@
 Agent Kernel V2 production canary request
-requested_at=2026-09-01T19:48:30Z
-attempt=10
+requested_at=2026-09-01T19:52:00Z
+attempt=11
 profile=infra/agent-kernel/production-canary.env
 canary_basis_points=25
 preflight_active_basis_points=10000
