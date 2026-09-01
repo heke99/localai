@@ -46,10 +46,10 @@ curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${MODEL_PORT}/h
 curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${EMBED_PORT}/health" >/dev/null
 
 # Database and GPUHub workflows run independently after a main push. Retry the
-# service-only helper until the database workflow has applied the canary migration
-# and PostgREST has reloaded its schema.
+# service-only helper for up to ten minutes so a normal full database replay can
+# finish before this post-deploy capability canary begins.
 CANARY_RUN_ID=""
-for attempt in {1..90}; do
+for attempt in {1..300}; do
   set +e
   response="$(rpc service_runtime_canary_target '{}' 2>/tmp/div3rsa-canary-rpc.err)"
   status=$?
@@ -63,12 +63,12 @@ PY
 )"
     if [[ "$CANARY_RUN_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then break; fi
   fi
-  if [[ "$attempt" -eq 90 ]]; then
+  if [[ "$attempt" -eq 300 ]]; then
     cat /tmp/div3rsa-canary-rpc.err >&2 || true
     fatal "service_runtime_canary_target did not become available"
   fi
   sleep 2
- done
+done
 export DIV3RSA_CANARY_RUN_ID="$CANARY_RUN_ID"
 log "using existing agent run as scoped canary identity: ${CANARY_RUN_ID}"
 
