@@ -8,7 +8,9 @@ ROOT_DIR="${DIV3RSA_LEGACY_ROOT_DIR:-/root/autodl-tmp/localai}"
 REPO_DIR="${DIV3RSA_LEGACY_APP_DIR:-${ROOT_DIR}/app}"
 MODEL_BIN="${DIV3RSA_LLAMA_SERVER_BIN:-${ROOT_DIR}/runtime/llama.cpp/build/bin/llama-server}"
 API_KEY_FILE="${DIV3RSA_INFERENCE_API_KEY_FILE:-${ROOT_DIR}/secrets/inference-api-key}"
-EMBED_PORT="${DIV3RSA_EMBEDDING_PORT:-6007}"
+# 6007 is owned by GPUHub's TensorBoard service. Use a dedicated high loopback
+# port so LocalAI never competes with or kills provider-managed host services.
+EMBED_PORT="${DIV3RSA_EMBEDDING_PORT:-16007}"
 EMBED_MODEL_DIR="${DIV3RSA_EMBEDDING_MODEL_DIR:-${ROOT_DIR}/models/embeddings/qwen3-embedding-0.6b}"
 EMBED_MODEL_PATH="${DIV3RSA_EMBEDDING_MODEL_PATH:-${EMBED_MODEL_DIR}/Qwen3-Embedding-0.6B-Q8_0.gguf}"
 EMBED_ALIAS="${DIV3RSA_EMBEDDING_RUNTIME_ALIAS:-qwen3-embedding-0.6b-q8_0-d20cf9c}"
@@ -130,7 +132,7 @@ printf '%s\n' "$!" >"$PID_FILE"
 
 for _ in {1..180}; do
   if health && probe; then
-    log "embedding runtime ready; model=${EMBED_ALIAS}; dimensions=1024"
+    log "embedding runtime ready; model=${EMBED_ALIAS}; dimensions=1024; port=${EMBED_PORT}"
     exit 0
   fi
   if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
