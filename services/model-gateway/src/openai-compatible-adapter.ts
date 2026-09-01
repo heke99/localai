@@ -7,7 +7,8 @@ type Fetch = typeof fetch;
 type OpenAiToolCall = { id?: string; type?: string; function?: { name?: string; arguments?: string } };
 type OpenAiMessage = { content?: string | null; tool_calls?: OpenAiToolCall[] };
 type OpenAiStreamToolCall = { index?: number; id?: string; function?: { name?: string; arguments?: string } };
-type OpenAiToolChoice = "auto" | { type: "function"; function: { name: string } };
+type OpenAiToolChoice = "auto" | "required";
+type ToolDirective = { choice: OpenAiToolChoice; forcedToolName?: string };
 type LlamaTimings = {
   prompt_ms?: number;
   predicted_ms?: number;
@@ -180,29 +181,37 @@ function reasoningEffort(request: GenerateRequest): QwenReasoningEffort {
   return undefined;
 }
 
-function toolChoice(request: GenerateRequest): OpenAiToolChoice | undefined {
+function requiredTool(name: string): ToolDirective {
+  return { choice: "required", forcedToolName: name };
+}
+
+function toolDirective(request: GenerateRequest): ToolDirective | undefined {
   if (!request.tools?.length) return undefined;
   const system = systemInstructions(request);
   const securityReadinessRequired = system.includes("SECURITY READINESS REQUIRED");
   if (securityReadinessRequired && hasTool(request, "security_scan")) {
     return toolResultCount(request, "security_scan") === 0
-      ? { type: "function", function: { name: "security_scan" } }
-      : "auto";
+      ? requiredTool("security_scan")
+      : { choice: "auto" };
   }
   const currentRequired = system.includes("CURRENT INFORMATION REQUIRED") || system.includes("LIVE INFORMATION REQUIRED");
-  if (!currentRequired) return "auto";
+  if (!currentRequired) return { choice: "auto" };
   const directClock = system.includes("LIVE INFORMATION REQUIRED") && isDirectClockRequest(latestUserContent(request));
-  if (directClock && hasTool(request, "current_time")) return toolResultCount(request, "current_time") === 0 ? { type: "function", function: { name: "current_time" } } : "auto";
+  if (directClock && hasTool(request, "current_time")) return toolResultCount(request, "current_time") === 0 ? requiredTool("current_time") : { choice: "auto" };
   if (hasTool(request, "web_search") && hasTool(request, "web_fetch")) {
-    if (toolResultCount(request, "web_search") === 0) return { type: "function", function: { name: "web_search" } };
+    if (toolResultCount(request, "web_search") === 0) return requiredTool("web_search");
     const corroborationRequired = /Research depth:\s*deep\b/i.test(system) || /Task risk:\s*(?:high|critical)\b/i.test(system);
     const requiredFetches = corroborationRequired ? 2 : 1;
-    if (toolResultCount(request, "web_fetch") < requiredFetches) return { type: "function", function: { name: "web_fetch" } };
+    if (toolResultCount(request, "web_fetch") < requiredFetches) return requiredTool("web_fetch");
   }
-  return "auto";
+  return { choice: "auto" };
 }
 
 function requestBody(request: GenerateRequest, stream: boolean) {
+  const directive = toolDirective(request);
+  const requestTools = directive?.forcedToolName
+    ? request.tools?.filter((tool) => tool.name === directive.forcedToolName)
+    : request.tools;
   return {
     model: QWEN_RUNTIME_MODEL,
     messages: request.messages.map(encodeMessage),
@@ -213,8 +222,8 @@ function requestBody(request: GenerateRequest, stream: boolean) {
     cache_prompt: true,
     stream,
     stream_options: stream ? { include_usage: true } : undefined,
-    tools: request.tools?.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
-    tool_choice: toolChoice(request)
+    tools: requestTools?.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
+    tool_choice: directive?.choice
   };
 }
 
