@@ -1,0 +1,10 @@
+- [ ] SkillEngine instructions loaded into model context
+- [ ] Hybrid RAG retrieves tenant-scoped lexical + vector context
+- [ ] Model tool definitions exposed per request
+- [ ] Tool calls execute through permission/risk gates
+- [ ] Tool results are fed back to the model until stop
+- [ ] Sandbox-backed command execution is isolated
+- [ ] Integration credentials are scoped and short-lived
+- [ ] Completion verification runs after the final model turn
+- [ ] Verified experiences are emitted to the learning pipeline
+- [ ] Unit/integration tests and CI pass
