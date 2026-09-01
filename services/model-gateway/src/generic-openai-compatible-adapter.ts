@@ -82,6 +82,11 @@ function hasTool(request: GenerateRequest, name: string): boolean {
 }
 
 function forcedToolName(request: GenerateRequest): string | null {
+  const explicitRequired = request.requiredToolName?.trim();
+  if (explicitRequired) {
+    if (!hasTool(request, explicitRequired)) throw new Error(`required_tool_definition_missing:${explicitRequired}`);
+    return explicitRequired;
+  }
   if (!request.tools?.length) return null;
   const system = systemInstructions(request);
   const currentRequired = system.includes("CURRENT INFORMATION REQUIRED") || system.includes("LIVE INFORMATION REQUIRED");
@@ -99,9 +104,15 @@ function forcedToolName(request: GenerateRequest): string | null {
 }
 
 function toolChoice(request: GenerateRequest): ToolChoice | undefined {
-  if (!request.tools?.length) return undefined;
   const forced = forcedToolName(request);
+  if (!request.tools?.length) return undefined;
   return forced ? { type: "function", function: { name: forced } } : "auto";
+}
+
+function validateRequiredToolCall(request: GenerateRequest, toolCalls: ModelToolCall[]): void {
+  const required = request.requiredToolName?.trim();
+  if (!required) return;
+  if (toolCalls.length !== 1 || toolCalls[0]?.name !== required) throw new Error(`required_tool_call_mismatch:${required}`);
 }
 
 function encodeTools(tools: ModelToolDefinition[] | undefined) {
@@ -174,6 +185,7 @@ export class GenericOpenAiCompatibleAdapter implements ModelAdapter {
     const first = body.choices?.[0];
     if (!first?.message) throw new Error("Inference returned no choices");
     const toolCalls = parseToolCalls(first.message);
+    validateRequiredToolCall(request, toolCalls);
     return {
       modelVersionId: this.profile.modelVersionId,
       content: first.message.content ?? "",

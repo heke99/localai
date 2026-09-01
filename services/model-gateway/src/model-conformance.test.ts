@@ -17,24 +17,30 @@ class ConformantFixtureAdapter implements ModelAdapter {
   async estimateTokens(text: string): Promise<number> { return text.length; }
   async *stream(request: GenerateRequest): AsyncIterable<string> { yield (await this.generate(request)).content; }
   async generate(request: GenerateRequest): Promise<GenerateResult> {
-    const toolResult = request.messages.find((message) => message.role === "tool");
-    if (toolResult) {
-      const parsed = JSON.parse(toolResult.content) as { continuationToken: string; iso?: string };
-      const originalUser = request.messages.find((message) => message.role === "user")?.content ?? "";
-      const content = /continuationToken/i.test(originalUser)
-        ? `Verified tool evidence: ${parsed.continuationToken}`
-        : `The current date and time is ${parsed.iso ?? "unknown"}.`;
-      return { modelVersionId: profile.modelVersionId, content, finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
-    }
-    const currentTime = request.tools?.find((candidate) => candidate.name === "current_time");
-    if (currentTime) {
-      return {
-        modelVersionId: profile.modelVersionId,
-        content: "",
-        finishReason: "tool_call",
-        toolCalls: [{ id: "fixture-call", name: "current_time", input: { timezone: "Europe/Stockholm" } }],
-        usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }
-      };
+    const requiredTool = request.requiredToolName?.trim();
+    if (requiredTool) {
+      if (!request.tools?.some((tool) => tool.name === requiredTool)) throw new Error(`required_tool_definition_missing:${requiredTool}`);
+      if (requiredTool === "current_time") {
+        return {
+          modelVersionId: profile.modelVersionId,
+          content: "",
+          finishReason: "tool_call",
+          toolCalls: [{ id: "fixture-time-call", name: "current_time", input: { timezone: "Europe/Stockholm" } }],
+          usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }
+        };
+      }
+      if (requiredTool === "record_tool_result") {
+        const toolResult = request.messages.find((message) => message.role === "tool");
+        if (!toolResult) throw new Error("fixture_tool_result_missing");
+        const parsed = JSON.parse(toolResult.content) as { continuationToken: string };
+        return {
+          modelVersionId: profile.modelVersionId,
+          content: "",
+          finishReason: "tool_call",
+          toolCalls: [{ id: "fixture-record-call", name: "record_tool_result", input: { continuationToken: parsed.continuationToken } }],
+          usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }
+        };
+      }
     }
     const textToken = /MODEL_CONFORMANCE_TEXT_[A-Za-z0-9_-]+/.exec(request.messages.at(-1)?.content ?? "")?.[0] ?? "missing";
     return { modelVersionId: profile.modelVersionId, content: textToken, finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
@@ -43,7 +49,7 @@ class ConformantFixtureAdapter implements ModelAdapter {
 
 class BrokenToolAdapter extends ConformantFixtureAdapter {
   override async generate(request: GenerateRequest): Promise<GenerateResult> {
-    if (request.tools?.some((tool) => tool.name === "current_time") && !request.messages.some((message) => message.role === "tool")) {
+    if (request.requiredToolName === "current_time") {
       return { modelVersionId: profile.modelVersionId, content: "<tool_call>broken</tool_call>", finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
     }
     return super.generate(request);
@@ -52,15 +58,21 @@ class BrokenToolAdapter extends ConformantFixtureAdapter {
 
 class UngroundedContinuationAdapter extends ConformantFixtureAdapter {
   override async generate(request: GenerateRequest): Promise<GenerateResult> {
-    if (request.messages.some((message) => message.role === "tool")) {
-      return { modelVersionId: profile.modelVersionId, content: "I received a tool result.", finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
+    if (request.requiredToolName === "record_tool_result") {
+      return {
+        modelVersionId: profile.modelVersionId,
+        content: "",
+        finishReason: "tool_call",
+        toolCalls: [{ id: "fixture-bad-record-call", name: "record_tool_result", input: { continuationToken: "INVENTED_TOKEN" } }],
+        usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }
+      };
     }
     return super.generate(request);
   }
 }
 
 describe("model conformance", () => {
-  it("keeps the user's continuation intent explicit across native tool call and tool result", async () => {
+  it("passes only when required native calls preserve opaque tool-result grounding", async () => {
     const report = await runModelConformance(new ConformantFixtureAdapter(), profile, { tokenSeed: "unit" });
     expect(report.allowed).toBe(true);
     expect(report.passed).toBe(report.cases);
@@ -69,14 +81,14 @@ describe("model conformance", () => {
     expect(report.results.find((result) => result.id === "tool-result-continuation")?.passed).toBe(true);
   });
 
-  it("fails closed when a replacement model cannot produce native tool calls", async () => {
+  it("fails closed when a replacement model cannot produce required native tool calls", async () => {
     const report = await runModelConformance(new BrokenToolAdapter(), profile, { tokenSeed: "broken" });
     expect(report.allowed).toBe(false);
     expect(report.results.find((result) => result.id === "native-tool-call")?.passed).toBe(false);
     expect(report.results.find((result) => result.id === "tool-result-continuation")?.passed).toBe(false);
   });
 
-  it("fails closed when the continuation does not contain the opaque tool-result token", async () => {
+  it("fails closed when the continuation tool call invents the opaque token", async () => {
     const report = await runModelConformance(new UngroundedContinuationAdapter(), profile, { tokenSeed: "ungrounded" });
     expect(report.allowed).toBe(false);
     expect(report.results.find((result) => result.id === "native-tool-call")?.passed).toBe(true);
