@@ -71,6 +71,28 @@ class UngroundedContinuationAdapter extends ConformantFixtureAdapter {
   }
 }
 
+class ClockBiasedContinuationAdapter extends ConformantFixtureAdapter {
+  override async generate(request: GenerateRequest): Promise<GenerateResult> {
+    if (
+      request.requiredToolName === "record_tool_result"
+      && request.messages.some((message) => message.role === "user" && /what is the current date and time/i.test(message.content))
+    ) {
+      return {
+        modelVersionId: profile.modelVersionId,
+        content: "",
+        finishReason: "tool_call",
+        toolCalls: [{
+          id: "fixture-clock-biased-record-call",
+          name: "record_tool_result",
+          input: { continuationToken: "2026-09-01T22:00:00+02:00" }
+        }],
+        usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }
+      };
+    }
+    return super.generate(request);
+  }
+}
+
 describe("model conformance", () => {
   it("passes only when required native calls preserve opaque tool-result grounding", async () => {
     const report = await runModelConformance(new ConformantFixtureAdapter(), profile, { tokenSeed: "unit" });
@@ -81,6 +103,12 @@ describe("model conformance", () => {
     expect(report.results.find((result) => result.id === "tool-result-continuation")?.passed).toBe(true);
   });
 
+  it("keeps the continuation conversation token-centric instead of reopening the clock task", async () => {
+    const report = await runModelConformance(new ClockBiasedContinuationAdapter(), profile, { tokenSeed: "intent" });
+    expect(report.allowed).toBe(true);
+    expect(report.results.find((result) => result.id === "tool-result-continuation")?.passed).toBe(true);
+  });
+
   it("fails closed when a replacement model cannot produce required native tool calls", async () => {
     const report = await runModelConformance(new BrokenToolAdapter(), profile, { tokenSeed: "broken" });
     expect(report.allowed).toBe(false);
@@ -88,11 +116,13 @@ describe("model conformance", () => {
     expect(report.results.find((result) => result.id === "tool-result-continuation")?.passed).toBe(false);
   });
 
-  it("fails closed when the continuation tool call invents the opaque token", async () => {
+  it("fails closed when the continuation tool call invents the opaque token and reports the observed value", async () => {
     const report = await runModelConformance(new UngroundedContinuationAdapter(), profile, { tokenSeed: "ungrounded" });
+    const continuation = report.results.find((result) => result.id === "tool-result-continuation");
     expect(report.allowed).toBe(false);
     expect(report.results.find((result) => result.id === "native-tool-call")?.passed).toBe(true);
-    expect(report.results.find((result) => result.id === "tool-result-continuation")?.passed).toBe(false);
-    expect(report.results.find((result) => result.id === "tool-result-continuation")?.failures).toContain("tool_result_token_missing");
+    expect(continuation?.passed).toBe(false);
+    expect(continuation?.failures).toContain("tool_result_token_missing");
+    expect(continuation?.failures).toContain("tool_result_token_observed:INVENTED_TOKEN");
   });
 });
