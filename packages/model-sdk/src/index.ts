@@ -50,6 +50,13 @@ export interface GenerateRequest {
   maxOutputTokens?: number;
   temperature?: number;
   tools?: ModelToolDefinition[];
+  /**
+   * Require exactly this currently exposed tool on this generation turn.
+   * Adapters must fail closed when the named tool is not present in `tools`.
+   * Tool selection policy remains outside concrete model families while each
+   * protocol adapter owns the wire-level mechanism used to enforce the call.
+   */
+  requiredToolName?: string;
   signal?: AbortSignal;
   /** Disable hidden model thinking for short machine-readable/internal calls only. */
   disableThinking?: boolean;
