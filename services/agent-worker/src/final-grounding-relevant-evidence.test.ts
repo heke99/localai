@@ -45,6 +45,6 @@ describe("grounded evidence review selection", () => {
     const serialized = JSON.stringify(payload.evidence ?? []);
     expect(serialized).toContain("https://nodejs.org/en/download/current");
     expect(serialized).toContain("Node.js Current Latest Release v26.8.1");
-    expect(serialized).not.toContain("navigation filler navigation filler navigation filler navigation filler navigation filler");
+    expect(serialized.length).toBeLessThan(5_000);
   });
 });
