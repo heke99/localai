@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { GenerateRequest, ModelToolDefinition } from "@div3rsa/model-sdk";
+import { createInferenceAdapter, modelProtocolProfileFromEnvironment } from "./adapter-factory";
 import { GenericOpenAiCompatibleAdapter } from "./generic-openai-compatible-adapter";
-import { OpenAiCompatibleAdapter } from "./openai-compatible-adapter";
 
 const continuationTool: ModelToolDefinition = {
   name: "record_tool_result",
@@ -28,28 +28,79 @@ function request(overrides: Partial<GenerateRequest> = {}): GenerateRequest {
   };
 }
 
+function qwenAdapter(fetcher: typeof fetch) {
+  return createInferenceAdapter({
+    baseUrl: "http://runtime/v1",
+    apiKey: "test-key",
+    profile: modelProtocolProfileFromEnvironment({}),
+    fetcher
+  });
+}
+
 describe("portable required-tool contract", () => {
-  it("enforces the required tool through the Qwen llama.cpp grammar path", async () => {
+  it("uses native llama.cpp tool history for explicit required Qwen continuation", async () => {
     const wireBodies: Record<string, unknown>[] = [];
     const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      wireBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      wireBodies.push(body);
       return new Response(JSON.stringify({
         choices: [{
-          message: { content: JSON.stringify({ name: continuationTool.name, arguments: { continuationToken: "TOKEN_QWEN" } }) },
-          finish_reason: "stop"
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "qwen-native-call",
+              type: "function",
+              function: { name: continuationTool.name, arguments: JSON.stringify({ continuationToken: "TOKEN_QWEN" }) }
+            }]
+          },
+          finish_reason: "tool_calls"
         }],
         usage: { prompt_tokens: 10, completion_tokens: 4 }
       }), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
 
-    const adapter = new OpenAiCompatibleAdapter("http://runtime/v1", "test-key", fetcher);
-    const result = await adapter.generate(request());
+    const adapter = qwenAdapter(fetcher);
+    const result = await adapter.generate(request({
+      messages: [
+        { role: "system", content: "Copy only the authoritative token returned by the prior tool." },
+        { role: "user", content: "Start the source tool." },
+        { role: "assistant", content: "", toolCalls: [{ id: "prior-source-call", name: "source_tool", input: { probe: "copy" } }] },
+        { role: "tool", name: "source_tool", toolCallId: "prior-source-call", content: JSON.stringify({ continuationToken: "TOKEN_QWEN" }) },
+        { role: "user", content: "Now copy the token into the required tool." }
+      ]
+    }));
 
-    expect(wireBodies[0]?.json_schema).toBeDefined();
-    expect(wireBodies[0]?.stream).toBe(false);
+    const body = wireBodies[0];
+    expect(body?.json_schema).toBeUndefined();
+    expect(body?.tool_choice).toBe("required");
+    expect(body?.reasoning_effort).toBe("none");
+    expect(body?.chat_template_kwargs).toEqual({ enable_thinking: false });
+    expect(body?.cache_prompt).toBe(true);
+    expect(body?.stream).toBe(false);
+
+    const tools = body?.tools as Array<{ function?: { name?: string } }>;
+    expect(tools).toHaveLength(1);
+    expect(tools[0]?.function?.name).toBe(continuationTool.name);
+
+    const messages = body?.messages as Array<Record<string, unknown>>;
+    expect(messages).toContainEqual({
+      role: "tool",
+      content: JSON.stringify({ continuationToken: "TOKEN_QWEN" }),
+      tool_call_id: "prior-source-call",
+      name: "source_tool"
+    });
+
     expect(result.finishReason).toBe("tool_call");
     expect(result.content).toBe("");
-    expect(result.toolCalls).toEqual([{ id: "required-tool-test:forced-tool", name: continuationTool.name, input: { continuationToken: "TOKEN_QWEN" } }]);
+    expect(result.toolCalls).toEqual([{ id: "qwen-native-call", name: continuationTool.name, input: { continuationToken: "TOKEN_QWEN" } }]);
+  });
+
+  it("fails closed when Qwen ignores the explicit required tool", async () => {
+    const fetcher = (async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "I ignored the tool." }, finish_reason: "stop" }]
+    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+
+    await expect(qwenAdapter(fetcher).generate(request())).rejects.toThrow(`required_tool_call_mismatch:${continuationTool.name}`);
   });
 
   it("maps the same contract to native OpenAI tool_choice and validates the provider response", async () => {
@@ -100,7 +151,7 @@ describe("portable required-tool contract", () => {
       requests += 1;
       throw new Error("network_should_not_run");
     }) as typeof fetch;
-    const qwen = new OpenAiCompatibleAdapter("http://runtime/v1", "test-key", fetcher);
+    const qwen = qwenAdapter(fetcher);
     const generic = new GenericOpenAiCompatibleAdapter("http://runtime/v1", "test-key", {
       runtimeModel: "portable-model",
       modelVersionId: "portable-model-v1",

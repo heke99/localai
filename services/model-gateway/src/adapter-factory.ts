@@ -1,8 +1,8 @@
 import type { ModelAdapter, ModelCapability, ModelInferenceProtocol, ModelProtocolProfile } from "@div3rsa/model-sdk";
 import type { AdmissionController } from "./admission-control";
 import { GenericOpenAiCompatibleAdapter } from "./generic-openai-compatible-adapter";
+import { QwenRequiredToolRoutingAdapter } from "./qwen-required-tool-routing-adapter";
 import { QWEN_Q8, QWEN_RUNTIME_MODEL } from "./registry";
-import { StrictToolProtocolOpenAiCompatibleAdapter } from "./strict-tool-protocol-openai-compatible-adapter";
 
 type Fetch = typeof fetch;
 type Environment = Record<string, string | undefined>;
@@ -79,11 +79,13 @@ export function createInferenceAdapter(options: InferenceAdapterFactoryOptions):
     );
   }
 
-  // The current production Qwen/llama.cpp path keeps its hardened grammar,
-  // evidence-repair and security-protocol adapters unchanged.
-  return new StrictToolProtocolOpenAiCompatibleAdapter(
+  // Ordinary Qwen traffic stays on the hardened Strict/Execution/Security stack.
+  // Only explicit portable requiredToolName calls use llama.cpp's native tool
+  // protocol so prior assistant/tool messages remain grounded across turns.
+  return new QwenRequiredToolRoutingAdapter(
     options.baseUrl,
     options.apiKey,
+    options.profile,
     fetcher,
     options.admission
   );
