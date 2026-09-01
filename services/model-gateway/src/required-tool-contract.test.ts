@@ -30,9 +30,9 @@ function request(overrides: Partial<GenerateRequest> = {}): GenerateRequest {
 
 describe("portable required-tool contract", () => {
   it("enforces the required tool through the Qwen llama.cpp grammar path", async () => {
-    let wireBody: Record<string, unknown> | null = null;
+    const wireBodies: Record<string, unknown>[] = [];
     const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      wireBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      wireBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       return new Response(JSON.stringify({
         choices: [{
           message: { content: JSON.stringify({ name: continuationTool.name, arguments: { continuationToken: "TOKEN_QWEN" } }) },
@@ -45,17 +45,17 @@ describe("portable required-tool contract", () => {
     const adapter = new OpenAiCompatibleAdapter("http://runtime/v1", "test-key", fetcher);
     const result = await adapter.generate(request());
 
-    expect(wireBody?.json_schema).toBeDefined();
-    expect(wireBody?.stream).toBe(false);
+    expect(wireBodies[0]?.json_schema).toBeDefined();
+    expect(wireBodies[0]?.stream).toBe(false);
     expect(result.finishReason).toBe("tool_call");
     expect(result.content).toBe("");
     expect(result.toolCalls).toEqual([{ id: "required-tool-test:forced-tool", name: continuationTool.name, input: { continuationToken: "TOKEN_QWEN" } }]);
   });
 
   it("maps the same contract to native OpenAI tool_choice and validates the provider response", async () => {
-    let wireBody: Record<string, unknown> | null = null;
+    const wireBodies: Record<string, unknown>[] = [];
     const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      wireBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      wireBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       return new Response(JSON.stringify({
         choices: [{
           message: {
@@ -75,7 +75,7 @@ describe("portable required-tool contract", () => {
     }, fetcher);
     const result = await adapter.generate(request());
 
-    expect(wireBody?.tool_choice).toEqual({ type: "function", function: { name: continuationTool.name } });
+    expect(wireBodies[0]?.tool_choice).toEqual({ type: "function", function: { name: continuationTool.name } });
     expect(result.finishReason).toBe("tool_call");
     expect(result.toolCalls).toEqual([{ id: "generic-call", name: continuationTool.name, input: { continuationToken: "TOKEN_GENERIC" } }]);
   });
