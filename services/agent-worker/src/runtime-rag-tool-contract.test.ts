@@ -43,9 +43,15 @@ describe("production RAG and tool runtime contract", () => {
     expect(recovery).toContain("LLAMA_ARG_JINJA=1");
     expect(toolProbe).toContain("div3rsa_runtime_probe");
     expect(toolProbe).toContain("tool_calls");
+    expect(toolProbe).toContain('"tool_choice":"required"');
+    expect(toolProbe).not.toContain('"tool_choice":{"type":"function"');
     expect(embed).toContain("--embedding");
     expect(embed).toContain("--pooling last");
     expect(embed).toContain("len(e)==1024");
+    expect(embed).toContain("port_is_free");
+    expect(embed).toContain("stop_pid_if_embedding");
+    expect(embed).toContain('--batch-size "$EMBED_BATCH_SIZE"');
+    expect(embed).toContain('--ubatch-size "$EMBED_BATCH_SIZE"');
   });
 
   it("runs a real disposable production canary for both paths", () => {
