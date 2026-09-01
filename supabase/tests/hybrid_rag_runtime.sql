@@ -20,7 +20,8 @@ begin
 
   select pg_get_functiondef('public.worker_retrieve_knowledge(uuid,text,extensions.vector,text,integer)'::regprocedure)
   into retrieval_definition;
-  if position('e.embedding <=> target_query_embedding' in retrieval_definition) = 0 then raise exception 'semantic_vector_ordering_missing'; end if;
+  if position('OPERATOR(extensions.<=>)' in retrieval_definition) = 0 then raise exception 'semantic_vector_operator_schema_missing'; end if;
+  if position('e.embedding <=> target_query_embedding' in retrieval_definition) > 0 then raise exception 'unqualified_semantic_vector_operator_present'; end if;
   if position('@@ lexical_query' in retrieval_definition) = 0 then raise exception 'lexical_gin_predicate_missing'; end if;
   if position('1.0 / (60.0 +' in retrieval_definition) = 0 then raise exception 'rrf_fusion_missing'; end if;
 end $$;
