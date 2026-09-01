@@ -53,6 +53,34 @@ $$;
 revoke all on function public.service_delete_runtime_canary_tool_execution(text) from public, anon, authenticated;
 grant execute on function public.service_delete_runtime_canary_tool_execution(text) to service_role;
 
+create or replace function public.service_prune_runtime_canary_tool_executions(
+  target_keep_operation_id text
+)
+returns integer
+language plpgsql
+security definer
+set search_path=''
+as $$
+declare
+  removed integer := 0;
+begin
+  if coalesce(auth.jwt()->>'role','') <> 'service_role' then
+    raise exception 'service_role_required' using errcode='42501';
+  end if;
+  if coalesce(target_keep_operation_id,'') !~ '^[a-f0-9]{64}$' then raise exception 'invalid_operation_id'; end if;
+
+  delete from internal.agent_tool_executions e
+  where e.tool_call_id like 'runtime-canary-%'
+    and e.tool_name = 'current_time'
+    and e.operation_id <> target_keep_operation_id;
+  get diagnostics removed = row_count;
+  return removed;
+end
+$$;
+
+revoke all on function public.service_prune_runtime_canary_tool_executions(text) from public, anon, authenticated;
+grant execute on function public.service_prune_runtime_canary_tool_executions(text) to service_role;
+
 notify pgrst, 'reload schema';
 
 commit;
