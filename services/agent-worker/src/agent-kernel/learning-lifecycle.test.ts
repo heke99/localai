@@ -84,6 +84,25 @@ describe("VerifiedLearningAgentQueue", () => {
     expect((kernelStore.recordTrajectory as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toBe(false);
   });
 
+  it("marks a reviewer-approved, test-proven trajectory as training eligible when enabled", async () => {
+    const kernelStore = store();
+    const queue = new VerifiedLearningAgentQueue(baseQueue(), kernelStore, true, true, { warn: vi.fn() });
+    await queue.recordRunIntelligence(run.runId, task, ["debugger", "testing"]);
+    await queue.recordVerificationRun(run.runId, 0, null, null, report.plan, report, { passed: true, reason: "independent review passed" });
+    await queue.complete(run, { content: "good", modelVersionId: "qwen", usage: {} });
+    expect((kernelStore.recordTrajectory as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toBe(true);
+  });
+
+  it("does not learn when the independent reviewer rejects a run even if the aggregate report passed", async () => {
+    const kernelStore = store();
+    const queue = new VerifiedLearningAgentQueue(baseQueue(), kernelStore, true, true, { warn: vi.fn() });
+    await queue.recordRunIntelligence(run.runId, task, ["debugger"]);
+    await queue.recordVerificationRun(run.runId, 0, null, null, report.plan, report, { passed: false, reason: "unsupported claim" });
+    await queue.complete(run, { content: "bad", modelVersionId: "qwen", usage: {} });
+    expect(kernelStore.upsertMemory).not.toHaveBeenCalled();
+    expect(kernelStore.recordTrajectory).not.toHaveBeenCalled();
+  });
+
   it("does not learn from failed verification", async () => {
     const kernelStore = store();
     const queue = new VerifiedLearningAgentQueue(baseQueue(), kernelStore, true, true, { warn: vi.fn() });

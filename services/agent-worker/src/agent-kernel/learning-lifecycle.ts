@@ -12,6 +12,8 @@ interface RunLearningState {
   reviewer: { passed: boolean; reason: string } | null;
 }
 
+const TEST_CHECK_KINDS = new Set(["targeted-tests", "unit-tests", "integration-tests"]);
+
 function learningScope(run: ClaimedRun): string {
   const repository = run.resourceContext.find((resource) => resource.provider === "github" && resource.resourceType === "repository");
   return repository ? `repo:${repository.displayName.toLowerCase()}` : `mode:${run.mode}`;
@@ -28,6 +30,13 @@ function structuralProcedure(task: TaskAnalysis, skills: string[], report: Verif
   const selected = skills.length ? skills.join(",") : "none";
   const checks = report.results.filter((result) => result.status === "passed").map((result) => result.kind).join(",");
   return `Verified execution pattern: categories=${categories}; risk=${task.risk}; reasoning=${task.reasoningLevel}; skills=${selected}; passedChecks=${checks || "none"}.`;
+}
+
+function allRequiredTestsPassed(report: VerificationReport): boolean | undefined {
+  const requiredTests = report.plan.checks.filter((check) => check.required && TEST_CHECK_KINDS.has(check.kind));
+  if (!requiredTests.length) return undefined;
+  const passed = new Set(report.results.filter((result) => result.status === "passed").map((result) => result.kind));
+  return requiredTests.every((check) => passed.has(check.kind)) ? true : undefined;
 }
 
 /**
@@ -86,7 +95,7 @@ export class VerifiedLearningAgentQueue implements AgentQueue {
 
   private async persistVerifiedLearning(run: ClaimedRun, output: { modelVersionId: string; usage: Record<string, number> }): Promise<void> {
     const state = this.state.get(run.runId);
-    if (!state?.task || !state.report?.passed) return;
+    if (!state?.task || !state.report?.passed || state.reviewer?.passed !== true) return;
     const report = state.report;
     const refs = evidenceRefs(report);
     if (!refs.length) return;
@@ -104,7 +113,7 @@ export class VerifiedLearningAgentQueue implements AgentQueue {
       evidenceRefs: refs,
       verificationPassed: true,
       regressionFree: true,
-      sourceQuality: state.reviewer?.passed === false ? 0.75 : 1
+      sourceQuality: 1
     });
     if (experience) await this.store.upsertMemory(experience);
 
@@ -130,7 +139,10 @@ export class VerifiedLearningAgentQueue implements AgentQueue {
       modelVersion: output.modelVersionId,
       promptVersion: "agent-kernel-v2",
       steps,
-      signals: { allTestsPass: true, exactOracleCorrect: state.task.requiresCurrentInformation ? true : undefined }
+      signals: {
+        independentVerificationPassed: true,
+        allTestsPass: allRequiredTestsPassed(report)
+      }
     });
     await this.store.recordTrajectory(trajectory, this.trainingEligibilityEnabled && trajectoryEligibleForTraining(trajectory));
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { formatRetrievedKnowledgeContext, KNOWLEDGE_EMBEDDING_MODEL, retrieveKnowledgeForRun } from "./knowledge-retrieval";
+import { formatRetrievedKnowledgeContext, KNOWLEDGE_EMBEDDING_MODEL, KNOWLEDGE_MAX_QUERY_CHARS, retrieveKnowledgeForRun } from "./knowledge-retrieval";
 
 describe("knowledge retrieval", () => {
   it("does not call the embedding runtime when no approved scoped knowledge exists", async () => {
@@ -33,6 +33,48 @@ describe("knowledge retrieval", () => {
     const request = JSON.parse(String((fetchImpl.mock.calls[0]?.[1] as RequestInit).body));
     expect(request.input).toContain("Instruct:");
     expect(request.input).toContain("Query:How do I recover it?");
+  });
+
+  it("retries transient embedding failures with bounded backoff", async () => {
+    const vector = Array.from({ length: 1024 }, () => 0.1);
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "busy" }), { status: 429, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ embedding: vector }] }), { status: 200, headers: { "content-type": "application/json" } }));
+    const sleep = vi.fn(async () => undefined);
+    const rpcClient = {
+      rpc: vi.fn(async (name: string) => name === "worker_knowledge_available"
+        ? { data: true, error: null }
+        : { data: [], error: null })
+    };
+
+    await expect(retrieveKnowledgeForRun("run-retry", "retry me", {
+      enabled: true,
+      rpcClient,
+      fetchImpl,
+      embeddingApiKey: "test",
+      embeddingAttempts: 3,
+      sleep
+    })).resolves.toEqual([]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(100);
+  });
+
+  it("uses the same bounded query for embedding and retrieval", async () => {
+    const vector = Array.from({ length: 1024 }, () => 0.1);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ data: [{ embedding: vector }] }), { status: 200, headers: { "content-type": "application/json" } }));
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const rpcClient = {
+      rpc: vi.fn(async (name: string, args: Record<string, unknown>) => {
+        calls.push({ name, args });
+        return name === "worker_knowledge_available" ? { data: true, error: null } : { data: [], error: null };
+      })
+    };
+    const query = `  ${"q".repeat(KNOWLEDGE_MAX_QUERY_CHARS + 500)}  `;
+    await retrieveKnowledgeForRun("run-bounded", query, { enabled: true, rpcClient, fetchImpl, embeddingApiKey: "test" });
+    const embedded = JSON.parse(String((fetchImpl.mock.calls[0]?.[1] as RequestInit).body)).input as string;
+    const retrieval = calls.find((call) => call.name === "worker_retrieve_knowledge");
+    expect((retrieval?.args.target_query_text as string)).toHaveLength(KNOWLEDGE_MAX_QUERY_CHARS);
+    expect(embedded.endsWith(`Query:${retrieval?.args.target_query_text as string}`)).toBe(true);
   });
 
   it("rejects embeddings with the wrong dimension", async () => {

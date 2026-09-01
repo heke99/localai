@@ -79,11 +79,20 @@ function isToolAuthorization(value: unknown): value is ToolAuthorization {
     && typeof item.operationAttempt === "number";
 }
 
+function integrationToolAllowedInMode(tool: IntegrationToolDefinition, mode: ClaimedRun["mode"]): boolean {
+  if (tool.risk === "read") return true;
+  return mode === "code" || mode === "lab";
+}
+
 export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
   constructor(private readonly client: RpcClient, private readonly executors: ReadonlyMap<string, ProviderToolExecutor>) {}
 
   async list(run: ClaimedRun) {
-    const providerTools = integrationToolsForResources(run.resourceContext, new Set(this.executors.keys()));
+    const providerTools = integrationToolsForResources(run.resourceContext, new Set(this.executors.keys()))
+      .filter((definition) => {
+        const tool = integrationToolByName(definition.name);
+        return tool ? integrationToolAllowedInMode(tool, run.mode) : false;
+      });
     return [...projectMemoryTools, ...providerTools];
   }
 
@@ -116,6 +125,7 @@ export class PermissionedIntegrationToolRuntime implements WorkerToolRuntime {
 
     const tool = integrationToolByName(call.name);
     if (!tool) throw new Error("unknown_integration_tool");
+    if (!integrationToolAllowedInMode(tool, run.mode)) throw new Error(`tool_mode_denied:${call.name}:${run.mode}`);
     const resourceId = typeof call.input.resourceId === "string" ? call.input.resourceId : "";
     if (!resourceId) throw new Error("tool_resource_required");
     const selected = run.resourceContext.find((resource) => resource.resourceId === resourceId && resource.provider === tool.provider && resource.capabilities.includes(tool.capability));

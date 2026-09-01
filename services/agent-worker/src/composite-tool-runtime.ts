@@ -2,6 +2,7 @@ import type { ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 import type { ClaimedRun, WorkerToolRuntime } from "./processor";
 import { canonicalInputHash, normalizeToolResult, operationId } from "./tool-execution-lifecycle";
 import type { ToolExecutionContext } from "./tool-execution-context";
+import { validateToolCallInput } from "./tool-input-validation";
 import { toolPolicy, toolTimeoutMs } from "./tool-registry";
 
 const DEFAULT_LIST_TIMEOUT_MS = 15_000;
@@ -342,7 +343,9 @@ export class CompositeWorkerToolRuntime implements WorkerToolRuntime {
           `tool_runtime_timeout:list:${index}`,
           cancellation.signal
         );
-        if (!definitions.some((definition) => definition.name === call.name)) continue;
+        const definition = definitions.find((candidate) => candidate.name === call.name);
+        if (!definition) continue;
+        validateToolCallInput(definition, call);
 
         claim = await this.claimToolExecution(run, call, stableOperationId);
         if (claim.replayed) return claim.result;

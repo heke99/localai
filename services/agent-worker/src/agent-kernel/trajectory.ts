@@ -29,6 +29,7 @@ export interface AgentTrajectory {
 export interface RewardSignals {
   readonly exactOracleCorrect?: boolean;
   readonly allTestsPass?: boolean;
+  readonly independentVerificationPassed?: boolean;
   readonly userAccepted?: boolean;
   readonly fewerToolCalls?: boolean;
   readonly lowerLatency?: boolean;
@@ -42,6 +43,7 @@ export function rewardFromSignals(signals: RewardSignals): number {
   let reward = 0;
   if (signals.exactOracleCorrect) reward += 5;
   if (signals.allTestsPass) reward += 5;
+  if (signals.independentVerificationPassed) reward += 5;
   if (signals.userAccepted) reward += 3;
   if (signals.fewerToolCalls) reward += 2;
   if (signals.lowerLatency) reward += 1;

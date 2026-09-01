@@ -3,6 +3,43 @@ const MAX_OBJECT_KEYS = 60;
 const MAX_STRING_CHARS = 8_000;
 const MAX_DEPTH = 6;
 const DEFAULT_MAX_SERIALIZED_CHARS = 12_000;
+const REDACTED = "[REDACTED]";
+
+const SENSITIVE_KEY = /(?:^|[_-])(?:authorization|password|passwd|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|credential|cookie|set[_-]?cookie)(?:$|[_-])/i;
+const INLINE_SECRET_PATTERNS: RegExp[] = [
+  /\bBearer\s+[A-Za-z0-9._~+\/-]{12,}=*/gi,
+  /\b(?:sk|sk-proj|ghp|github_pat|sb_secret)_[A-Za-z0-9_-]{12,}\b/gi,
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/gi
+];
+
+function redactString(value: string): string {
+  let redacted = value;
+  for (const pattern of INLINE_SECRET_PATTERNS) redacted = redacted.replace(pattern, REDACTED);
+  return redacted;
+}
+
+function sanitizeValue(value: unknown, depth: number, seen: WeakSet<object>, key?: string): unknown {
+  if (key && SENSITIVE_KEY.test(key)) return REDACTED;
+  if (value === null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") return redactString(value);
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "undefined") return null;
+  if (typeof value === "function" || typeof value === "symbol") return `[${typeof value}]`;
+  if (depth >= MAX_DEPTH) return "[tool_result_depth_limited]";
+  if (typeof value !== "object") return redactString(String(value));
+  if (seen.has(value)) return "[tool_result_cycle]";
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) return value.map((item) => sanitizeValue(item, depth + 1, seen));
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([entryKey, item]) => [entryKey, sanitizeValue(item, depth + 1, seen, entryKey)]));
+  } finally {
+    seen.delete(value);
+  }
+}
+
+export function sanitizeToolOutput(value: unknown): unknown {
+  return sanitizeValue(value, 0, new WeakSet<object>());
+}
 
 function compactValue(value: unknown, depth: number, seen: WeakSet<object>): unknown {
   if (value === null || typeof value === "number" || typeof value === "boolean") return value;
@@ -35,7 +72,7 @@ export function compactToolOutput(value: unknown, maxSerializedChars = DEFAULT_M
   const safeLimit = Math.max(256, maxSerializedChars);
   let serialized: string;
   try {
-    serialized = JSON.stringify(compactValue(value, 0, new WeakSet<object>()));
+    serialized = JSON.stringify(compactValue(sanitizeToolOutput(value), 0, new WeakSet<object>()));
   } catch {
     serialized = JSON.stringify({ error: "tool_result_not_serializable" });
   }
