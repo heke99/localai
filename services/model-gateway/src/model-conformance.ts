@@ -51,12 +51,17 @@ const currentTimeTool: ModelToolDefinition = {
 
 const recordToolResultTool: ModelToolDefinition = {
   name: "record_tool_result",
-  description: "Record the opaque continuationToken from the immediately preceding authoritative tool result. Copy that value verbatim into the continuationToken argument.",
+  description: "Record the opaque continuationToken from the immediately preceding authoritative tool result. Copy only that field value verbatim; never substitute a timestamp, timezone, placeholder, or derived value.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["continuationToken"],
-    properties: { continuationToken: { type: "string" } }
+    properties: {
+      continuationToken: {
+        type: "string",
+        description: "Verbatim continuationToken string from the immediately preceding tool message. Copy character-for-character and do not derive or normalize it."
+      }
+    }
   }
 };
 
@@ -70,6 +75,14 @@ function matchingCurrentTimeCall(result: GenerateResult): ModelToolCall | null {
 
 function matchingContinuationCall(result: GenerateResult, continuationToken: string): ModelToolCall | null {
   return result.toolCalls?.find((call) => call.name === recordToolResultTool.name && call.input.continuationToken === continuationToken) ?? null;
+}
+
+function observedContinuationToken(result: GenerateResult): string | null {
+  const call = result.toolCalls?.find((candidate) => candidate.name === recordToolResultTool.name);
+  if (!call) return null;
+  const value = call.input.continuationToken;
+  if (typeof value !== "string") return value == null ? null : String(value);
+  return value.slice(0, 160);
 }
 
 async function probe(id: ModelConformanceCaseId, operation: () => Promise<{ failures: string[]; modelVersionId?: string | null }>): Promise<ModelConformanceCaseResult> {
@@ -138,7 +151,11 @@ export async function runModelConformance(
   }));
 
   let acceptedToolCall: ModelToolCall | null = null;
-  const toolUserPrompt = `What is the current date and time in ${CONFORMANCE_TIMEZONE}? Use the current_time runtime tool before answering.`;
+  const toolUserPrompt = [
+    `Run the current_time runtime tool for ${CONFORMANCE_TIMEZONE} as step 1 of a protocol probe.`,
+    "Do not answer with the date or time.",
+    "After the tool result arrives, the next step will copy only its continuationToken field into record_tool_result."
+  ].join(" ");
   results.push(await probe("native-tool-call", async () => {
     const result = await adapter.generate({
       requestId: `conformance-tool-${seed}`,
@@ -173,18 +190,28 @@ export async function runModelConformance(
       disableThinking: true,
       requiredToolName: recordToolResultTool.name,
       messages: [
-        { role: "system", content: "This is a tool-result continuation conformance probe. Treat the preceding runtime tool result as authoritative. Call record_tool_result and copy its continuationToken value verbatim into the continuationToken argument. The token is not provided anywhere else." },
+        {
+          role: "system",
+          content: "This is a tool-result continuation protocol probe, not a date/time question. The immediately preceding tool message is authoritative. Call record_tool_result and copy only its continuationToken field value verbatim into the continuationToken argument. Do not use or derive any other value."
+        },
         { role: "user", content: toolUserPrompt },
         { role: "assistant", content: "", toolCalls: [acceptedToolCall] },
-        { role: "tool", name: currentTimeTool.name, toolCallId: acceptedToolCall.id, content: JSON.stringify({ timezone: CONFORMANCE_TIMEZONE, iso: "2026-09-01T22:00:00+02:00", continuationToken }) },
-        { role: "user", content: "Now call record_tool_result using the continuationToken from the runtime tool result above. Copy the value exactly; do not invent it." }
+        { role: "tool", name: currentTimeTool.name, toolCallId: acceptedToolCall.id, content: JSON.stringify({ continuationToken }) },
+        {
+          role: "user",
+          content: "Read the continuationToken field from the immediately preceding tool message and call record_tool_result now. Copy that exact string character-for-character. Do not answer with time, do not invent a value, and do not normalize it."
+        }
       ],
       tools: [recordToolResultTool]
     });
     const failures: string[] = [];
     const continuationCall = matchingContinuationCall(result, continuationToken);
     if (result.finishReason !== "tool_call") failures.push(`continuation_finish_reason_not_tool_call:${result.finishReason}`);
-    if (!continuationCall) failures.push("tool_result_token_missing");
+    if (!continuationCall) {
+      failures.push("tool_result_token_missing");
+      const observed = observedContinuationToken(result);
+      if (observed !== null) failures.push(`tool_result_token_observed:${observed}`);
+    }
     if ((result.toolCalls?.length ?? 0) !== 1) failures.push(`continuation_tool_call_count:${result.toolCalls?.length ?? 0}`);
     if (result.content && /<tool_call\b|<function=|<parameter=/i.test(result.content)) failures.push("textual_tool_protocol_exposed");
     if (hiddenReasoningExposed(result)) failures.push("hidden_reasoning_exposed");
