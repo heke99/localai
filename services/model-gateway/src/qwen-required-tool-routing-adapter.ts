@@ -5,8 +5,7 @@ import type {
   ModelCapability,
   ModelHealth,
   ModelProtocolProfile,
-  ModelStreamDeltaHandler,
-  ModelToolDefinition
+  ModelStreamDeltaHandler
 } from "@div3rsa/model-sdk";
 import type { AdmissionController } from "./admission-control";
 import { GenericOpenAiCompatibleAdapter } from "./generic-openai-compatible-adapter";
@@ -118,9 +117,4 @@ export class QwenRequiredToolRoutingAdapter implements ModelAdapter {
     const result = await this.requiredNative.generate(nativeRequest);
     if (result.content) yield result.content;
   }
-}
-
-export function qwenRequiredToolForTest(request: GenerateRequest): ModelToolDefinition | null {
-  const nativeRequest = requiredToolRequest(request);
-  return nativeRequest?.tools?.[0] ?? null;
 }
