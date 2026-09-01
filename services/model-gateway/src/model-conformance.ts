@@ -38,6 +38,8 @@ export interface ModelConformanceOptions {
 }
 
 const CONFORMANCE_TIMEZONE = "Europe/Stockholm";
+const CONTINUATION_PROBE_KIND = "opaque-continuation";
+
 const currentTimeTool: ModelToolDefinition = {
   name: "current_time",
   description: "Return the current date and time for an IANA timezone. This deterministic runtime-required tool is used to verify native tool-call wire compatibility.",
@@ -46,6 +48,17 @@ const currentTimeTool: ModelToolDefinition = {
     additionalProperties: false,
     required: ["timezone"],
     properties: { timezone: { type: "string", enum: [CONFORMANCE_TIMEZONE] } }
+  }
+};
+
+const continuationSourceTool: ModelToolDefinition = {
+  name: "continuation_probe_source",
+  description: "Start a neutral protocol-continuation probe. The runtime will return an opaque continuationToken in the tool result; this tool has no date, time, search, or domain semantics.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["probe"],
+    properties: { probe: { type: "string", enum: [CONTINUATION_PROBE_KIND] } }
   }
 };
 
@@ -71,6 +84,10 @@ function hiddenReasoningExposed(result: GenerateResult): boolean {
 
 function matchingCurrentTimeCall(result: GenerateResult): ModelToolCall | null {
   return result.toolCalls?.find((call) => call.name === currentTimeTool.name && call.input.timezone === CONFORMANCE_TIMEZONE) ?? null;
+}
+
+function matchingContinuationSourceCall(result: GenerateResult): ModelToolCall | null {
+  return result.toolCalls?.find((call) => call.name === continuationSourceTool.name && call.input.probe === CONTINUATION_PROBE_KIND) ?? null;
 }
 
 function matchingContinuationCall(result: GenerateResult, continuationToken: string): ModelToolCall | null {
@@ -150,12 +167,7 @@ export async function runModelConformance(
     return { failures, modelVersionId: result.modelVersionId };
   }));
 
-  let acceptedToolCall: ModelToolCall | null = null;
-  const toolUserPrompt = [
-    `Run the current_time runtime tool for ${CONFORMANCE_TIMEZONE} as step 1 of a protocol probe.`,
-    "Do not answer with the date or time.",
-    "After the tool result arrives, the next step will copy only its continuationToken field into record_tool_result."
-  ].join(" ");
+  const clockUserPrompt = `Use the current_time runtime tool for ${CONFORMANCE_TIMEZONE}. Do not answer before the runtime tool result arrives.`;
   results.push(await probe("native-tool-call", async () => {
     const result = await adapter.generate({
       requestId: `conformance-tool-${seed}`,
@@ -166,22 +178,50 @@ export async function runModelConformance(
       requiredToolName: currentTimeTool.name,
       messages: [
         { role: "system", content: "This is a deterministic model protocol conformance probe. Use the required native runtime function. Do not print XML, pseudo tool markup, or a prose answer before the tool result arrives." },
-        { role: "user", content: toolUserPrompt }
+        { role: "user", content: clockUserPrompt }
       ],
       tools: [currentTimeTool]
     });
     const failures: string[] = [];
-    acceptedToolCall = matchingCurrentTimeCall(result);
+    const acceptedToolCall = matchingCurrentTimeCall(result);
     if (result.finishReason !== "tool_call") failures.push(`finish_reason_not_tool_call:${result.finishReason}`);
     if (!acceptedToolCall) failures.push("native_tool_call_missing_or_invalid");
     if ((result.toolCalls?.length ?? 0) !== 1) failures.push(`tool_call_count:${result.toolCalls?.length ?? 0}`);
     if (result.content && /<tool_call\b|<function=|<parameter=/i.test(result.content)) failures.push("textual_tool_protocol_exposed");
+    if (hiddenReasoningExposed(result)) failures.push("hidden_reasoning_exposed");
     if (result.modelVersionId !== profile.modelVersionId) failures.push(`model_version_mismatch:${result.modelVersionId}`);
     return { failures, modelVersionId: result.modelVersionId };
   }));
 
   results.push(await probe("tool-result-continuation", async () => {
-    if (!acceptedToolCall) return { failures: ["tool_call_prerequisite_failed"] };
+    const sourcePrompt = "Call continuation_probe_source to start the opaque continuation protocol probe. Do not infer or invent the token; it will arrive only in the runtime tool result.";
+    const sourceResult = await adapter.generate({
+      requestId: `conformance-continuation-source-${seed}`,
+      alias,
+      temperature: 0,
+      maxOutputTokens: 128,
+      disableThinking: true,
+      requiredToolName: continuationSourceTool.name,
+      messages: [
+        {
+          role: "system",
+          content: "This is a neutral tool-result continuation probe with no clock, search, or domain semantics. Call only the required continuation source tool and wait for its runtime result."
+        },
+        { role: "user", content: sourcePrompt }
+      ],
+      tools: [continuationSourceTool]
+    });
+
+    const failures: string[] = [];
+    const sourceCall = matchingContinuationSourceCall(sourceResult);
+    if (sourceResult.finishReason !== "tool_call") failures.push(`continuation_source_finish_reason_not_tool_call:${sourceResult.finishReason}`);
+    if (!sourceCall) failures.push("continuation_source_tool_missing_or_invalid");
+    if ((sourceResult.toolCalls?.length ?? 0) !== 1) failures.push(`continuation_source_tool_call_count:${sourceResult.toolCalls?.length ?? 0}`);
+    if (sourceResult.content && /<tool_call\b|<function=|<parameter=/i.test(sourceResult.content)) failures.push("continuation_source_textual_tool_protocol_exposed");
+    if (hiddenReasoningExposed(sourceResult)) failures.push("continuation_source_hidden_reasoning_exposed");
+    if (sourceResult.modelVersionId !== profile.modelVersionId) failures.push(`continuation_source_model_version_mismatch:${sourceResult.modelVersionId}`);
+    if (!sourceCall) return { failures, modelVersionId: sourceResult.modelVersionId };
+
     const result = await adapter.generate({
       requestId: `conformance-continuation-${seed}`,
       alias,
@@ -192,19 +232,19 @@ export async function runModelConformance(
       messages: [
         {
           role: "system",
-          content: "This is a tool-result continuation protocol probe, not a date/time question. The immediately preceding tool message is authoritative. Call record_tool_result and copy only its continuationToken field value verbatim into the continuationToken argument. Do not use or derive any other value."
+          content: "This is a neutral tool-result continuation protocol probe. The immediately preceding tool message is authoritative. Call record_tool_result and copy only its continuationToken field value verbatim into the continuationToken argument. Do not derive, transform, normalize, or replace it."
         },
-        { role: "user", content: toolUserPrompt },
-        { role: "assistant", content: "", toolCalls: [acceptedToolCall] },
-        { role: "tool", name: currentTimeTool.name, toolCallId: acceptedToolCall.id, content: JSON.stringify({ continuationToken }) },
+        { role: "user", content: sourcePrompt },
+        { role: "assistant", content: "", toolCalls: [sourceCall] },
+        { role: "tool", name: continuationSourceTool.name, toolCallId: sourceCall.id, content: JSON.stringify({ continuationToken }) },
         {
           role: "user",
-          content: "Read the continuationToken field from the immediately preceding tool message and call record_tool_result now. Copy that exact string character-for-character. Do not answer with time, do not invent a value, and do not normalize it."
+          content: "Read the continuationToken field from the immediately preceding tool message and call record_tool_result now. Copy that exact opaque string character-for-character."
         }
       ],
       tools: [recordToolResultTool]
     });
-    const failures: string[] = [];
+
     const continuationCall = matchingContinuationCall(result, continuationToken);
     if (result.finishReason !== "tool_call") failures.push(`continuation_finish_reason_not_tool_call:${result.finishReason}`);
     if (!continuationCall) {
