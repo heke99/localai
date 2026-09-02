@@ -52,13 +52,8 @@ trap cleanup EXIT
 log "fetching pinned ProjectDiscovery template commit=$TEMPLATE_COMMIT"
 git -C "$worktree" init -q
 git -C "$worktree" remote add origin "$TEMPLATE_REPO"
-git -C "$worktree" config core.sparseCheckout true
-mkdir -p "$worktree/.git/info"
-{
-  printf '/http/\n'
-  printf '!/http/*/\n'
-  for dir in "${SAFE_DIRS[@]}"; do printf '/http/%s/\n' "$dir"; done
-} > "$worktree/.git/info/sparse-checkout"
+git -C "$worktree" sparse-checkout init --cone
+git -C "$worktree" sparse-checkout set "${SAFE_DIRS[@]/#/http/}"
 git -C "$worktree" fetch --depth=1 --no-tags origin "$TEMPLATE_COMMIT"
 actual_commit="$(git -C "$worktree" rev-parse FETCH_HEAD)"
 [[ "$actual_commit" == "$TEMPLATE_COMMIT" ]] || fatal "template commit verification failed expected=$TEMPLATE_COMMIT actual=$actual_commit"
