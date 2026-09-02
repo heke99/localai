@@ -18,7 +18,7 @@ const defaultModelTimeoutMs = 120_000;
 const defaultMaxToolIterations = 8;
 const maxMissingToolRecoveryAttempts = 1;
 
-const executionCommandPattern = /```(?:bash|sh|shell|zsh|powershell)?[\s\S]*?\b(?:curl|wget|nmap|dig|nslookup|ping)\b[\s\S]*?```/i;
+const executionCommandPattern = /```(?:bash|sh|shell|zsh|powershell)?[\s\S]*?\b(?:curl|wget|nmap|dig|nslookup|ping)\b/i;
 const executionIntentPattern = /\b(?:behöver|måste|ska|need|needs|must|will|going\s+to)\b[\s\S]{0,240}\b(?:bekräfta|verifiera|testa|köra|confirm|verify|check|test|run|execute)\b/i;
 
 function looksLikeUnstructuredExecution(content: string): boolean {
