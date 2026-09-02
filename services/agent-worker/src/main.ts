@@ -4,6 +4,7 @@ import type { ModelAdapter } from "@div3rsa/model-sdk";
 import { createInferenceAdapter, LlamaCppAdmissionController, modelProtocolProfileFromEnvironment } from "@div3rsa/model-gateway";
 import { AgentWorkerProcessor } from "./processor";
 import { SupabaseAgentQueue } from "./supabase-queue";
+import { withConversationHistoryRpcCompatibility } from "./conversation-history-availability";
 import { AgentKernelShadowQueue } from "./agent-kernel/shadow-queue";
 import { agentKernelConfigFromEnvironment } from "./agent-kernel/config";
 import { AgentKernelShadowProbeRunner } from "./agent-kernel/shadow-probe";
@@ -85,7 +86,8 @@ function errorDetail(error: unknown): string {
 }
 
 const supabase = createClient<Database>(required("SUPABASE_URL"), required("SUPABASE_SECRET_KEY"), { auth: { persistSession: false, autoRefreshToken: false } });
-const kernelStore = new SupabaseAgentKernelStore(supabase as unknown as AgentKernelStoreRpcClient);
+const historyRpcClient = withConversationHistoryRpcCompatibility(supabase as unknown as AgentKernelStoreRpcClient);
+const kernelStore = new SupabaseAgentKernelStore(historyRpcClient);
 const modelPort = numericEnvironment("DIV3RSA_MODEL_PORT", 8080);
 const modelParallel = Math.max(1, Math.floor(numericEnvironment("DIV3RSA_MODEL_PARALLEL", 4)));
 const workerConcurrency = boundedWorkerConcurrency(numericEnvironment("DIV3RSA_WORKER_CONCURRENCY", modelParallel), modelParallel);
@@ -133,7 +135,7 @@ const inferenceAdapter: ModelAdapter = routingMode === "registry"
   : directAdapter;
 const canaryAdapter: ModelAdapter = new AgentKernelActiveCanaryAdapter(inferenceAdapter, agentKernelConfig);
 const adapter: ModelAdapter = new VerifiedMemoryAdapter(canaryAdapter, kernelStore, verifiedMemoryEnabled);
-const baseQueue = new SupabaseAgentQueue(supabase);
+const baseQueue = new SupabaseAgentQueue(historyRpcClient as unknown as typeof supabase);
 const shadowProbeConfig = shadowProbeConfigFromEnvironment();
 const shadowProbeRunner = agentKernelConfig.enabled && agentKernelConfig.mode === "shadow"
   ? new AgentKernelShadowProbeRunner(shadowProbeConfig, { generate: (input) => inferenceAdapter.generate({ ...input, disableThinking: true }) })
