@@ -48,6 +48,13 @@ export interface SecurityExecutorCapabilitySnapshot {
   unavailable: Array<{ operation: SecurityOperationId; reason: "command_unavailable" | "wordlist_unavailable" }>;
 }
 
+interface ParsedTarget {
+  host: string;
+  url: URL | null;
+  pinnedAddress: string;
+  resolvedAddresses: string[];
+}
+
 interface ToolCommand {
   command: string;
   args: string[];
@@ -81,8 +88,7 @@ const TOOL_COMMANDS: Record<SecurityOperationId, string> = {
   content_discovery: "ffuf"
 };
 const ACTIVE_TOOLS = new Set<SecurityOperationId>(["port_scan", "template_scan", "content_discovery"]);
-const PASSIVE_TOOLS = new Set<SecurityOperationId>(["http_probe", "tls_probe", "dns_lookup"]);
-const ALL_TOOLS = new Set<SecurityOperationId>([...PASSIVE_TOOLS, ...ACTIVE_TOOLS]);
+const ALL_TOOLS = new Set<SecurityOperationId>(TOOL_ORDER);
 const SAFE_ENV_KEYS = ["PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR"] as const;
 
 function normalizeHost(value: string): string {
@@ -118,8 +124,7 @@ function secretMatches(value: string | undefined, expected: string | null | unde
 }
 
 function readinessLoopbackAllowed(request: SecurityExecutorRequest, readinessToken: string | null | undefined): boolean {
-  return request.scope.scopeId === "security-readiness-scope"
-    && secretMatches(request.scope.readinessProof, readinessToken);
+  return request.scope.scopeId === "security-readiness-scope" && secretMatches(request.scope.readinessProof, readinessToken);
 }
 
 function infrastructureBlocked(address: string, allowReadinessLoopback = false): boolean {
@@ -129,7 +134,7 @@ function infrastructureBlocked(address: string, allowReadinessLoopback = false):
   }
   if (isIP(address) === 6) {
     const value = address.toLowerCase();
-    return value === "::" || value === "::1" || /^fe[89ab]/.test(value);
+    return value === "::" || (value === "::1" && !allowReadinessLoopback) || /^fe[89ab]/.test(value) || /^ff/.test(value);
   }
   const host = normalizeHost(address);
   return host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host === "metadata.google.internal";
@@ -140,8 +145,7 @@ function targetParts(input: string): { host: string; url: URL | null } {
   if (!value || value.length > 2048 || /[\u0000-\u001f\u007f]/.test(value)) throw new Error("invalid_security_target");
   if (/^https?:\/\//i.test(value)) {
     const url = new URL(value);
-    if (url.username || url.password) throw new Error("invalid_security_target");
-    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("invalid_security_target");
+    if (url.username || url.password || (url.protocol !== "http:" && url.protocol !== "https:")) throw new Error("invalid_security_target");
     return { host: normalizeHost(url.hostname), url };
   }
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) throw new Error("invalid_security_target");
@@ -178,11 +182,27 @@ async function defaultFileReadable(path: string): Promise<boolean> {
   }
 }
 
-async function enforceScope(request: SecurityExecutorRequest, resolveHost: (hostname: string) => Promise<string[]>, readinessToken: string | null | undefined): Promise<{ host: string; url: URL | null }> {
+function stablePinnedAddress(addresses: string[]): string {
+  const unique = [...new Set(addresses)];
+  unique.sort((a, b) => {
+    const familyDifference = isIP(b) - isIP(a);
+    return familyDifference || a.localeCompare(b);
+  });
+  const address = unique[0];
+  if (!address || !isIP(address)) throw new Error("security_target_dns_failed");
+  return address;
+}
+
+async function enforceScope(
+  request: SecurityExecutorRequest,
+  resolveHost: (hostname: string) => Promise<string[]>,
+  readinessToken: string | null | undefined
+): Promise<ParsedTarget> {
   if (!request.scope?.scopeId) throw new Error("security_scope_required");
   if (!ALL_TOOLS.has(request.tool as SecurityOperationId)) throw new Error("security_tool_not_allowlisted");
   const expectedClass: SecurityExecutionClass = ACTIVE_TOOLS.has(request.tool as SecurityOperationId) ? "active" : "passive";
   if (request.executionClass !== expectedClass) throw new Error("security_execution_class_mismatch");
+
   const parsed = targetParts(request.target);
   const allowReadinessLoopback = readinessLoopbackAllowed(request, readinessToken);
   if (infrastructureBlocked(parsed.host, allowReadinessLoopback)) throw new Error("security_target_blocked");
@@ -195,13 +215,15 @@ async function enforceScope(request: SecurityExecutorRequest, resolveHost: (host
     throw new Error("security_target_dns_failed");
   }
   if (!addresses.length) throw new Error("security_target_dns_failed");
+
   for (const address of addresses) {
-    if (infrastructureBlocked(address, allowReadinessLoopback)) throw new Error("security_target_blocked");
+    if (!isIP(address) || infrastructureBlocked(address, allowReadinessLoopback)) throw new Error("security_target_blocked");
     if (isIP(address) === 4 && /^10\.|^192\.168\.|^172\.(?:1[6-9]|2\d|3[01])\./.test(address)) {
       if (!request.scope.allowIpv4Cidrs.some((cidr) => ipv4InCidr(address, cidr))) throw new Error("security_private_resolution_out_of_scope");
     }
   }
-  return parsed;
+
+  return { ...parsed, pinnedAddress: stablePinnedAddress(addresses), resolvedAddresses: [...new Set(addresses)] };
 }
 
 function boundedTimeout(value: number): number {
@@ -226,51 +248,95 @@ function portsOption(options: Record<string, unknown>): string {
   return [...new Set(ports)].join(",");
 }
 
-function targetUrl(parsed: { host: string; url: URL | null }): string {
+function targetPort(parsed: ParsedTarget): string {
+  if (parsed.url?.port) return parsed.url.port;
+  return parsed.url?.protocol === "http:" ? "80" : "443";
+}
+
+function bracketIpv6(address: string): string {
+  return isIP(address) === 6 ? `[${address}]` : address;
+}
+
+function curlResolveAddress(address: string): string {
+  return isIP(address) === 6 ? `[${address}]` : address;
+}
+
+function targetUrl(parsed: ParsedTarget): string {
   return parsed.url?.toString() ?? `https://${parsed.host}/`;
 }
 
-function commandFor(request: SecurityExecutorRequest, parsed: { host: string; url: URL | null }, wordlistPath: string | null): ToolCommand {
+function pinnedUrl(parsed: ParsedTarget): string {
+  const source = parsed.url ? new URL(parsed.url.toString()) : new URL(`https://${parsed.host}/`);
+  source.hostname = bracketIpv6(parsed.pinnedAddress);
+  return source.toString();
+}
+
+function virtualHostHeader(parsed: ParsedTarget): string {
+  const port = parsed.url?.port;
+  return port ? `${parsed.host}:${port}` : parsed.host;
+}
+
+function commandFor(request: SecurityExecutorRequest, parsed: ParsedTarget, wordlistPath: string | null): ToolCommand {
   const timeoutSeconds = Math.max(1, Math.ceil(boundedTimeout(request.timeoutMs) / 1000));
+  const port = targetPort(parsed);
   switch (request.tool) {
     case "http_probe":
       return {
         command: "curl",
-        args: ["--silent", "--show-error", "--dump-header", "-", "--output", "/dev/null", "--max-redirs", "0", "--max-time", String(timeoutSeconds), "--proto", "=http,https", targetUrl(parsed)],
-        capability: "curl:http_probe"
+        args: [
+          "--silent", "--show-error", "--dump-header", "-", "--output", "/dev/null",
+          "--max-redirs", "0", "--max-time", String(timeoutSeconds), "--proto", "=http,https",
+          "--resolve", `${parsed.host}:${port}:${curlResolveAddress(parsed.pinnedAddress)}`,
+          targetUrl(parsed)
+        ],
+        capability: "curl:http_probe:dns_pinned"
       };
-    case "tls_probe": {
-      const port = parsed.url?.port || (parsed.url?.protocol === "http:" ? "80" : "443");
+    case "tls_probe":
       return {
         command: "openssl",
-        args: ["s_client", "-connect", `${parsed.host}:${port}`, "-servername", parsed.host, "-brief", "-no_ign_eof"],
-        capability: "openssl:tls_probe"
+        args: ["s_client", "-connect", `${bracketIpv6(parsed.pinnedAddress)}:${port}`, "-servername", parsed.host, "-brief", "-no_ign_eof"],
+        capability: "openssl:tls_probe:ip_pinned"
       };
-    }
     case "dns_lookup":
       return {
         command: "dig",
         args: ["+time=3", "+tries=1", "+noall", "+answer", parsed.host, "A"],
-        capability: "dig:dns_lookup"
+        capability: "dig:dns_lookup:scope_checked"
       };
     case "port_scan":
       return {
         command: "nmap",
-        args: ["-n", "-Pn", "-sT", "--max-retries", "1", "--max-rate", String(numberOption(request.options, "maxRate", 100, 1, 500)), "--host-timeout", `${timeoutSeconds}s`, "-p", portsOption(request.options), parsed.host],
-        capability: "nmap:bounded_connect_scan"
+        args: [
+          "-n", "-Pn", "-sT", "--max-retries", "1",
+          "--max-rate", String(numberOption(request.options, "maxRate", 100, 1, 500)),
+          "--host-timeout", `${timeoutSeconds}s`, "-p", portsOption(request.options), parsed.pinnedAddress
+        ],
+        capability: "nmap:bounded_connect_scan:ip_pinned"
       };
     case "template_scan":
       return {
         command: "nuclei",
-        args: ["-u", targetUrl(parsed), "-jsonl", "-silent", "-no-interactsh", "-disable-update-check", "-rate-limit", String(numberOption(request.options, "rateLimit", 20, 1, 50)), "-bulk-size", "5", "-concurrency", "5", "-timeout", "5", "-retries", "0", "-exclude-tags", "dos,fuzz,intrusive"],
-        capability: "nuclei:bounded_templates"
+        args: [
+          "-u", pinnedUrl(parsed), "-H", `Host: ${virtualHostHeader(parsed)}`, "-sni", parsed.host,
+          "-jsonl", "-silent", "-no-interactsh", "-disable-update-check", "-restrict-local-network-access",
+          "-disable-redirects", "-rate-limit", String(numberOption(request.options, "rateLimit", 20, 1, 50)),
+          "-bulk-size", "5", "-concurrency", "5", "-timeout", "5", "-retries", "0",
+          "-exclude-tags", "dos,fuzz,intrusive,headless"
+        ],
+        capability: "nuclei:bounded_templates:ip_pinned"
       };
     case "content_discovery":
       if (!wordlistPath) throw new Error("security_content_wordlist_required");
       return {
         command: "ffuf",
-        args: ["-s", "-w", wordlistPath, "-u", `${targetUrl(parsed).replace(/\/$/, "")}/FUZZ`, "-rate", String(numberOption(request.options, "rateLimit", 20, 1, 50)), "-t", "5", "-maxtime", String(timeoutSeconds), "-mc", "all", "-fc", "404", "-of", "json", "-o", "/dev/stdout"],
-        capability: "ffuf:bounded_content_discovery"
+        args: [
+          "-s", "-w", wordlistPath,
+          "-u", `${pinnedUrl(parsed).replace(/\/$/, "")}/FUZZ`,
+          "-H", `Host: ${virtualHostHeader(parsed)}`, "-sni", parsed.host,
+          "-rate", String(numberOption(request.options, "rateLimit", 20, 1, 50)), "-t", "5",
+          "-maxtime", String(timeoutSeconds), "-mc", "all", "-fc", "404", "-of", "json", "-o", "/dev/stdout"
+        ],
+        capability: "ffuf:bounded_content_discovery:ip_pinned"
       };
     default:
       throw new Error("security_tool_not_allowlisted");
@@ -384,7 +450,7 @@ function parseFindings(tool: string, stdout: string): SecurityFinding[] {
           title: typeof info.name === "string" ? info.name : typeof row["template-id"] === "string" ? String(row["template-id"]) : "Template match",
           evidence: { templateId: row["template-id"] ?? null, matchedAt: row["matched-at"] ?? row.host ?? null }
         });
-      } catch { /* retain raw stdout without manufacturing findings */ }
+      } catch { /* raw stdout remains available */ }
     }
     return findings.slice(0, 500);
   }
@@ -425,9 +491,7 @@ export class LinuxSecurityExecutor {
 
   async capabilities(): Promise<SecurityExecutorCapabilitySnapshot> {
     const commandState = new Map<string, boolean>();
-    for (const command of new Set(Object.values(TOOL_COMMANDS))) {
-      commandState.set(command, await this.commandAvailable(command));
-    }
+    for (const command of new Set(Object.values(TOOL_COMMANDS))) commandState.set(command, await this.commandAvailable(command));
     const operations: SecurityOperationId[] = [];
     const unavailable: SecurityExecutorCapabilitySnapshot["unavailable"] = [];
     const wordlistReady = this.options.wordlistPath ? await this.fileReadable(this.options.wordlistPath) : false;
@@ -467,7 +531,13 @@ export class LinuxSecurityExecutor {
     try {
       processResult = await executeProcess(command, timeoutMs, this.maxOutputBytes, this.spawnProcess, signal, this.terminateGraceMs);
     } catch (error) {
-      await writeAudit(this.options.auditLogPath, { auditId, startedAt, finishedAt: new Date().toISOString(), runId: request.runId, requestId: request.requestId, traceId: request.traceId, scopeId: request.scope.scopeId, tool: request.tool, executionClass: request.executionClass, target: request.target, requestHash, capability: command.capability, status: signal?.aborted ? "cancelled" : "error", error: error instanceof Error ? error.message : "security_executor_failed" });
+      await writeAudit(this.options.auditLogPath, {
+        auditId, startedAt, finishedAt: new Date().toISOString(), runId: request.runId, requestId: request.requestId,
+        traceId: request.traceId, scopeId: request.scope.scopeId, tool: request.tool, executionClass: request.executionClass,
+        target: request.target, pinnedAddress: parsed.pinnedAddress, resolvedAddresses: parsed.resolvedAddresses,
+        requestHash, capability: command.capability, status: signal?.aborted ? "cancelled" : "error",
+        error: error instanceof Error ? error.message : "security_executor_failed"
+      });
       throw error;
     }
     const findings = parseFindings(request.tool, processResult.stdout);
@@ -481,7 +551,14 @@ export class LinuxSecurityExecutor {
       auditId,
       capability: command.capability
     };
-    await writeAudit(this.options.auditLogPath, { auditId, startedAt, finishedAt: new Date().toISOString(), runId: request.runId, requestId: request.requestId, traceId: request.traceId, scopeId: request.scope.scopeId, tool: request.tool, executionClass: request.executionClass, target: request.target, requestHash, capability: command.capability, status: result.ok ? "completed" : "failed", exitCode: result.exitCode, durationMs: result.durationMs, findings: findings.length, outputHash: createHash("sha256").update(result.stdout).update("\0").update(result.stderr).digest("hex") });
+    await writeAudit(this.options.auditLogPath, {
+      auditId, startedAt, finishedAt: new Date().toISOString(), runId: request.runId, requestId: request.requestId,
+      traceId: request.traceId, scopeId: request.scope.scopeId, tool: request.tool, executionClass: request.executionClass,
+      target: request.target, pinnedAddress: parsed.pinnedAddress, resolvedAddresses: parsed.resolvedAddresses,
+      requestHash, capability: command.capability, status: result.ok ? "completed" : "failed", exitCode: result.exitCode,
+      durationMs: result.durationMs, findings: findings.length,
+      outputHash: createHash("sha256").update(result.stdout).update("\0").update(result.stderr).digest("hex")
+    });
     return result;
   }
 }
