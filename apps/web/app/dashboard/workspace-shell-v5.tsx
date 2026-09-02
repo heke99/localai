@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { DirectModelPanel } from "./direct-model-panel";
+import { SecurityScopePanel } from "./security-scope-panel";
 import { WorkspaceShellV4 } from "./workspace-shell-v4";
 import styles from "./workspace-shell-v3.module.css";
 
@@ -301,6 +302,7 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
 
   return <div data-mobile-ui data-mobile-history={mobileHistoryOpen ? "open" : "closed"}>
     <WorkspaceShellV4 {...props} />
+    <SecurityScopePanel projects={props.snapshot.projects ?? []} />
     <button
       type="button"
       onClick={openDirectModel}

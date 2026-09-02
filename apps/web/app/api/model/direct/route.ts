@@ -96,6 +96,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   }
 
+  // Lab is an execution mode, not a text-only persona. Keeping this rejection at
+  // the API boundary prevents hidden clients or stale UI from accidentally
+  // bypassing the agent/tool path. Legacy Direct-Lab conversations remain readable.
+  if (mode === "lab") {
+    return NextResponse.json({ error: "direct_lab_requires_agent" }, { status: 409 });
+  }
+
   const requestId = crypto.randomUUID();
   const traceId = request.headers.get("x-trace-id")?.trim() || crypto.randomUUID();
   const rpc = supabase as unknown as RpcClient;
@@ -117,7 +124,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "direct_model_access_failed", requestId }, { status: 403 });
     }
 
-    const alias = runtimeAliasForMode(mode as "chat" | "code" | "lab" | "research");
+    const alias = runtimeAliasForMode(mode as "chat" | "code" | "research");
     if (alias !== access.data.modelAlias) throw new Error("direct_model_alias_mismatch");
     const ensured = await ensureModelRuntime(alias);
     const endpoint = ensured.instance.endpoint.replace(/\/$/, "");
