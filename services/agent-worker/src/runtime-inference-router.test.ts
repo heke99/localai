@@ -14,7 +14,7 @@ function rpcClient(rows: Array<Record<string, unknown>>) {
 
 function adapter(endpoint: string, calls: string[], mode: "fail" | "ok" | "stream-fail-after-delta" = "ok"): ModelAdapter {
   return {
-    getCapabilities: () => new Set(["general"]),
+    getCapabilities: () => new Set(["general"] as const),
     estimateTokens: async () => 1,
     healthCheck: async () => ({ ok: true, latencyMs: 1 }),
     generate: async () => {
@@ -38,7 +38,7 @@ function adapter(endpoint: string, calls: string[], mode: "fail" | "ok" | "strea
 
 function scriptedAdapter(results: GenerateResult[], requests: GenerateRequest[]): ModelAdapter {
   return {
-    getCapabilities: () => new Set(["general", "tool_use"]),
+    getCapabilities: () => new Set(["general", "tool_use"] as const),
     estimateTokens: async () => 1,
     healthCheck: async () => ({ ok: true, latencyMs: 1 }),
     generate: async (input) => {
@@ -79,11 +79,11 @@ describe("RuntimeInferenceRouter", () => {
     expect(calls).toEqual(["https://gpu-a.example/v1"]);
   });
 
-  it("recovers a textual curl attempt into a structured tool call before anything is streamed", async () => {
+  it("recovers a truncated textual curl attempt into a structured tool call before anything is streamed", async () => {
     const { client } = rpcClient([rows[0]!]);
     const requests: GenerateRequest[] = [];
     const runtimeModel = scriptedAdapter([
-      { modelVersionId: "m", content: "Jag behöver bekräfta live.\n```bash\ncurl https://example.test\n```", finishReason: "stop", usage },
+      { modelVersionId: "m", content: "Jag behöver bekräfta live.\n```bash\ncurl https://example.test\n", finishReason: "stop", usage },
       { modelVersionId: "m", content: "", finishReason: "tool_call", toolCalls: [{ id: "call-1", name: "security_scan", input: { tool: "http_probe", target: "https://example.test" } }], usage }
     ], requests);
     const router = new RuntimeInferenceRouter(client, "key", fetch, () => runtimeModel);
