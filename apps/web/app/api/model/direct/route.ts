@@ -14,7 +14,10 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const modes = new Set(["chat", "code", "lab", "research"]);
+// Lab is intentionally agent-only. Security work requires scoped resources,
+// the agent loop and the isolated security executor; direct inference must never
+// accept Lab requests because it has no tool execution path.
+const modes = new Set(["chat", "code", "research"]);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type RpcClient = {
@@ -93,7 +96,7 @@ export async function POST(request: Request) {
   const mode = body?.mode?.trim() ?? "";
   const prompt = body?.prompt?.trim() ?? "";
   if (!uuidPattern.test(workspaceId) || (conversationId && !uuidPattern.test(conversationId)) || !modes.has(mode) || prompt.length < 1 || prompt.length > 100_000) {
-    return NextResponse.json({ error: "invalid_request" }, { status: 400 });
+    return NextResponse.json({ error: mode === "lab" ? "lab_requires_agent" : "invalid_request" }, { status: 400 });
   }
 
   const requestId = crypto.randomUUID();
@@ -117,7 +120,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "direct_model_access_failed", requestId }, { status: 403 });
     }
 
-    const alias = runtimeAliasForMode(mode as "chat" | "code" | "lab" | "research");
+    const alias = runtimeAliasForMode(mode as "chat" | "code" | "research");
     if (alias !== access.data.modelAlias) throw new Error("direct_model_alias_mismatch");
     const ensured = await ensureModelRuntime(alias);
     const endpoint = ensured.instance.endpoint.replace(/\/$/, "");

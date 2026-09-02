@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
-type Mode = "chat" | "code" | "lab" | "research";
+type Mode = "chat" | "code" | "research";
 type DirectMessage = { id: string; role: "user" | "assistant"; text: string; createdAt?: string };
 
 type ConversationResponse = {
@@ -22,7 +22,6 @@ type DirectResponse = {
 const modes: Array<{ value: Mode; label: string; detail: string }> = [
   { value: "chat", label: "Chat", detail: "ren modellchatt" },
   { value: "code", label: "Code", detail: "kodfokus utan repo-tools" },
-  { value: "lab", label: "Lab", detail: "modellkunskap utan pentest-tools" },
   { value: "research", label: "Research", detail: "modellkunskap utan webbsökning" }
 ];
 
@@ -48,6 +47,7 @@ function errorLabel(code: string | undefined) {
   if (code === "access_denied") return "Du saknar behörighet för det här modell-läget.";
   if (code === "conversation_busy") return "Den här chatten har redan en aktiv körning. Vänta tills den är klar.";
   if (code === "direct_model_schema_pending") return "Direct model-databasen håller på att uppdateras. Försök igen när releasen är klar.";
+  if (code === "lab_requires_agent") return "Lab kräver Agent-läget eftersom säkerhetsverktyg och scope körs där.";
   return "Direktkörningen misslyckades. Försök igen.";
 }
 
@@ -77,7 +77,7 @@ export function DirectModelPanel({ workspaceId, onExit }: { workspaceId: string;
           createdAt: item.created_at
         }))
         .filter((item) => item.text));
-      setError(null);
+      setError(body.conversation?.mode === "lab" ? "Den här äldre Direct Lab-chatten är skrivskyddad här. Fortsätt säkerhetsarbete i Agent-läget." : null);
     } catch {
       setError("Direct-chatten kunde inte laddas.");
     } finally {
@@ -107,7 +107,7 @@ export function DirectModelPanel({ workspaceId, onExit }: { workspaceId: string;
     setMessages([]);
     setPrompt("");
     setError(null);
-    setModelAlias(mode === "code" ? "code-prod" : mode === "lab" ? "lab-prod" : mode === "research" ? "research-prod" : "general-prod");
+    setModelAlias(mode === "code" ? "code-prod" : mode === "research" ? "research-prod" : "general-prod");
     window.history.pushState(window.history.state, "", directLocation(null));
   }
 
@@ -167,19 +167,24 @@ export function DirectModelPanel({ workspaceId, onExit }: { workspaceId: string;
     </header>
 
     <section style={{ width: "min(900px, calc(100% - 32px))", margin: "0 auto", padding: "24px 0 160px" }}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
         {modes.map((item) => <button
           key={item.value}
           type="button"
           disabled={Boolean(conversationId) || busy}
-          onClick={() => { setMode(item.value); setModelAlias(item.value === "code" ? "code-prod" : item.value === "lab" ? "lab-prod" : item.value === "research" ? "research-prod" : "general-prod"); }}
+          onClick={() => { setMode(item.value); setModelAlias(item.value === "code" ? "code-prod" : item.value === "research" ? "research-prod" : "general-prod"); }}
           title={conversationId ? "Läget låses när chatten har skapats" : item.detail}
           style={{ border: mode === item.value ? "1px solid #6c7482" : "1px solid #2c3037", background: mode === item.value ? "#23272e" : "#17191d", color: mode === item.value ? "#fff" : "#aeb2ba", borderRadius: 999, padding: "7px 11px", cursor: conversationId || busy ? "default" : "pointer", opacity: conversationId && mode !== item.value ? .45 : 1 }}
         >{item.label}</button>)}
         <span style={{ alignSelf: "center", marginLeft: 4, color: "#737984", fontSize: 12 }}>{modelAlias}</span>
       </div>
 
-      {!messages.length && !loading ? <div style={{ padding: "72px 0 24px", maxWidth: 660 }}>
+      <div style={{ marginBottom: 20, border: "1px solid #343943", background: "#17191d", borderRadius: 12, padding: "11px 13px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14 }}>
+        <span style={{ color: "#aeb3bc", fontSize: 12, lineHeight: 1.5 }}>Lab och pentest körs alltid via Agent så att scope, riktiga security-tools och audit-logg används.</span>
+        <button type="button" onClick={onExit} style={{ flexShrink: 0, border: "1px solid #596170", background: "#23272e", color: "#fff", borderRadius: 9, padding: "8px 10px", cursor: "pointer", fontSize: 12 }}>Öppna Agent Lab</button>
+      </div>
+
+      {!messages.length && !loading ? <div style={{ padding: "56px 0 24px", maxWidth: 660 }}>
         <h1 style={{ fontSize: "clamp(28px, 5vw, 50px)", lineHeight: 1.02, letterSpacing: "-.04em", margin: 0 }}>Kör modellen utan mellanlager.</h1>
         <p style={{ color: "#969ba5", lineHeight: 1.6, maxWidth: 580, marginTop: 18 }}>Det här går direkt till den aktiva Qwen-runtime:n. Ingen agent planerar, inga skills körs och inga GitHub/Supabase/Vercel-resurser skickas med. Använd Agent-läget när modellen ska göra saker.</p>
       </div> : null}

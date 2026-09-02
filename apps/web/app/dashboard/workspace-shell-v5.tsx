@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { DirectModelPanel } from "./direct-model-panel";
+import { LabScopePanel } from "./lab-scope-panel";
 import { WorkspaceShellV4 } from "./workspace-shell-v4";
 import styles from "./workspace-shell-v3.module.css";
 
@@ -188,7 +189,9 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
   }
 
   function exitDirectModel() {
-    window.history.pushState(window.history.state, "", dashboardLocation("chat"));
+    const activeLabel = document.activeElement instanceof HTMLButtonElement ? document.activeElement.textContent?.trim() : "";
+    const section = activeLabel === "Öppna Agent Lab" ? "lab" : "chat";
+    window.history.pushState(window.history.state, "", dashboardLocation(section));
     setDirectMode(false);
   }
 
@@ -301,6 +304,10 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
 
   return <div data-mobile-ui data-mobile-history={mobileHistoryOpen ? "open" : "closed"}>
     <WorkspaceShellV4 {...props} />
+    <LabScopePanel
+      projects={(props.snapshot.projects ?? []).map((project) => ({ id: project.id, name: project.name, mode: project.mode }))}
+      resources={(props.snapshot.available_resources ?? []).map((resource) => ({ id: resource.id, provider: resource.provider, resource_type: resource.resource_type, display_name: resource.display_name, metadata: resource.metadata }))}
+    />
     <button
       type="button"
       onClick={openDirectModel}
