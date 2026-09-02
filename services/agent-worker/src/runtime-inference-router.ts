@@ -135,11 +135,8 @@ export class RuntimeInferenceRouter implements ModelAdapter {
         endpoint,
         healthUrl: validEndpoint(row.health_url),
         routePriority: numberValue(row.route_priority, 100),
-        providerPriority: numberValue(row.provider_priority, 100),
-        providerKey,
-        externalId,
-        endpoint
-      }].map(({ providerKey: key, externalId: id, endpoint: target, healthUrl, routePriority, providerPriority }) => ({ providerKey: key, externalId: id, endpoint: target, healthUrl, routePriority, providerPriority }));
+        providerPriority: numberValue(row.provider_priority, 100)
+      }];
     }).sort((a, b) => a.routePriority - b.routePriority || a.providerPriority - b.providerPriority || a.providerKey.localeCompare(b.providerKey));
   }
 
