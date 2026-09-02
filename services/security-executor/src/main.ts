@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { LinuxSecurityExecutor, bearerMatches, type SecurityExecutorRequest } from "./pinned-runtime";
+import { LinuxSecurityExecutor, bearerMatches, type SecurityExecutorRequest } from "./runtime";
 
 const MAX_BODY_BYTES = 64 * 1024;
 
