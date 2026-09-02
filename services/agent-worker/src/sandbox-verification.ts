@@ -1,6 +1,12 @@
 import { execFile } from "node:child_process";
 import type { VerificationCheck, VerificationContext, VerificationResult } from "@div3rsa/agent-runtime";
-import { DockerSandboxBackend, type CommandRunner, type ExecutionResult } from "@div3rsa/sandbox-runtime";
+import {
+  DockerSandboxBackend,
+  ExternalSandboxBackend,
+  type CommandRunner,
+  type ExecutionResult,
+  type SandboxBackend
+} from "@div3rsa/sandbox-runtime";
 import type { PreparedRepositoryWorkspace } from "./repository-runtime";
 
 interface PackageManifest {
@@ -10,6 +16,8 @@ interface PackageManifest {
 }
 
 interface PlannedCommand { binary: string; args: string[]; label: string }
+
+type SandboxBackendMode = "external" | "docker";
 
 function defaultCommandRunner(binary: string, args: string[], options: { timeoutMs: number }): Promise<ExecutionResult> {
   const started = Date.now();
@@ -23,6 +31,12 @@ function defaultCommandRunner(binary: string, args: string[], options: { timeout
       resolve({ exitCode, stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), durationMs: Date.now() - started });
     });
   });
+}
+
+function configuredBackendMode(value = process.env.DIV3RSA_SANDBOX_BACKEND): SandboxBackendMode {
+  const normalized = value?.trim().toLowerCase() || "external";
+  if (normalized === "external" || normalized === "docker") return normalized;
+  throw new Error(`invalid_sandbox_backend:${value}`);
 }
 
 function rootPackage(workspace: PreparedRepositoryWorkspace): PackageManifest | null {
@@ -80,20 +94,31 @@ function planCommand(check: VerificationCheck, workspace: PreparedRepositoryWork
 }
 
 export class SandboxVerificationRuntime {
-  private readonly backend: DockerSandboxBackend;
+  private readonly backend: SandboxBackend;
+  private readonly backendMode: SandboxBackendMode;
   private readonly cache = new Map<string, Promise<ExecutionResult>>();
 
-  constructor(private readonly imageDigest: string | null, runner: CommandRunner = defaultCommandRunner) {
-    this.backend = new DockerSandboxBackend(runner);
+  constructor(
+    private readonly imageDigest: string | null,
+    runner: CommandRunner = defaultCommandRunner,
+    backendMode: SandboxBackendMode = configuredBackendMode(),
+    runnerBinary = process.env.DIV3RSA_SANDBOX_RUNNER?.trim() || "div3rsa-sandbox-runner"
+  ) {
+    this.backendMode = backendMode;
+    this.backend = backendMode === "docker"
+      ? new DockerSandboxBackend(runner)
+      : new ExternalSandboxBackend(runner, runnerBinary);
   }
 
   async run(check: VerificationCheck, context: VerificationContext, workspace: PreparedRepositoryWorkspace | null): Promise<VerificationResult | null> {
     if (!workspace) return null;
     const command = planCommand(check, workspace, context);
     if (!command) return null;
-    if (!this.imageDigest) return { kind: check.kind, status: check.required ? "blocked" : "skipped", summary: "Sandbox image digest is not configured." };
+    if (this.backendMode === "docker" && !this.imageDigest) {
+      return { kind: check.kind, status: check.required ? "blocked" : "skipped", summary: "Docker compatibility backend was explicitly selected but no sandbox image digest is configured." };
+    }
 
-    const key = `${workspace.revision}:${command.binary}:${command.args.join("\u0000")}`;
+    const key = `${this.backend.kind}:${workspace.revision}:${command.binary}:${command.args.join("\u0000")}`;
     let pending = this.cache.get(key);
     if (!pending) {
       pending = this.backend.execute({
@@ -103,7 +128,7 @@ export class SandboxVerificationRuntime {
         memoryMb: check.kind === "browser-e2e" ? 8192 : 12288,
         ttlSeconds: check.kind === "browser-e2e" ? 1200 : 900,
         network: { default: "deny", allowHosts: [], allowCidrs: [] },
-        imageDigest: this.imageDigest,
+        ...(this.imageDigest ? { imageDigest: this.imageDigest } : {}),
         command: [command.binary, ...command.args],
         workspacePath: workspace.workspacePath
       });
@@ -112,10 +137,10 @@ export class SandboxVerificationRuntime {
 
     try {
       const result = await pending;
-      const evidence = [`sandbox:${workspace.revision}`, `command:${command.label}`, `exit:${result.exitCode}`];
-      if (result.exitCode === 0) return { kind: check.kind, status: "passed", summary: `${command.label} passed in isolated sandbox.`, evidence, durationMs: result.durationMs };
+      const evidence = [`sandbox:${this.backend.kind}:${workspace.revision}`, `command:${command.label}`, `exit:${result.exitCode}`];
+      if (result.exitCode === 0) return { kind: check.kind, status: "passed", summary: `${command.label} passed in isolated ${this.backend.kind} sandbox.`, evidence, durationMs: result.durationMs };
       const detail = (result.stderr || result.stdout).trim().slice(0, 1200);
-      return { kind: check.kind, status: "failed", summary: `${command.label} failed in isolated sandbox${detail ? `: ${detail}` : "."}`, evidence, durationMs: result.durationMs };
+      return { kind: check.kind, status: "failed", summary: `${command.label} failed in isolated ${this.backend.kind} sandbox${detail ? `: ${detail}` : "."}`, evidence, durationMs: result.durationMs };
     } catch (error) {
       return { kind: check.kind, status: check.required ? "blocked" : "skipped", summary: error instanceof Error ? error.message : "sandbox_execution_failed" };
     }
