@@ -10,16 +10,37 @@ import type {
 const executionCommandPattern = /```(?:bash|sh|shell|zsh|powershell)?[\s\S]*?\b(?:curl|wget|nmap|dig|nslookup|ping)\b/i;
 const executionIntentPattern = /\b(?:behöver|måste|ska|need|needs|must|will|going\s+to)\b[\s\S]{0,240}\b(?:bekräfta|verifiera|testa|köra|confirm|verify|check|test|run|execute)\b/i;
 
-function needsStructuredToolRecovery(result: GenerateResult): boolean {
+function looksLikeJsonToolEnvelope(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return false;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") return false;
+    const record = parsed as Record<string, unknown>;
+    const selector = typeof record.tool === "string"
+      ? record.tool.trim()
+      : typeof record.name === "string"
+        ? record.name.trim()
+        : "";
+    if (!selector) return false;
+    const parameters = record.parameters ?? record.arguments ?? record.input;
+    return Boolean(parameters && typeof parameters === "object" && !Array.isArray(parameters));
+  } catch {
+    return false;
+  }
+}
+
+function needsStructuredToolRecovery(request: GenerateRequest, result: GenerateResult): boolean {
   if (result.finishReason === "tool_call") return !result.toolCalls?.length;
+  if (request.tools !== undefined && looksLikeJsonToolEnvelope(result.content)) return true;
   return executionCommandPattern.test(result.content) && executionIntentPattern.test(result.content);
 }
 
 function recoveryRequest(request: GenerateRequest, result: GenerateResult): GenerateRequest {
   const availableTools = request.tools?.map((tool) => tool.name) ?? [];
   const instruction = availableTools.length > 0
-    ? `Runtime recovery: the previous response implied live execution but did not emit a valid structured tool call. Do not claim any command was executed. Use one of the exposed structured tools when execution is needed. Available tools: ${availableTools.join(", ")}. If none can perform the requested action, explicitly report TOOL_UNAVAILABLE and continue without fabricated live results.`
-    : "Runtime recovery: no execution tools are exposed for this turn. Do not claim any displayed command was executed. Explicitly report TOOL_UNAVAILABLE and continue with non-executed analysis.";
+    ? `Runtime recovery: the previous response implied live execution but did not emit a valid structured tool call. Do not claim any command was executed and do not print JSON pseudo-tool envelopes such as {"tool":"...","parameters":{...}}. Emit a native function/tool call using one of the exposed structured tools when execution is needed. Available tools: ${availableTools.join(", ")}. Use only fields allowed by the selected tool schema; generation controls such as max_output_tokens are not tool parameters unless the schema explicitly defines them. If none can perform the requested action, explicitly report TOOL_UNAVAILABLE and continue without fabricated live results.`
+    : "Runtime recovery: no execution tools are exposed for this turn. Do not claim any displayed command or JSON pseudo-tool envelope was executed. Explicitly report TOOL_UNAVAILABLE and continue with non-executed analysis.";
 
   return {
     ...request,
@@ -46,9 +67,9 @@ function mergeUsage(first: GenerateResult, second: GenerateResult): GenerateResu
 
 /**
  * Prevents an execution-looking textual response from bypassing the native tool
- * loop. It never parses or executes shell text. The model gets one bounded
- * recovery turn to emit an exposed structured tool call or state that execution
- * is unavailable.
+ * loop. It never parses shell text into execution and never executes JSON pseudo
+ * tool envelopes. The model gets one bounded recovery turn to emit an exposed
+ * structured tool call or state that execution is unavailable.
  */
 export class ToolCallRecoveryAdapter implements ModelAdapter {
   constructor(private readonly inner: ModelAdapter) {}
@@ -67,17 +88,18 @@ export class ToolCallRecoveryAdapter implements ModelAdapter {
 
   async generate(request: GenerateRequest): Promise<GenerateResult> {
     const first = await this.inner.generate(request);
-    if (!needsStructuredToolRecovery(first)) return first;
+    if (!needsStructuredToolRecovery(request, first)) return first;
 
-    const second = await this.inner.generate(recoveryRequest(request, first));
-    if (needsStructuredToolRecovery(second)) throw new Error("tool_call_required_but_missing");
+    const secondRequest = recoveryRequest(request, first);
+    const second = await this.inner.generate(secondRequest);
+    if (needsStructuredToolRecovery(secondRequest, second)) throw new Error("tool_call_required_but_missing");
     return mergeUsage(first, second);
   }
 
   async generateStreamed(request: GenerateRequest, onDelta: ModelStreamDeltaHandler): Promise<GenerateResult> {
     // A tool-enabled turn must be validated before visible streaming. Otherwise
-    // a malformed textual curl response has already escaped to the UI before the
-    // runtime can turn it into a structured tool call.
+    // malformed textual execution or a JSON pseudo-tool envelope has already
+    // escaped to the UI before the runtime can recover it into a native call.
     if (request.tools !== undefined) {
       const result = await this.generate(request);
       if (result.content) await onDelta(result.content);
