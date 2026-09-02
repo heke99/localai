@@ -7,7 +7,10 @@ fatal() { log "$*" >&2; exit 1; }
 PORT="${DIV3RSA_SECURITY_EXECUTOR_PORT:-7319}"
 BASE_URL="${DIV3RSA_SECURITY_EXECUTOR_URL:-http://127.0.0.1:${PORT}}"
 ENV_FILE="${DIV3RSA_SECURITY_ENV_FILE:-/etc/div3rsa/security-executor.env}"
-TARGET="${DIV3RSA_SECURITY_E2E_TARGET:-}"
+# Vercel project localai-web owns system.div3rsa.com. Keep the production E2E
+# passive by default: DNS + HTTP only. Set the variable explicitly to an empty
+# string to disable external probing in a non-production/manual environment.
+TARGET="${DIV3RSA_SECURITY_E2E_TARGET-https://system.div3rsa.com}"
 ACTIVE="${DIV3RSA_SECURITY_E2E_ACTIVE:-0}"
 ACTIVE_PORTS="${DIV3RSA_SECURITY_E2E_ACTIVE_PORTS:-80,443,8080,8443}"
 TOKEN="${DIV3RSA_SECURITY_EXECUTOR_TOKEN:-}"
@@ -43,8 +46,7 @@ blocked_status="$(curl --silent --output "${blocked_response}" --write-out '%{ht
 log "scope/infrastructure denial passed"
 
 if [[ -z "${TARGET}" ]]; then
-  log "controlled positive target not configured; negative gates complete"
-  log "set DIV3RSA_SECURITY_E2E_TARGET to an owned/authorized host for live positive probes"
+  log "controlled positive target explicitly disabled; negative gates complete"
   exit 0
 fi
 
@@ -78,7 +80,7 @@ if [[ "${ACTIVE}" == "1" ]]; then
   execute_probe port_scan active 15000 "$active_options"
   log "active bounded scan gate passed"
 else
-  log "active live probe skipped; set DIV3RSA_SECURITY_E2E_ACTIVE=1 only for an explicitly authorized test target"
+  log "active live probe skipped; passive external egress is sufficient for the production network gate"
 fi
 
 log "controlled security executor E2E passed for ${host}"
