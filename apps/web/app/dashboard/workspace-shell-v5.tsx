@@ -189,7 +189,9 @@ export function WorkspaceShellV5(props: WorkspaceShellV5Props) {
   }
 
   function exitDirectModel() {
-    window.history.pushState(window.history.state, "", dashboardLocation("chat"));
+    const activeLabel = document.activeElement instanceof HTMLButtonElement ? document.activeElement.textContent?.trim() : "";
+    const section = activeLabel === "Öppna Agent Lab" ? "lab" : "chat";
+    window.history.pushState(window.history.state, "", dashboardLocation(section));
     setDirectMode(false);
   }
 
