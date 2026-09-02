@@ -20,8 +20,8 @@ begin
   end if;
 
   for cidr_text in
-    select value
-    from jsonb_array_elements_text(coalesce(target_metadata->'allowIpv4Cidrs', '[]'::jsonb)) as value
+    select cidr_values.value
+    from jsonb_array_elements_text(coalesce(target_metadata->'allowIpv4Cidrs', '[]'::jsonb)) as cidr_values(value)
   loop
     begin
       parsed := trim(cidr_text)::cidr;
