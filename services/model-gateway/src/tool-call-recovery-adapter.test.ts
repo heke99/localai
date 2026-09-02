@@ -44,6 +44,41 @@ describe("ToolCallRecoveryAdapter", () => {
     expect(result.usage).toEqual({ inputTokens: 2, outputTokens: 2, cachedTokens: 0 });
   });
 
+  it.each(["web_search", "repository_read"])("recovers function-style text for registered tool %s", async (toolName) => {
+    const requests: GenerateRequest[] = [];
+    const request: GenerateRequest = {
+      ...baseRequest,
+      tools: [{ name: toolName, description: "Runtime tool", inputSchema: { type: "object" } }]
+    };
+    const adapter = new ToolCallRecoveryAdapter(scripted([
+      { modelVersionId: "m", content: `${toolName}({\"query\":\"status\"})`, finishReason: "stop", usage },
+      { modelVersionId: "m", content: "", finishReason: "tool_call", toolCalls: [{ id: `call-${toolName}`, name: toolName, input: { query: "status" } }], usage }
+    ], requests));
+
+    const result = await adapter.generate(request);
+
+    expect(result.finishReason).toBe("tool_call");
+    expect(result.toolCalls?.[0]?.name).toBe(toolName);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.messages.at(-1)?.content).toContain(toolName);
+    expect(requests[1]?.messages.at(-1)?.content).toContain("function-style pseudo calls");
+  });
+
+  it("does not recover a plain prose mention of a registered tool", async () => {
+    const requests: GenerateRequest[] = [];
+    const adapter = new ToolCallRecoveryAdapter(scripted([
+      { modelVersionId: "m", content: "The web_search tool is available for current information.", finishReason: "stop", usage }
+    ], requests));
+
+    const result = await adapter.generate({
+      ...baseRequest,
+      tools: [{ name: "web_search", description: "Search", inputSchema: { type: "object" } }]
+    });
+
+    expect(result.finishReason).toBe("stop");
+    expect(requests).toHaveLength(1);
+  });
+
   it("recovers the observed bare JSON web_fetch pseudo-call into a native tool call", async () => {
     const requests: GenerateRequest[] = [];
     const webRequest: GenerateRequest = {
@@ -121,5 +156,25 @@ describe("ToolCallRecoveryAdapter", () => {
 
     await expect(adapter.generate(baseRequest)).rejects.toThrow("tool_call_required_but_missing");
     expect(requests).toHaveLength(2);
+  });
+
+  it("fails closed on truncated model output instead of treating partial content as final", async () => {
+    const requests: GenerateRequest[] = [];
+    const adapter = new ToolCallRecoveryAdapter(scripted([
+      { modelVersionId: "m", content: "This answer is only partially gen", finishReason: "length", usage }
+    ], requests));
+
+    await expect(adapter.generate({ ...baseRequest, tools: [] })).rejects.toThrow("model_output_truncated");
+    expect(requests).toHaveLength(1);
+  });
+
+  it("fails closed on provider model errors instead of treating error content as final", async () => {
+    const requests: GenerateRequest[] = [];
+    const adapter = new ToolCallRecoveryAdapter(scripted([
+      { modelVersionId: "m", content: "provider error text", finishReason: "error", usage }
+    ], requests));
+
+    await expect(adapter.generate({ ...baseRequest, tools: [] })).rejects.toThrow("model_generation_failed");
+    expect(requests).toHaveLength(1);
   });
 });
