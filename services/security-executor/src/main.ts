@@ -74,7 +74,8 @@ const server = createServer(async (request, response) => {
       return json(response, capabilities.ready ? 200 : 503, {
         ok: capabilities.ready,
         service: "security-executor",
-        isolation: "allowlisted-process",
+        isolation: "scope-locked-native-process",
+        dnsPinning: true,
         capabilities
       });
     }

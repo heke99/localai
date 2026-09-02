@@ -1,0 +1,42 @@
+name: PR Runtime Security Check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/sandbox-runtime/**"
+      - "services/agent-worker/src/sandbox-verification.ts"
+      - "services/security-executor/**"
+      - ".github/workflows/pr-runtime-security-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck full workspace
+        run: npx tsc -p tsconfig.json --noEmit
+
+      - name: Run sandbox and native security runtime tests
+        run: npx vitest run packages/sandbox-runtime/src/index.test.ts services/security-executor/src/pinned-runtime.test.ts services/security-executor/src/runtime.test.ts
+
+      - name: Assert Lab security startup has no Docker dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -Eqi '\bdocker\b' infra/runtime/start-security-executor.sh
+          ! grep -Eqi '\bdocker\b' services/security-executor/src/main.ts
+          grep -Fq 'scope-locked-native-process' services/security-executor/src/main.ts
+          grep -Fq 'dnsPinning: true' services/security-executor/src/main.ts
