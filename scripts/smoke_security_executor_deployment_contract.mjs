@@ -9,6 +9,7 @@ const cutover = await readFile(new URL("../infra/runtime/cutover-security-runtim
 const nucleiInstaller = await readFile(new URL("../infra/runtime/install-nuclei-scoped-runtime.sh", import.meta.url), "utf8");
 const nucleiSnapshot = await readFile(new URL("../infra/runtime/provision-nuclei-template-snapshot.sh", import.meta.url), "utf8");
 const nucleiProxy = await readFile(new URL("../infra/runtime/security-assets/nuclei-scope-proxy.mjs", import.meta.url), "utf8");
+const nucleiWrapper = await readFile(new URL("../infra/runtime/security-assets/nuclei-wrapper.sh", import.meta.url), "utf8");
 const agentReadiness = await readFile(new URL("./eval_security_agent_gpuhub.ts", import.meta.url), "utf8");
 const workerSecurity = await readFile(new URL("../services/agent-worker/src/security-tool-runtime.ts", import.meta.url), "utf8");
 const executorRuntime = await readFile(new URL("../services/security-executor/src/runtime.ts", import.meta.url), "utf8");
@@ -22,6 +23,7 @@ function requireText(source, text, label) {
 for (const script of [
   "../infra/runtime/provision-nuclei-template-snapshot.sh",
   "../infra/runtime/install-nuclei-scoped-runtime.sh",
+  "../infra/runtime/security-assets/nuclei-wrapper.sh",
   "../infra/runtime/cutover-security-runtime-gpuhub.sh"
 ]) {
   execFileSync("bash", ["-n", new URL(script, import.meta.url).pathname], { stdio: "pipe" });
@@ -90,15 +92,24 @@ requireText(nucleiSnapshot, "chown -R root:div3rsa-security", "templates_read_on
 requireText(nucleiSnapshot, "source_commit=", "template_snapshot_manifest");
 
 requireText(nucleiInstaller, "nuclei-scope-proxy.mjs", "nuclei_scope_proxy_install");
-requireText(nucleiInstaller, "-proxy-internal", "nuclei_proxy_internal");
-requireText(nucleiInstaller, "-type http", "nuclei_http_only");
-requireText(nucleiInstaller, "-automatic-scan", "nuclei_technology_scoped_scan");
-requireText(nucleiInstaller, "-no-interactsh", "nuclei_interactsh_disabled");
-requireText(nucleiInstaller, "-disable-update-check", "nuclei_runtime_update_disabled");
-requireText(nucleiInstaller, "-disable-redirects", "nuclei_redirects_disabled");
-requireText(nucleiInstaller, "-exclude-tags dos,fuzz,intrusive,headless,credential-stuffing,token-spray", "nuclei_aggressive_tags_excluded");
-requireText(nucleiInstaller, "scope proxy failed readiness", "nuclei_proxy_fail_closed");
-if (nucleiInstaller.includes("--network host") || nucleiInstaller.includes("docker run")) throw new Error("security_deploy_contract_forbids_docker_nuclei_runtime");
+requireText(nucleiInstaller, "nuclei-wrapper.sh", "immutable_nuclei_wrapper_install");
+requireText(nucleiInstaller, "nuclei-runtime.env", "nuclei_runtime_config");
+requireText(nucleiInstaller, "bash -n \"$TOOLS_ROOT/bin/nuclei\"", "installed_wrapper_syntax_gate");
+requireText(nucleiInstaller, "root:div3rsa-security", "nuclei_runtime_assets_read_only");
+
+requireText(nucleiWrapper, "-proxy-internal", "nuclei_proxy_internal");
+requireText(nucleiWrapper, "-type http", "nuclei_http_only");
+requireText(nucleiWrapper, "-automatic-scan", "nuclei_technology_scoped_scan");
+requireText(nucleiWrapper, "-no-interactsh", "nuclei_interactsh_disabled");
+requireText(nucleiWrapper, "-disable-update-check", "nuclei_runtime_update_disabled");
+requireText(nucleiWrapper, "-disable-redirects", "nuclei_redirects_disabled");
+requireText(nucleiWrapper, "-exclude-tags dos,fuzz,intrusive,headless,credential-stuffing,token-spray", "nuclei_aggressive_tags_excluded");
+requireText(nucleiWrapper, "scope proxy failed readiness", "nuclei_proxy_fail_closed");
+requireText(nucleiWrapper, "-t \"$SNAPSHOT/cves\"", "nuclei_curated_cve_templates");
+requireText(nucleiWrapper, "-t \"$SNAPSHOT/vulnerabilities\"", "nuclei_curated_vulnerability_templates");
+if (`${nucleiInstaller}\n${nucleiWrapper}`.includes("--network host") || `${nucleiInstaller}\n${nucleiWrapper}`.includes("docker run")) {
+  throw new Error("security_deploy_contract_forbids_docker_nuclei_runtime");
+}
 
 requireText(nucleiProxy, "scope_proxy_pinned_ip_required", "proxy_requires_pinned_ip");
 requireText(nucleiProxy, "destinationAllowed", "proxy_destination_gate");
