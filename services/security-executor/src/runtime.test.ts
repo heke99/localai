@@ -54,7 +54,7 @@ describe("LinuxSecurityExecutor", () => {
     const executor = new LinuxSecurityExecutor({ resolveHost: async () => ["203.0.113.10"], spawnProcess: spawnProcess as never });
     const result = await executor.execute(request());
     expect(result.ok).toBe(true);
-    expect(result.capability).toBe("curl:http_probe");
+    expect(result.capability).toBe("curl:http_probe:dns_pinned");
     expect(result.auditId).toBeTruthy();
     expect(spawnProcess).toHaveBeenCalledOnce();
     expect(spawnProcess.mock.calls[0]?.[0]).toBe("curl");
