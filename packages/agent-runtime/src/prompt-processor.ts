@@ -171,7 +171,7 @@ function shouldUsePriorRoutingContext(currentPrompt: string): boolean {
   const words = currentPrompt.match(/[\p{L}\p{N}_-]+/gu) ?? [];
   if (words.length > 32) return false;
   if (/^(?:and|och)\b|\b(?:what about|how about|hur är det med|samma|same|ovan|above|previous|föregående|förra|continue|fortsätt|again|igen|as before|som tidigare|som ovan)\b/i.test(currentPrompt)) return true;
-  if (words.length <= 12 && /\b(?:it|that|those|them|det|den|detta|dem)\b/i.test(currentPrompt)) return true;
+  if (words.length <= 12 && /\b(?:it|this|that|those|them|det|den|detta|dem)\b/i.test(currentPrompt)) return true;
   return false;
 }
 
