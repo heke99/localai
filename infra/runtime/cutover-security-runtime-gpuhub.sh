@@ -71,7 +71,29 @@ for arg in "\$@"; do
     -version|-h|-help|--help) exec "\$REAL" "\$@" ;;
   esac
 done
-exec "\$REAL" -t "\$TEMPLATES" "\$@"
+
+# The executor itself is the authorization boundary for loopback readiness: it
+# only permits 127.0.0.1 when the exact deploy-only scope carries the matching
+# cryptographic readiness proof. Nuclei's generic local-network guard would
+# otherwise reject that already-authorized fixture before the readiness template
+# can run. Strip that single CLI guard only for the exact deterministic HTTP
+# readiness URL; every normal Lab target keeps the guard unchanged.
+readiness_target=false
+previous=""
+for arg in "\$@"; do
+  if [[ "\$previous" == "-u" && "\$arg" == "http://$TEST_IP:$TEST_PORT/" ]]; then
+    readiness_target=true
+  fi
+  previous="\$arg"
+done
+args=()
+for arg in "\$@"; do
+  if [[ "\$readiness_target" == "true" && "\$arg" == "-restrict-local-network-access" ]]; then
+    continue
+  fi
+  args+=("\$arg")
+done
+exec "\$REAL" -t "\$TEMPLATES" "\${args[@]}"
 EOF
 chmod 0755 "$TOOLS_ROOT/bin/nuclei"
 
