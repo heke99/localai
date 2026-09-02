@@ -6,6 +6,10 @@ import { ensureModelRuntime } from "../../../lib/runtime/production";
 const modes = new Set(["chat", "code", "lab", "research"]);
 type RpcClient = { rpc: <T>(name: string, args: Record<string, unknown>) => Promise<{ data: T | null; error: { message: string } | null }> };
 
+function schemaPending(message: string) {
+  return /project_security_scope_for_conversation|Could not find the function|PGRST202/i.test(message);
+}
+
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerClient();
   const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -13,7 +17,7 @@ export async function POST(request: Request) {
 
   const body = await request.json().catch(() => null) as { workspaceId?: string; conversationId?: string; mode?: string; prompt?: string; resourceIds?: string[] } | null;
   const prompt = body?.prompt?.trim() ?? "";
-  const resourceIds = Array.isArray(body?.resourceIds) ? [...new Set(body.resourceIds.filter((value): value is string => typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value)))].slice(0, 20) : [];
+  let resourceIds = Array.isArray(body?.resourceIds) ? [...new Set(body.resourceIds.filter((value): value is string => typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value)))].slice(0, 20) : [];
   if (!body?.workspaceId || !body.mode || !modes.has(body.mode) || prompt.length < 1 || prompt.length > 100_000 || (body.conversationId && !/^[0-9a-f-]{36}$/i.test(body.conversationId))) {
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   }
@@ -22,10 +26,26 @@ export async function POST(request: Request) {
   const traceId = request.headers.get("x-trace-id") ?? crypto.randomUUID();
   const rpc = supabase as unknown as RpcClient;
 
-  // start_agent_run already applies resource_ids transactionally for both new
-  // and existing conversations. Keeping resource selection and run creation in
-  // one RPC removes a full Supabase round trip from every submitted prompt and
-  // guarantees that the queued run sees the exact selected resource snapshot.
+  // Lab network authority never comes from prompt text. For project-bound Lab
+  // conversations, resolve the canonical security_scope resource server-side and
+  // force it into the exact resource snapshot used by start_agent_run.
+  if (body.mode === "lab" && body.conversationId) {
+    const scope = await rpc.rpc<string>("project_security_scope_for_conversation", {
+      target_conversation_id: body.conversationId
+    });
+    if (scope.error) {
+      if (schemaPending(scope.error.message)) {
+        return NextResponse.json({ error: "lab_scope_schema_pending", requestId }, { status: 503 });
+      }
+      const denied = /authentication_required|conversation_access_denied|permission_denied/.test(scope.error.message);
+      return NextResponse.json({ error: denied ? "resource_or_access_denied" : "lab_scope_lookup_failed", requestId }, { status: denied ? 403 : 500 });
+    }
+    if (scope.data) resourceIds = [scope.data, ...resourceIds.filter((id) => id !== scope.data)].slice(0, 20);
+  }
+
+  // start_agent_run applies resource_ids transactionally. This keeps the user's
+  // normal resources and the server-resolved Lab scope in one immutable run
+  // context; the worker cannot expand that authority later.
   const { data, error } = await rpc.rpc<Array<{ run_id: string; resolved_conversation_id: string }>>("start_agent_run", {
     workspace_id: body.workspaceId,
     conversation_id: body.conversationId ?? null,
