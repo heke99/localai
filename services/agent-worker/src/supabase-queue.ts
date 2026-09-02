@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { ImpactAnalysis, TaskAnalysis, VerificationPlan, VerificationReport } from "@div3rsa/agent-runtime";
+import { withPromptRoutingContext, type ImpactAnalysis, type TaskAnalysis, type VerificationPlan, type VerificationReport } from "@div3rsa/agent-runtime";
 import type { Database, Json } from "@div3rsa/db";
 import type { PreparedRepositoryWorkspace } from "./repository-runtime";
 import type { AgentQueue, AgentResourceContext, ClaimedRun } from "./processor";
@@ -27,6 +27,16 @@ function parseResourceContext(value: Json | undefined): AgentResourceContext[] {
     const capabilities = Array.isArray(item.capabilities) ? item.capabilities.filter((capability): capability is string => typeof capability === "string") : [];
     const metadata = item.metadata && !Array.isArray(item.metadata) && typeof item.metadata === "object" ? item.metadata as Record<string, unknown> : undefined;
     return [{ resourceId: item.resourceId, connectionId: item.connectionId, provider: item.provider, resourceType: item.resourceType, externalResourceId: item.externalResourceId, displayName: item.displayName, capabilities, metadata }];
+  });
+}
+
+function priorUserPrompts(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || Array.isArray(entry) || typeof entry !== "object") return [];
+    const record = entry as Record<string, unknown>;
+    if (record.role !== "user" || typeof record.content !== "string" || !record.content.trim()) return [];
+    return [record.content];
   });
 }
 
@@ -113,8 +123,33 @@ export class SupabaseAgentQueue implements AgentQueue {
     if (error) throw error;
     const row = data?.[0];
     if (!row) return null;
+    const { data: history, error: historyError } = await (this.client as unknown as UntypedRpcClient).rpc("worker_load_agent_conversation_history", {
+      target_request_id: row.request_id,
+      target_limit: 12
+    });
+    if (historyError) {
+      const errorCode = `agent_routing_history_read_failed:${historyError.message}`.slice(0, 160);
+      const retryable = /timeout|429|502|503|connection|unavailable/i.test(historyError.message);
+      const { error: failError } = await (this.client as unknown as UntypedRpcClient).rpc("worker_fail_agent_run", {
+        target_run_id: row.run_id,
+        target_job_id: row.job_id,
+        error_code: errorCode,
+        retryable
+      });
+      if (failError) throw new Error(`${errorCode};agent_routing_history_fail_persist_failed:${failError.message}`);
+      throw new Error(errorCode);
+    }
     const extended = row as typeof row & { resource_context?: Json };
-    return { jobId: row.job_id, runId: row.run_id, mode: row.mode as ClaimedRun["mode"], modelAlias: row.model_alias as ClaimedRun["modelAlias"], prompt: row.prompt, requestId: row.request_id, traceId: row.trace_id, resourceContext: parseResourceContext(extended.resource_context) };
+    return {
+      jobId: row.job_id,
+      runId: row.run_id,
+      mode: row.mode as ClaimedRun["mode"],
+      modelAlias: row.model_alias as ClaimedRun["modelAlias"],
+      prompt: withPromptRoutingContext(row.prompt, priorUserPrompts(history)),
+      requestId: row.request_id,
+      traceId: row.trace_id,
+      resourceContext: parseResourceContext(extended.resource_context)
+    };
   }
 
   async step(runId: string, kind: string, status: string, summary: string, state: Record<string, unknown> = {}): Promise<void> {
