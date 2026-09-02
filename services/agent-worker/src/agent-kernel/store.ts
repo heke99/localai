@@ -1,3 +1,4 @@
+import type { ModelMessage } from "@div3rsa/model-sdk";
 import type { AgentMemoryRecord } from "./verified-experience";
 import type { AgentTrajectory } from "./trajectory";
 import type { VerifiedKernelCheckpoint } from "./checkpoint-rewind";
@@ -9,6 +10,16 @@ export type AgentKernelStoreRpcClient = {
 
 function rpcError(name: string, error: { code?: string; message?: string } | null): Error {
   return new Error(`${name}_failed:${error?.code ?? "unknown"}:${(error?.message ?? "").slice(0, 300)}`);
+}
+
+function parseConversationHistory(value: unknown): ModelMessage[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || Array.isArray(entry) || typeof entry !== "object") return [];
+    const record = entry as Record<string, unknown>;
+    if ((record.role !== "user" && record.role !== "assistant") || typeof record.content !== "string" || !record.content.trim()) return [];
+    return [{ role: record.role, content: record.content } as ModelMessage];
+  });
 }
 
 export class SupabaseAgentKernelStore {
@@ -31,6 +42,17 @@ export class SupabaseAgentKernelStore {
     const { data, error } = await this.client.rpc<Record<string, unknown>>("worker_latest_verified_agent_kernel_checkpoint", { target_run_id: runId });
     if (error) throw rpcError("agent_kernel_checkpoint_read", error);
     return data;
+  }
+
+  async conversationHistory(requestId: string, limit = 60): Promise<ModelMessage[]> {
+    const normalizedRequestId = requestId.trim();
+    if (!normalizedRequestId) throw new Error("conversation_history_request_id_required");
+    const { data, error } = await this.client.rpc<unknown>("worker_load_agent_conversation_history", {
+      target_request_id: normalizedRequestId,
+      target_limit: Math.max(0, Math.min(80, Math.floor(limit)))
+    });
+    if (error) throw rpcError("agent_conversation_history_read", error);
+    return parseConversationHistory(data);
   }
 
   async upsertMemory(memory: AgentMemoryRecord): Promise<void> {
