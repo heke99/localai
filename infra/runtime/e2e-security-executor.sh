@@ -58,7 +58,9 @@ fi
 scope_json="$("${NODE_BIN}" -e 'const h=process.argv[1]; const ip=/^(?:\d{1,3}\.){3}\d{1,3}$/.test(h); process.stdout.write(JSON.stringify({scopeId:"security-e2e-controlled",allowHosts:ip?[]:[h],allowIpv4Cidrs:ip?[`${h}/32`]:[]}))' "${host}")"
 
 execute_probe() {
-  local tool="$1" class="$2" timeout="$3" options="${4:-{}}" payload response status
+  local tool="$1" class="$2" timeout="$3" options payload response status
+  options="${4:-}"
+  [[ -n "$options" ]] || options='{}'
   payload="$("${NODE_BIN}" -e 'const [tool,cls,target,timeout,scope,options]=process.argv.slice(1); process.stdout.write(JSON.stringify({runId:`e2e-${tool}`,requestId:`e2e-${tool}`,traceId:`e2e-${tool}`,tool,target,timeoutMs:Number(timeout),executionClass:cls,scope:JSON.parse(scope),options:JSON.parse(options)}))' "$tool" "$class" "$TARGET" "$timeout" "$scope_json" "$options")"
   response="$(mktemp)"
   status="$(curl --silent --output "$response" --write-out '%{http_code}' --max-time "$(( timeout / 1000 + 5 ))" -X POST -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' --data "$payload" "${BASE_URL}/v1/execute")"
