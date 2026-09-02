@@ -58,7 +58,13 @@ fi
 scope_json="$("${NODE_BIN}" -e 'const h=process.argv[1]; const ip=/^(?:\d{1,3}\.){3}\d{1,3}$/.test(h); process.stdout.write(JSON.stringify({scopeId:"security-e2e-controlled",allowHosts:ip?[]:[h],allowIpv4Cidrs:ip?[`${h}/32`]:[]}))' "${host}")"
 
 execute_probe() {
-  local tool="$1" class="$2" timeout="$3" options="${4:-{}}" payload response status
+  local tool="$1" class="$2" timeout="$3" options="${4:-}" payload response status
+  # Avoid `${4:-{}}`: the shell parses the closing brace of the literal object as
+  # the parameter-expansion delimiter and leaves a trailing `}`, producing `{}}`.
+  # Normalize the optional argument separately so the JSON passed to Node is exact.
+  if [[ -z "$options" ]]; then
+    options='{}'
+  fi
   payload="$("${NODE_BIN}" -e 'const [tool,cls,target,timeout,scope,options]=process.argv.slice(1); process.stdout.write(JSON.stringify({runId:`e2e-${tool}`,requestId:`e2e-${tool}`,traceId:`e2e-${tool}`,tool,target,timeoutMs:Number(timeout),executionClass:cls,scope:JSON.parse(scope),options:JSON.parse(options)}))' "$tool" "$class" "$TARGET" "$timeout" "$scope_json" "$options")"
   response="$(mktemp)"
   status="$(curl --silent --output "$response" --write-out '%{http_code}' --max-time "$(( timeout / 1000 + 5 ))" -X POST -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' --data "$payload" "${BASE_URL}/v1/execute")"
