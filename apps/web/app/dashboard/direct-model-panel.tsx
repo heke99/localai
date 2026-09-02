@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
 type Mode = "chat" | "code" | "lab" | "research";
+type SelectableMode = Exclude<Mode, "lab">;
 type DirectMessage = { id: string; role: "user" | "assistant"; text: string; createdAt?: string };
 
 type ConversationResponse = {
@@ -19,12 +20,19 @@ type DirectResponse = {
   error?: string;
 };
 
-const modes: Array<{ value: Mode; label: string; detail: string }> = [
+const allModes = new Set<Mode>(["chat", "code", "lab", "research"]);
+const selectableModes: Array<{ value: SelectableMode; label: string; detail: string }> = [
   { value: "chat", label: "Chat", detail: "ren modellchatt" },
   { value: "code", label: "Code", detail: "kodfokus utan repo-tools" },
-  { value: "lab", label: "Lab", detail: "modellkunskap utan pentest-tools" },
   { value: "research", label: "Research", detail: "modellkunskap utan webbsökning" }
 ];
+
+function directAlias(mode: Mode) {
+  if (mode === "code") return "code-prod";
+  if (mode === "lab") return "lab-prod";
+  if (mode === "research") return "research-prod";
+  return "general-prod";
+}
 
 function messageText(content: unknown) {
   if (typeof content === "string") return content.trim();
@@ -67,7 +75,11 @@ export function DirectModelPanel({ workspaceId, onExit }: { workspaceId: string;
       const response = await fetch(`/api/conversations/${encodeURIComponent(id)}`, { cache: "no-store" });
       const body = await response.json() as ConversationResponse;
       if (!response.ok || body.conversation?.id !== id) throw new Error(body.error ?? "conversation_load_failed");
-      if (body.conversation.mode && modes.some((item) => item.value === body.conversation?.mode)) setMode(body.conversation.mode as Mode);
+      if (body.conversation.mode && allModes.has(body.conversation.mode as Mode)) {
+        const loadedMode = body.conversation.mode as Mode;
+        setMode(loadedMode);
+        setModelAlias(directAlias(loadedMode));
+      }
       setMessages((body.messages ?? [])
         .filter((item) => item.role === "user" || item.role === "assistant")
         .map((item) => ({
@@ -103,11 +115,13 @@ export function DirectModelPanel({ workspaceId, onExit }: { workspaceId: string;
 
   function newConversation() {
     if (busy) return;
+    const nextMode: SelectableMode = mode === "lab" ? "chat" : mode;
     setConversationId(null);
     setMessages([]);
     setPrompt("");
     setError(null);
-    setModelAlias(mode === "code" ? "code-prod" : mode === "lab" ? "lab-prod" : mode === "research" ? "research-prod" : "general-prod");
+    setMode(nextMode);
+    setModelAlias(directAlias(nextMode));
     window.history.pushState(window.history.state, "", directLocation(null));
   }
 
@@ -168,20 +182,24 @@ export function DirectModelPanel({ workspaceId, onExit }: { workspaceId: string;
 
     <section style={{ width: "min(900px, calc(100% - 32px))", margin: "0 auto", padding: "24px 0 160px" }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
-        {modes.map((item) => <button
+        {selectableModes.map((item) => <button
           key={item.value}
           type="button"
           disabled={Boolean(conversationId) || busy}
-          onClick={() => { setMode(item.value); setModelAlias(item.value === "code" ? "code-prod" : item.value === "lab" ? "lab-prod" : item.value === "research" ? "research-prod" : "general-prod"); }}
+          onClick={() => { setMode(item.value); setModelAlias(directAlias(item.value)); }}
           title={conversationId ? "Läget låses när chatten har skapats" : item.detail}
           style={{ border: mode === item.value ? "1px solid #6c7482" : "1px solid #2c3037", background: mode === item.value ? "#23272e" : "#17191d", color: mode === item.value ? "#fff" : "#aeb2ba", borderRadius: 999, padding: "7px 11px", cursor: conversationId || busy ? "default" : "pointer", opacity: conversationId && mode !== item.value ? .45 : 1 }}
         >{item.label}</button>)}
         <span style={{ alignSelf: "center", marginLeft: 4, color: "#737984", fontSize: 12 }}>{modelAlias}</span>
       </div>
 
+      {mode === "lab" && conversationId ? <div role="note" style={{ marginBottom: 20, border: "1px solid #5a4a2c", background: "#211c13", color: "#e8d5aa", borderRadius: 10, padding: "11px 13px", fontSize: 13, lineHeight: 1.5 }}>
+        Den här äldre Direct-Lab-chatten har inga säkerhetsverktyg. För riktiga tester: gå tillbaka till Agent, öppna ett Lab-projekt och konfigurera “Lab scope”.
+      </div> : null}
+
       {!messages.length && !loading ? <div style={{ padding: "72px 0 24px", maxWidth: 660 }}>
         <h1 style={{ fontSize: "clamp(28px, 5vw, 50px)", lineHeight: 1.02, letterSpacing: "-.04em", margin: 0 }}>Kör modellen utan mellanlager.</h1>
-        <p style={{ color: "#969ba5", lineHeight: 1.6, maxWidth: 580, marginTop: 18 }}>Det här går direkt till den aktiva Qwen-runtime:n. Ingen agent planerar, inga skills körs och inga GitHub/Supabase/Vercel-resurser skickas med. Använd Agent-läget när modellen ska göra saker.</p>
+        <p style={{ color: "#969ba5", lineHeight: 1.6, maxWidth: 580, marginTop: 18 }}>Det här går direkt till den aktiva Qwen-runtime:n. Ingen agent planerar, inga skills körs och inga externa resurser skickas med. Använd Agent → Lab när modellen ska utföra ett auktoriserat säkerhetstest.</p>
       </div> : null}
 
       {loading ? <div style={{ color: "#8e939d", padding: "32px 0" }}>Laddar direct-chatten…</div> : null}
@@ -204,7 +222,7 @@ export function DirectModelPanel({ workspaceId, onExit }: { workspaceId: string;
           onFocus={() => { void fetch("/api/runtime/prewarm", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId, mode }), keepalive: true }).catch(() => undefined); }}
           disabled={busy}
           rows={3}
-          placeholder={busy ? "Qwen arbetar…" : "Skriv direkt till modellen…"}
+          placeholder={busy ? "Qwen arbetar…" : mode === "lab" ? "Äldre Direct-Lab saknar tools — använd Agent → Lab för tester" : "Skriv direkt till modellen…"}
           style={{ width: "100%", resize: "none", border: 0, outline: 0, background: "transparent", color: "#f1f2f3", font: "14px/1.5 inherit", padding: "6px 7px", boxSizing: "border-box" }}
         />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "5px 3px 0" }}>
