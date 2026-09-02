@@ -8,3 +8,7 @@ export function redactSensitiveText(value: string): string {
     .replace(apiKeyPattern, "$1[REDACTED]")
     .replace(jwtPattern, "[REDACTED_JWT]");
 }
+
+export function containsSensitiveText(value: string): boolean {
+  return redactSensitiveText(value) !== value;
+}
