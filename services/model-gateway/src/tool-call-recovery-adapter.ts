@@ -4,11 +4,25 @@ import type {
   ModelAdapter,
   ModelCapability,
   ModelHealth,
-  ModelStreamDeltaHandler
+  ModelStreamDeltaHandler,
+  ModelToolDefinition
 } from "@div3rsa/model-sdk";
 
 const executionCommandPattern = /```(?:bash|sh|shell|zsh|powershell)?[\s\S]*?\b(?:curl|wget|nmap|dig|nslookup|ping)\b/i;
 const executionIntentPattern = /\b(?:behöver|måste|ska|need|needs|must|will|going\s+to)\b[\s\S]{0,240}\b(?:bekräfta|verifiera|testa|köra|confirm|verify|check|test|run|execute)\b/i;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function looksLikeRegisteredToolInvocation(content: string, tools: readonly ModelToolDefinition[]): boolean {
+  if (!content || tools.length === 0) return false;
+  return tools.some((tool) => {
+    const name = tool.name.trim();
+    if (!name) return false;
+    return new RegExp(`(?:^|[^A-Za-z0-9_])${escapeRegExp(name)}\\s*\\(`, "m").test(content);
+  });
+}
 
 function looksLikeJsonToolEnvelope(content: string): boolean {
   const trimmed = content.trim();
@@ -30,8 +44,14 @@ function looksLikeJsonToolEnvelope(content: string): boolean {
   }
 }
 
+function assertCompleteModelResult(result: GenerateResult): void {
+  if (result.finishReason === "error") throw new Error("model_generation_failed");
+  if (result.finishReason === "length") throw new Error("model_output_truncated");
+}
+
 function needsStructuredToolRecovery(request: GenerateRequest, result: GenerateResult): boolean {
   if (result.finishReason === "tool_call") return !result.toolCalls?.length;
+  if (request.tools?.length && looksLikeRegisteredToolInvocation(result.content, request.tools)) return true;
   if (request.tools !== undefined && looksLikeJsonToolEnvelope(result.content)) return true;
   return executionCommandPattern.test(result.content) && executionIntentPattern.test(result.content);
 }
@@ -39,8 +59,8 @@ function needsStructuredToolRecovery(request: GenerateRequest, result: GenerateR
 function recoveryRequest(request: GenerateRequest, result: GenerateResult): GenerateRequest {
   const availableTools = request.tools?.map((tool) => tool.name) ?? [];
   const instruction = availableTools.length > 0
-    ? `Runtime recovery: the previous response implied live execution but did not emit a valid structured tool call. Do not claim any command was executed and do not print JSON pseudo-tool envelopes such as {"tool":"...","parameters":{...}}. Emit a native function/tool call using one of the exposed structured tools when execution is needed. Available tools: ${availableTools.join(", ")}. Use only fields allowed by the selected tool schema; generation controls such as max_output_tokens are not tool parameters unless the schema explicitly defines them. If none can perform the requested action, explicitly report TOOL_UNAVAILABLE and continue without fabricated live results.`
-    : "Runtime recovery: no execution tools are exposed for this turn. Do not claim any displayed command or JSON pseudo-tool envelope was executed. Explicitly report TOOL_UNAVAILABLE and continue with non-executed analysis.";
+    ? `Runtime recovery: the previous response implied live execution but did not emit a valid structured tool call. Do not claim any command was executed and do not print function-style pseudo calls or JSON pseudo-tool envelopes such as {"tool":"...","parameters":{...}}. Emit a native function/tool call using one of the exposed structured tools when execution is needed. Available tools: ${availableTools.join(", ")}. Use only fields allowed by the selected tool schema; generation controls such as max_output_tokens are not tool parameters unless the schema explicitly defines them. If none can perform the requested action, explicitly report TOOL_UNAVAILABLE and continue without fabricated live results.`
+    : "Runtime recovery: no execution tools are exposed for this turn. Do not claim any displayed command, function-style pseudo call, or JSON pseudo-tool envelope was executed. Explicitly report TOOL_UNAVAILABLE and continue with non-executed analysis.";
 
   return {
     ...request,
@@ -67,9 +87,10 @@ function mergeUsage(first: GenerateResult, second: GenerateResult): GenerateResu
 
 /**
  * Prevents an execution-looking textual response from bypassing the native tool
- * loop. It never parses shell text into execution and never executes JSON pseudo
- * tool envelopes. The model gets one bounded recovery turn to emit an exposed
- * structured tool call or state that execution is unavailable.
+ * loop. It never parses shell/function text into execution and never executes JSON
+ * pseudo tool envelopes. The model gets one bounded recovery turn to emit an
+ * exposed structured tool call or state that execution is unavailable. Truncated
+ * or provider-error generations fail closed instead of being treated as finals.
  */
 export class ToolCallRecoveryAdapter implements ModelAdapter {
   constructor(private readonly inner: ModelAdapter) {}
@@ -88,10 +109,12 @@ export class ToolCallRecoveryAdapter implements ModelAdapter {
 
   async generate(request: GenerateRequest): Promise<GenerateResult> {
     const first = await this.inner.generate(request);
+    assertCompleteModelResult(first);
     if (!needsStructuredToolRecovery(request, first)) return first;
 
     const secondRequest = recoveryRequest(request, first);
     const second = await this.inner.generate(secondRequest);
+    assertCompleteModelResult(second);
     if (needsStructuredToolRecovery(secondRequest, second)) throw new Error("tool_call_required_but_missing");
     return mergeUsage(first, second);
   }
