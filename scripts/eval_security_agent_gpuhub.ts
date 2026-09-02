@@ -19,6 +19,20 @@ interface Completion { content: string; modelVersionId: string; usage: Record<st
 interface SecurityExecution { call: ModelToolCall; output: Record<string, unknown>; }
 interface SecurityAttempt { call: ModelToolCall; error?: string; }
 
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, nested]) => [key, stableValue(nested)])
+  );
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right));
+}
+
 class EvalQueue implements AgentQueue {
   private claimed = false;
   completion: Completion | null = null;
@@ -43,7 +57,8 @@ class ExactReadinessSecurityRuntime implements WorkerToolRuntime {
   constructor(
     private readonly inner: SecurityToolRuntime,
     private readonly expectedTool: string,
-    private readonly expectedTarget: string
+    private readonly expectedTarget: string,
+    private readonly expectedOptions: Record<string, unknown>
   ) {}
 
   async list(run: ClaimedRun): Promise<ModelToolDefinition[]> {
@@ -76,6 +91,7 @@ class ExactReadinessSecurityRuntime implements WorkerToolRuntime {
       if (call.name !== "security_scan") throw new Error(`readiness_unexpected_tool_name:${call.name}`);
       if (call.input.tool !== this.expectedTool) throw new Error(`readiness_unexpected_tool_id:${String(call.input.tool)}`);
       if (call.input.target !== this.expectedTarget) throw new Error(`readiness_unexpected_target:${String(call.input.target)}`);
+      if (!sameJson(call.input.options ?? {}, this.expectedOptions)) throw new Error("readiness_unexpected_options");
       const output = await this.inner.execute(run, call) as Record<string, unknown>;
       this.executions.push({ call, output });
       return output;
@@ -87,13 +103,15 @@ class ExactReadinessSecurityRuntime implements WorkerToolRuntime {
 }
 
 class SecurityReadinessModelAdapter implements ModelAdapter {
-  readonly observations: Array<{ nativeToolCall: boolean; rawContent: string }> = [];
+  readonly observations: Array<{
+    validatedRequiredToolCall: boolean;
+    rawContent: string;
+    toolInput: Record<string, unknown> | null;
+  }> = [];
 
   constructor(
     private readonly inner: OpenAiCompatibleAdapter,
-    private readonly expectedTool: string,
-    private readonly expectedTarget: string,
-    private readonly expectedOptions: Record<string, unknown>
+    private readonly expectedTool: string
   ) {}
 
   getCapabilities(): ReadonlySet<ModelCapability> { return this.inner.getCapabilities(); }
@@ -117,39 +135,34 @@ class SecurityReadinessModelAdapter implements ModelAdapter {
     const securityEvidenceExists = request.messages.some((message) => message.role === "tool" && message.name === "security_scan");
     if (securityEvidenceExists) {
       return {
-        modelVersionId: "security-readiness-agent-bridge",
+        modelVersionId: "security-readiness-agent-verified",
         content: `SECURITY_RUNTIME_READY ${this.expectedTool}`,
         finishReason: "stop",
         usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0 }
       };
     }
 
-    const raw = await this.inner.generate({
+    // Exercise the same llama.cpp/Qwen forced-tool JSON-schema protocol that is
+    // advertised by the production runtime. The model must produce data that the
+    // adapter validates into a real ModelToolCall; this harness never fabricates
+    // a security_scan call on the model's behalf.
+    const result = await this.inner.generate({
       ...request,
+      requiredToolName: "security_scan",
       disableThinking: true,
       temperature: 0,
-      maxOutputTokens: Math.min(request.maxOutputTokens ?? 160, 160)
+      maxOutputTokens: Math.min(request.maxOutputTokens ?? 240, 240)
     });
-    const nativeSecurityCall = raw.finishReason === "tool_call"
-      ? raw.toolCalls?.find((call) => call.name === "security_scan")
+    const requiredCall = result.finishReason === "tool_call"
+      ? result.toolCalls?.find((call) => call.name === "security_scan")
       : undefined;
-    this.observations.push({ nativeToolCall: Boolean(nativeSecurityCall), rawContent: raw.content.slice(0, 240) });
-    if (nativeSecurityCall) return raw;
-
-    return {
-      ...raw,
-      content: "",
-      finishReason: "tool_call",
-      toolCalls: [{
-        id: `security-readiness-bridge-${randomUUID()}`,
-        name: "security_scan",
-        input: {
-          tool: this.expectedTool,
-          target: this.expectedTarget,
-          options: this.expectedOptions
-        }
-      }]
-    };
+    this.observations.push({
+      validatedRequiredToolCall: Boolean(requiredCall),
+      rawContent: result.content.slice(0, 240),
+      toolInput: requiredCall?.input ?? null
+    });
+    if (!requiredCall) throw new Error(`security_readiness_model_tool_call_missing:${this.expectedTool}`);
+    return result;
   }
 }
 
@@ -210,9 +223,10 @@ for (const test of cases) {
   const security = new ExactReadinessSecurityRuntime(
     new SecurityToolRuntime(new HttpSecurityToolExecutor(`${executorBaseUrl}/v1/execute`, executorToken)),
     test.tool,
-    test.target
+    test.target,
+    { ...test.options }
   );
-  const readinessAdapter = new SecurityReadinessModelAdapter(baseAdapter, test.tool, test.target, { ...test.options });
+  const readinessAdapter = new SecurityReadinessModelAdapter(baseAdapter, test.tool);
   const processor = new AgentWorkerProcessor(
     queue, { resolve: () => readinessAdapter }, `security-readiness-worker-${process.pid}`,
     { prepare: async () => ({ names: [], instructions: `SECURITY READINESS REQUIRED: the first model turn MUST call security_scan exactly once. Its JSON schema has already been narrowed to the exact production-readiness operation and target. This marker is reserved for the production readiness harness.` }) },
@@ -223,6 +237,7 @@ for (const test of cases) {
   const execution = security.executions.find((entry) => entry.call.input.tool === test.tool && entry.call.input.target === test.target);
   const failures: string[] = [];
   if (!readinessAdapter.observations.length) failures.push(`qwen_inference_not_observed:${test.tool}`);
+  if (!readinessAdapter.observations.some((observation) => observation.validatedRequiredToolCall)) failures.push(`validated_model_tool_call_missing:${test.tool}`);
   if (!queue.completion) failures.push(`run_not_completed:${queue.failure?.code ?? "unknown"}`);
   if (!execution) failures.push(`security_operation_not_executed:${test.tool}`);
   const output = execution?.output ?? {};
@@ -263,6 +278,6 @@ for (const [auditId, tool] of expectedAuditIds) {
   result.passed = failures.length === 0;
 }
 const passed = results.filter((result) => result.passed === true).length;
-const summary = { schemaVersion: 3, generatedAt: new Date().toISOString(), cases: results.length, passed, failed: results.length - passed, allowed: passed === results.length, results };
+const summary = { schemaVersion: 4, generatedAt: new Date().toISOString(), cases: results.length, passed, failed: results.length - passed, allowed: passed === results.length, results };
 console.log(JSON.stringify(summary, null, 2));
 if (!summary.allowed) process.exitCode = 2;
