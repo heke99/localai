@@ -20,23 +20,22 @@ set search_path=''
 as $$
 declare
   actor_id uuid := auth.uid();
-  workspace_id uuid;
   org_id uuid;
   project_mode text;
-  connection_id uuid;
-  resource_id uuid;
+  security_connection_id uuid;
+  security_resource_id uuid;
   scope_key text;
   normalized_hosts text[] := '{}'::text[];
   normalized_cidrs text[] := '{}'::text[];
   item text;
-  capabilities text[];
+  granted_capabilities text[];
 begin
   if actor_id is null then
     raise exception 'authentication_required' using errcode='42501';
   end if;
 
-  select p.workspace_id,w.organization_id,p.mode
-    into workspace_id,org_id,project_mode
+  select w.organization_id,p.mode
+    into org_id,project_mode
   from public.projects p
   join public.workspaces w on w.id=p.workspace_id
   where p.id=target_project_id
@@ -96,23 +95,19 @@ begin
 
   insert into internal.integration_connections(organization_id,provider,external_account_id,status,created_by)
   values(org_id,'security','lab-security-executor','ready',actor_id)
-  on conflict(organization_id,provider,external_account_id) do update
-    set status='ready'
-  returning id into connection_id;
+  on conflict(organization_id,provider,external_account_id) do update set status='ready'
+  returning id into security_connection_id;
 
   insert into internal.integration_capabilities(connection_id,capability,granted) values
-    (connection_id,'security.passive',true),
-    (connection_id,'security.active',true)
+    (security_connection_id,'security.passive',true),
+    (security_connection_id,'security.active',true)
   on conflict(connection_id,capability) do update set granted=true;
 
-  scope_key := encode(extensions.digest(
-    convert_to(array_to_string(normalized_hosts,',') || '|' || array_to_string(normalized_cidrs,','),'UTF8'),
-    'sha256'
-  ),'hex');
+  scope_key := md5(array_to_string(normalized_hosts,',') || '|' || array_to_string(normalized_cidrs,','));
 
   insert into internal.integration_resources(connection_id,resource_type,external_id,display_name,metadata,resource_status,updated_at)
   values(
-    connection_id,
+    security_connection_id,
     'security_scope',
     'scope:' || scope_key,
     trim(target_display_name),
@@ -125,27 +120,27 @@ begin
         metadata=excluded.metadata,
         resource_status='available',
         updated_at=now()
-  returning id into resource_id;
+  returning id into security_resource_id;
 
   insert into public.project_integration_resources(project_id,resource_id,enabled,created_by,updated_at)
-  values(target_project_id,resource_id,true,actor_id,now())
+  values(target_project_id,security_resource_id,true,actor_id,now())
   on conflict(project_id,resource_id) do update set enabled=true,updated_at=now();
 
-  delete from public.integration_resource_grants
-  where project_id=target_project_id and resource_id=resource_id;
+  delete from public.integration_resource_grants grants
+  where grants.project_id=target_project_id and grants.resource_id=security_resource_id;
 
-  capabilities := case when target_allow_active
+  granted_capabilities := case when target_allow_active
     then array['security.passive','security.active']::text[]
     else array['security.passive']::text[]
   end;
 
   insert into public.integration_resource_grants(project_id,resource_id,capability,granted,granted_by)
-  select target_project_id,resource_id,cap,true,actor_id from unnest(capabilities) cap
+  select target_project_id,security_resource_id,cap,true,actor_id from unnest(granted_capabilities) cap
   on conflict(project_id,resource_id,capability) do update set granted=true,granted_by=actor_id,updated_at=now();
 
   insert into audit.audit_events(organization_id,actor_user_id,event_type,target_type,target_id,outcome,metadata_redacted)
   values(
-    org_id,actor_id,'lab.security_scope.configured','integration_resource',resource_id::text,'success',
+    org_id,actor_id,'lab.security_scope.configured','integration_resource',security_resource_id::text,'success',
     jsonb_build_object(
       'project_id',target_project_id,
       'host_count',cardinality(normalized_hosts),
@@ -156,11 +151,11 @@ begin
 
   return jsonb_build_object(
     'projectId',target_project_id,
-    'resourceId',resource_id,
+    'resourceId',security_resource_id,
     'displayName',trim(target_display_name),
     'allowHosts',to_jsonb(normalized_hosts),
     'allowIpv4Cidrs',to_jsonb(normalized_cidrs),
-    'capabilities',to_jsonb(capabilities)
+    'capabilities',to_jsonb(granted_capabilities)
   );
 end;
 $$;
