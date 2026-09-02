@@ -1,4 +1,4 @@
-import type { GenerateRequest, GenerateResult, ModelAdapter, ModelAlias } from "@div3rsa/model-sdk";
+import type { GenerateRequest, GenerateResult, ModelAdapter, ModelAlias, ModelToolCall, ModelToolDefinition } from "@div3rsa/model-sdk";
 
 export type AgentMode = "chat" | "code" | "lab" | "research";
 export type RunStatus = "queued" | "planning" | "running" | "waiting_for_user" | "waiting_for_tool" | "verifying" | "retrying" | "completed" | "failed" | "cancelled" | "timed_out";
@@ -57,9 +57,43 @@ export interface RunRepository {
   isCancellationRequested(runId: string): Promise<boolean>;
 }
 
+export type ToolExecutionErrorCode = "TOOL_TIMEOUT" | "TOOL_UNAVAILABLE" | "TOOL_EXECUTION_FAILED";
+
+export interface AgentExecutionCapabilities {
+  httpRequests: boolean;
+  dns: boolean;
+  shell: boolean;
+  curl: boolean;
+  sandbox: boolean;
+  networkEgress: boolean;
+  targetAuthorizationContext: boolean;
+}
+
+export interface AgentToolExecutionResult {
+  ok: boolean;
+  output?: unknown;
+  error?: ToolExecutionErrorCode;
+  detail?: string;
+}
+
+export interface AgentToolExecutionContext {
+  request: AgentRunRequest;
+  runId: string;
+}
+
+export interface AgentToolRuntime {
+  definitions(context: AgentToolExecutionContext): readonly ModelToolDefinition[] | Promise<readonly ModelToolDefinition[]>;
+  capabilities?(context: AgentToolExecutionContext): Partial<AgentExecutionCapabilities> | Promise<Partial<AgentExecutionCapabilities>>;
+  execute(call: ModelToolCall, context: AgentToolExecutionContext, signal: AbortSignal): Promise<AgentToolExecutionResult>;
+}
+
 export interface RuntimeDependencies {
   model: ModelAdapter;
   runs: RunRepository;
+  tools?: AgentToolRuntime;
+  toolTimeoutMs?: number;
+  modelTimeoutMs?: number;
+  maxToolIterations?: number;
   now?: () => Date;
 }
 

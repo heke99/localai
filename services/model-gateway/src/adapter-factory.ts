@@ -3,6 +3,7 @@ import type { AdmissionController } from "./admission-control";
 import { GenericOpenAiCompatibleAdapter } from "./generic-openai-compatible-adapter";
 import { QwenRequiredToolRoutingAdapter } from "./qwen-required-tool-routing-adapter";
 import { QWEN_Q8, QWEN_RUNTIME_MODEL } from "./registry";
+import { ToolCallRecoveryAdapter } from "./tool-call-recovery-adapter";
 
 type Fetch = typeof fetch;
 type Environment = Record<string, string | undefined>;
@@ -65,28 +66,27 @@ export function modelProtocolProfileFromEnvironment(env: Environment = process.e
 
 export function createInferenceAdapter(options: InferenceAdapterFactoryOptions): ModelAdapter {
   const fetcher = options.fetcher ?? fetch;
-  if (options.profile.protocol === "generic-openai") {
-    return new GenericOpenAiCompatibleAdapter(
-      options.baseUrl,
-      options.apiKey,
-      {
-        runtimeModel: options.profile.runtimeModel,
-        modelVersionId: options.profile.modelVersionId,
-        capabilities: options.profile.capabilities
-      },
-      fetcher,
-      options.admission
-    );
-  }
+  const inner = options.profile.protocol === "generic-openai"
+    ? new GenericOpenAiCompatibleAdapter(
+        options.baseUrl,
+        options.apiKey,
+        {
+          runtimeModel: options.profile.runtimeModel,
+          modelVersionId: options.profile.modelVersionId,
+          capabilities: options.profile.capabilities
+        },
+        fetcher,
+        options.admission
+      )
+    : new QwenRequiredToolRoutingAdapter(
+        options.baseUrl,
+        options.apiKey,
+        options.profile,
+        fetcher,
+        options.admission
+      );
 
-  // Ordinary Qwen traffic stays on the hardened Strict/Execution/Security stack.
-  // Only explicit portable requiredToolName calls use llama.cpp's native tool
-  // protocol so prior assistant/tool messages remain grounded across turns.
-  return new QwenRequiredToolRoutingAdapter(
-    options.baseUrl,
-    options.apiKey,
-    options.profile,
-    fetcher,
-    options.admission
-  );
+  // Apply the same bounded native-tool recovery regardless of direct/registry
+  // routing and regardless of the underlying OpenAI-compatible model profile.
+  return new ToolCallRecoveryAdapter(inner);
 }

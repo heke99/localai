@@ -24,6 +24,9 @@ export type RuntimeInferenceRouterOptions = {
   reapIntervalMs?: number;
 };
 
+const executionCommandPattern = /```(?:bash|sh|shell|zsh|powershell)?[\s\S]*?\b(?:curl|wget|nmap|dig|nslookup|ping)\b/i;
+const executionIntentPattern = /\b(?:behöver|måste|ska|need|needs|must|will|going\s+to)\b[\s\S]{0,240}\b(?:bekräfta|verifiera|testa|köra|confirm|verify|check|test|run|execute)\b/i;
+
 function numberValue(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -42,6 +45,51 @@ function validEndpoint(value: unknown): string | null {
 
 function safeCode(error: unknown) {
   return error instanceof Error ? error.message.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 160) : "runtime_inference_failed";
+}
+
+function shouldMarkRouteFailed(error: unknown): boolean {
+  return !(error instanceof Error && error.message === "tool_call_required_but_missing");
+}
+
+function needsStructuredToolRecovery(result: GenerateResult): boolean {
+  if (result.finishReason === "tool_call") return !result.toolCalls?.length;
+  return executionCommandPattern.test(result.content) && executionIntentPattern.test(result.content);
+}
+
+function recoveryRequest(request: GenerateRequest, result: GenerateResult): GenerateRequest {
+  const availableTools = request.tools?.map((tool) => tool.name) ?? [];
+  const instruction = availableTools.length > 0
+    ? `Runtime recovery: the previous response implied live execution but did not emit a valid structured tool call. Do not claim any command was executed. Use exactly one of the exposed structured tools when execution is needed. Available tools: ${availableTools.join(", ")}. If none can perform the requested action, explicitly report TOOL_UNAVAILABLE and continue without fabricated live results.`
+    : "Runtime recovery: no execution tools are exposed for this turn. Do not claim any displayed command was executed. Explicitly report TOOL_UNAVAILABLE and continue with non-executed analysis.";
+  return {
+    ...request,
+    requestId: `${request.requestId}:tool-recovery`,
+    temperature: 0,
+    messages: [
+      ...request.messages,
+      { role: "assistant", content: result.content },
+      { role: "system", content: instruction }
+    ]
+  };
+}
+
+function withMergedUsage(first: GenerateResult, second: GenerateResult): GenerateResult {
+  return {
+    ...second,
+    usage: {
+      inputTokens: first.usage.inputTokens + second.usage.inputTokens,
+      outputTokens: first.usage.outputTokens + second.usage.outputTokens,
+      cachedTokens: first.usage.cachedTokens + second.usage.cachedTokens
+    }
+  };
+}
+
+async function generateWithToolRecovery(adapter: ModelAdapter, request: GenerateRequest): Promise<GenerateResult> {
+  const first = await adapter.generate(request);
+  if (!needsStructuredToolRecovery(first)) return first;
+  const second = await adapter.generate(recoveryRequest(request, first));
+  if (needsStructuredToolRecovery(second)) throw new Error("tool_call_required_but_missing");
+  return withMergedUsage(first, second);
 }
 
 export class RuntimeInferenceRouter implements ModelAdapter {
@@ -112,10 +160,10 @@ export class RuntimeInferenceRouter implements ModelAdapter {
     const failures: string[] = [];
     for (const route of routes) {
       try {
-        return await this.adapterFactory(route.endpoint).generate(request);
+        return await generateWithToolRecovery(this.adapterFactory(route.endpoint), request);
       } catch (error) {
         failures.push(`${route.providerKey}:${safeCode(error)}`);
-        await this.markFailed(route, error);
+        if (shouldMarkRouteFailed(error)) await this.markFailed(route, error);
       }
     }
     throw new Error(`runtime_inference_capacity_unavailable:${failures.join(",").slice(0, 500)}`);
@@ -129,8 +177,19 @@ export class RuntimeInferenceRouter implements ModelAdapter {
       let emitted = false;
       try {
         const adapter = this.adapterFactory(route.endpoint);
+        // Tool-enabled worker turns are deliberately buffered. This prevents a
+        // malformed "I'll run this" + shell snippet from reaching the UI before
+        // the runtime can recover it into a structured tool call.
+        if (request.tools !== undefined) {
+          const result = await generateWithToolRecovery(adapter, request);
+          if (result.content) {
+            emitted = true;
+            await onDelta(result.content);
+          }
+          return result;
+        }
         if (!adapter.generateStreamed) {
-          const result = await adapter.generate(request);
+          const result = await generateWithToolRecovery(adapter, request);
           if (result.content) {
             emitted = true;
             await onDelta(result.content);
@@ -142,7 +201,7 @@ export class RuntimeInferenceRouter implements ModelAdapter {
           await onDelta(delta);
         });
       } catch (error) {
-        await this.markFailed(route, error);
+        if (shouldMarkRouteFailed(error)) await this.markFailed(route, error);
         if (emitted) throw error;
         failures.push(`${route.providerKey}:${safeCode(error)}`);
       }

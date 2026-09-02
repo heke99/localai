@@ -47,6 +47,39 @@ describe("textual tool-call normalization", () => {
     expect(normalized.result.toolCalls?.[0]).toEqual({ id: "text-tool-call-0", name: "security_scan", input: { tool: "http_probe", target: "portal.localai.test", options: {} } });
   });
 
+  it("normalizes an exposed bare JSON web_fetch envelope and drops model-only controls", () => {
+    const webFetch: ModelToolDefinition = {
+      name: "web_fetch",
+      description: "fetch",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["url"],
+        properties: { url: { type: "string" } }
+      }
+    };
+    const normalized = normalizeTextualToolResult(result(JSON.stringify({
+      tool: "web_fetch",
+      parameters: { url: "https://intrum.se", max_output_tokens: 20000 }
+    }, null, 2)), [webFetch]);
+
+    expect(normalized.normalized).toBe(true);
+    expect(normalized.result.finishReason).toBe("tool_call");
+    expect(normalized.result.toolCalls).toEqual([{ id: "text-tool-call-0", name: "web_fetch", input: { url: "https://intrum.se" } }]);
+    expect(normalized.result.content).toBe("");
+  });
+
+  it("does not normalize a bare JSON envelope for an unexposed tool", () => {
+    const webFetch: ModelToolDefinition = {
+      name: "web_fetch",
+      description: "fetch",
+      inputSchema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: { type: "string" } } }
+    };
+    const normalized = normalizeTextualToolResult(result(JSON.stringify({ tool: "shell_exec", parameters: { command: "id" } })), [webFetch]);
+    expect(normalized.normalized).toBe(false);
+    expect(normalized.result.toolCalls).toBeUndefined();
+  });
+
   it("repairs Qwen baseline vocabulary without forwarding hallucinated top-level fields", () => {
     const normalized = normalizeTextualToolResult(result(`<tool_call>\n<function=security_scan>\n<parameter=target>https://headers.localai.test</parameter>\n<parameter=scan_type>baseline</parameter>\n<parameter=depth>deep</parameter>\n<parameter=callback>external</parameter>\n</function>\n</tool_call>`), [securityTool]);
     expect(normalized.result.toolCalls?.[0]?.input).toEqual({ tool: "http_probe", target: "https://headers.localai.test", options: {} });
