@@ -44,6 +44,60 @@ describe("ToolCallRecoveryAdapter", () => {
     expect(result.usage).toEqual({ inputTokens: 2, outputTokens: 2, cachedTokens: 0 });
   });
 
+  it("recovers the observed bare JSON web_fetch pseudo-call into a native tool call", async () => {
+    const requests: GenerateRequest[] = [];
+    const webRequest: GenerateRequest = {
+      ...baseRequest,
+      tools: [{
+        name: "web_fetch",
+        description: "Fetch a public web page",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["url"],
+          properties: { url: { type: "string" } }
+        }
+      }]
+    };
+    const adapter = new ToolCallRecoveryAdapter(scripted([
+      {
+        modelVersionId: "m",
+        content: JSON.stringify({ tool: "web_fetch", parameters: { url: "https://intrum.se", max_output_tokens: 20000 } }, null, 2),
+        finishReason: "stop",
+        usage
+      },
+      {
+        modelVersionId: "m",
+        content: "",
+        finishReason: "tool_call",
+        toolCalls: [{ id: "call-web", name: "web_fetch", input: { url: "https://intrum.se" } }],
+        usage
+      }
+    ], requests));
+
+    const deltas: string[] = [];
+    const result = await adapter.generateStreamed!(webRequest, (delta) => { deltas.push(delta); });
+
+    expect(result.finishReason).toBe("tool_call");
+    expect(result.toolCalls).toEqual([{ id: "call-web", name: "web_fetch", input: { url: "https://intrum.se" } }]);
+    expect(deltas).toEqual([]);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.messages.at(-1)?.content).toContain("JSON pseudo-tool envelopes");
+    expect(requests[1]?.messages.at(-1)?.content).toContain("max_output_tokens");
+  });
+
+  it("does not classify ordinary JSON data as a pseudo tool envelope", async () => {
+    const requests: GenerateRequest[] = [];
+    const adapter = new ToolCallRecoveryAdapter(scripted([
+      { modelVersionId: "m", content: JSON.stringify({ tool: "web_fetch", status: "documented", value: 2 }), finishReason: "stop", usage }
+    ], requests));
+
+    const result = await adapter.generate({ ...baseRequest, tools: [{ name: "web_fetch", description: "Fetch", inputSchema: { type: "object" } }] });
+
+    expect(result.finishReason).toBe("stop");
+    expect(requests).toHaveLength(1);
+  });
+
   it("never converts a shell snippet into execution itself", async () => {
     const requests: GenerateRequest[] = [];
     const adapter = new ToolCallRecoveryAdapter(scripted([
