@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { processPrompt, withSelectedSkills } from "./prompt-processor";
 
 describe("prompt processor", () => {
-  it("normalizes free text into a machine-readable execution contract", () => {
+  it("normalizes outer whitespace into a machine-readable execution contract without rewriting internal prompt text", () => {
     const contract = processPrompt("code", "  Fix   the login bug in this repository. Must run targeted tests. Do not deploy.  ");
-    expect(contract.normalizedPrompt).toBe("Fix the login bug in this repository. Must run targeted tests. Do not deploy.");
+    expect(contract.normalizedPrompt).toBe("Fix   the login bug in this repository. Must run targeted tests. Do not deploy.");
     expect(contract.intent).toBe("bugfix");
     expect(contract.requires.repo).toBe(true);
     expect(contract.requires.tests).toBe(true);
@@ -12,6 +12,18 @@ describe("prompt processor", () => {
     expect(contract.requirements.join(" ")).toMatch(/Must run targeted tests/i);
     expect(contract.execution.tier).toBe("STANDARD");
     expect(contract.contextBudget).toBe(16_000);
+  });
+
+  it("preserves newlines, indentation and fenced code while normalizing line endings", () => {
+    const contract = processPrompt(
+      "code",
+      "\r\nImplement this exactly:\r\n```ts\r\nconst config = {\r\n  nested: true\r\n};\r\n```\r\nDo not deploy.\r\n"
+    );
+
+    expect(contract.normalizedPrompt).toBe(
+      "Implement this exactly:\n```ts\nconst config = {\n  nested: true\n};\n```\nDo not deploy."
+    );
+    expect(contract.constraints.join(" ")).toMatch(/Do not deploy/i);
   });
 
   it("detects freshness independently of the explicit research mode", () => {

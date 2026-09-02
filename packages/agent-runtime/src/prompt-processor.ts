@@ -75,6 +75,10 @@ function unique(values: string[]): string[] {
 }
 
 export function normalizePrompt(prompt: string): string {
+  return prompt.replace(/\r\n?/g, "\n").trim();
+}
+
+function compactPromptForRouting(prompt: string): string {
   return prompt.replace(/\s+/g, " ").trim();
 }
 
@@ -128,9 +132,10 @@ function executionRequirements(task: TaskAnalysis): ExecutionRequirements {
 export function processPrompt(mode: AgentMode, prompt: string, project: ProjectContext = {}): ExecutionContract {
   const normalizedPrompt = normalizePrompt(prompt);
   if (!normalizedPrompt) throw new Error("prompt_required");
-  const requirements = extractRequirements(normalizedPrompt);
-  const constraints = extractConstraints(normalizedPrompt);
-  const analysis = analyzeTask(mode, positiveRoutingPrompt(normalizedPrompt), project);
+  const routingPrompt = compactPromptForRouting(normalizedPrompt);
+  const requirements = extractRequirements(routingPrompt);
+  const constraints = extractConstraints(routingPrompt);
+  const analysis = analyzeTask(mode, positiveRoutingPrompt(routingPrompt), project);
   const execution = executionPolicyFor(analysis);
   return {
     schemaVersion: 1,
@@ -147,8 +152,8 @@ export function processPrompt(mode: AgentMode, prompt: string, project: ProjectC
     skills: [],
     contextBudget: execution.maxContextTokens,
     execution,
-    ambiguity: detectAmbiguity(normalizedPrompt),
-    contradictions: detectContradictions(normalizedPrompt),
+    ambiguity: detectAmbiguity(routingPrompt),
+    contradictions: detectContradictions(routingPrompt),
     affectedDomains: analysis.affectedDomains,
     verificationRequirements: analysis.verificationRequirements,
     analysis
