@@ -127,7 +127,18 @@ export class SupabaseAgentQueue implements AgentQueue {
       target_request_id: row.request_id,
       target_limit: 12
     });
-    if (historyError) throw new Error(`agent_routing_history_read_failed:${historyError.message}`);
+    if (historyError) {
+      const errorCode = `agent_routing_history_read_failed:${historyError.message}`.slice(0, 160);
+      const retryable = /timeout|429|502|503|connection|unavailable/i.test(historyError.message);
+      const { error: failError } = await (this.client as unknown as UntypedRpcClient).rpc("worker_fail_agent_run", {
+        target_run_id: row.run_id,
+        target_job_id: row.job_id,
+        error_code: errorCode,
+        retryable
+      });
+      if (failError) throw new Error(`${errorCode};agent_routing_history_fail_persist_failed:${failError.message}`);
+      throw new Error(errorCode);
+    }
     const extended = row as typeof row & { resource_context?: Json };
     return {
       jobId: row.job_id,
