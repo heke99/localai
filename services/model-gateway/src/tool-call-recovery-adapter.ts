@@ -129,7 +129,11 @@ export class ToolCallRecoveryAdapter implements ModelAdapter {
       return result;
     }
 
-    if (this.inner.generateStreamed) return this.inner.generateStreamed(request, onDelta);
+    if (this.inner.generateStreamed) {
+      const result = await this.inner.generateStreamed(request, onDelta);
+      assertCompleteModelResult(result);
+      return result;
+    }
     const result = await this.generate(request);
     if (result.content) await onDelta(result.content);
     return result;
