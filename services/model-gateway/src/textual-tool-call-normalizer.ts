@@ -11,6 +11,7 @@ const SECURITY_OPTION_KEYS: Record<SecurityToolId, ReadonlySet<string>> = {
   template_scan: new Set(["rateLimit"]),
   content_discovery: new Set(["rateLimit"])
 };
+const MODEL_ONLY_PARAMETER_KEYS = new Set(["max_output_tokens"]);
 
 interface ParsedPseudoCall {
   name: string;
@@ -108,7 +109,21 @@ function securityJsonCall(object: Record<string, unknown>, start: number, end: n
   return null;
 }
 
-function parsePseudoCall(content: string, securityExposed: boolean): ParsedPseudoCall | null {
+function genericJsonCall(object: Record<string, unknown>, start: number, end: number, raw: string): ParsedPseudoCall | null {
+  const selector = typeof object.tool === "string"
+    ? object.tool.trim()
+    : typeof object.name === "string"
+      ? object.name.trim()
+      : "";
+  if (!selector) return null;
+  const parameters = object.parameters ?? object.arguments ?? object.input;
+  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) return null;
+  return { name: selector, parameters: parameters as Record<string, unknown>, start, end, raw };
+}
+
+function parsePseudoCall(content: string, tools: ModelToolDefinition[]): ParsedPseudoCall | null {
+  const securityExposed = tools.some((tool) => tool.name === SECURITY_TOOL);
+  const exposedNames = new Set(tools.map((tool) => tool.name));
   const open = content.search(/<tool_call\b[^>]*>/i);
   if (open >= 0) {
     const opening = content.slice(open).match(/^<tool_call\b[^>]*>/i)?.[0];
@@ -130,20 +145,28 @@ function parsePseudoCall(content: string, securityExposed: boolean): ParsedPseud
     const name = functionMatch?.[1]?.trim();
     if (name) return { name, parameters: parameterEntries(block), start: open, end, raw };
 
+    const bodyEnd = closingMatch ? bodyStart + closingMatch.index : firstBlockEnd;
+    const object = firstJsonObject(content.slice(bodyStart, bodyEnd));
+    if (!object) return null;
     if (securityExposed) {
-      const bodyEnd = closingMatch ? bodyStart + closingMatch.index : firstBlockEnd;
-      const object = firstJsonObject(content.slice(bodyStart, bodyEnd));
-      if (object) return securityJsonCall(object, open, end, raw);
+      const security = securityJsonCall(object, open, end, raw);
+      if (security) return security;
     }
-    return null;
+    const generic = genericJsonCall(object, open, end, raw);
+    return generic && exposedNames.has(generic.name) ? generic : null;
   }
 
-  if (!securityExposed) return null;
   const trimmed = content.trim();
   const object = jsonObject(trimmed);
   if (!object) return null;
   const start = content.indexOf(trimmed);
-  return securityJsonCall(object, start, start + trimmed.length, trimmed);
+  const end = start + trimmed.length;
+  if (securityExposed) {
+    const security = securityJsonCall(object, start, end, trimmed);
+    if (security) return security;
+  }
+  const generic = genericJsonCall(object, start, end, trimmed);
+  return generic && exposedNames.has(generic.name) ? generic : null;
 }
 
 function validateSimpleSchema(value: unknown, schema: Record<string, unknown>): boolean {
@@ -163,10 +186,11 @@ function validateSimpleSchema(value: unknown, schema: Record<string, unknown>): 
 function genericInput(tool: ModelToolDefinition, parameters: Record<string, unknown>): Record<string, unknown> | null {
   const properties = schemaProperties(tool);
   const allowedKeys = new Set(Object.keys(properties));
+  const cleanedParameters = Object.fromEntries(Object.entries(parameters).filter(([key]) => allowedKeys.has(key) || !MODEL_ONLY_PARAMETER_KEYS.has(key)));
   const additionalProperties = tool.inputSchema.additionalProperties !== false;
-  if (!additionalProperties && Object.keys(parameters).some((key) => !allowedKeys.has(key))) return null;
+  if (!additionalProperties && Object.keys(cleanedParameters).some((key) => !allowedKeys.has(key))) return null;
   const input: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(parameters)) {
+  for (const [key, value] of Object.entries(cleanedParameters)) {
     if (!allowedKeys.has(key) && !additionalProperties) continue;
     const property = properties[key];
     if (property && !validateSimpleSchema(value, property)) return null;
@@ -257,8 +281,7 @@ export interface NormalizedTextualToolResult {
 
 export function normalizeTextualToolResult(result: GenerateResult, tools: ModelToolDefinition[] | undefined): NormalizedTextualToolResult {
   if (result.toolCalls?.length || result.finishReason === "tool_call" || !tools?.length || !result.content) return { result, normalized: false };
-  const securityExposed = tools.some((tool) => tool.name === SECURITY_TOOL);
-  const parsed = parsePseudoCall(result.content, securityExposed);
+  const parsed = parsePseudoCall(result.content, tools);
   if (!parsed) return { result, normalized: false };
   const definition = tools.find((tool) => tool.name === parsed.name);
   if (!definition) return { result, normalized: false };
