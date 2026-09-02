@@ -149,7 +149,6 @@ function boundedRoutingContext(messages: readonly string[]): string[] {
 
 export function withPromptRoutingContext(currentPrompt: string, previousUserPrompts: readonly string[]): string {
   const context = boundedRoutingContext(previousUserPrompts);
-  if (!context.length) return currentPrompt;
   return `${ROUTING_CONTEXT_OPEN}${JSON.stringify(context)}${ROUTING_CONTEXT_CLOSE}\n${currentPrompt}`;
 }
 
