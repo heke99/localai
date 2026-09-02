@@ -65,9 +65,9 @@ execute_probe() {
     rm -f "$response"
     fatal "${tool} expected HTTP 200, got ${status}"
   fi
-  "${NODE_BIN}" -e 'const fs=require("fs"); const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(typeof v.ok!=="boolean"||typeof v.auditId!=="string"||!v.auditId||typeof v.capability!=="string"||!v.capability||!Array.isArray(v.findings)) process.exit(1)' "$response" || { cat "$response" >&2; rm -f "$response"; fatal "${tool} result contract invalid"; }
+  "${NODE_BIN}" -e 'const fs=require("fs"); const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(v.ok!==true||typeof v.auditId!=="string"||!v.auditId||typeof v.capability!=="string"||!v.capability||!Array.isArray(v.findings)) process.exit(1)' "$response" || { cat "$response" >&2; rm -f "$response"; fatal "${tool} result contract invalid or probe failed"; }
   rm -f "$response"
-  log "${tool} contract passed"
+  log "${tool} live success passed"
 }
 
 execute_probe dns_lookup passive 8000 '{}'
