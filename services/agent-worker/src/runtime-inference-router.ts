@@ -24,7 +24,7 @@ export type RuntimeInferenceRouterOptions = {
   reapIntervalMs?: number;
 };
 
-const executionCommandPattern = /```(?:bash|sh|shell|zsh|powershell)?[\s\S]*?\b(?:curl|wget|nmap|dig|nslookup|ping)\b[\s\S]*?```/i;
+const executionCommandPattern = /```(?:bash|sh|shell|zsh|powershell)?[\s\S]*?\b(?:curl|wget|nmap|dig|nslookup|ping)\b/i;
 const executionIntentPattern = /\b(?:behöver|måste|ska|need|needs|must|will|going\s+to)\b[\s\S]{0,240}\b(?:bekräfta|verifiera|testa|köra|confirm|verify|check|test|run|execute)\b/i;
 
 function numberValue(value: unknown, fallback: number) {
@@ -45,6 +45,10 @@ function validEndpoint(value: unknown): string | null {
 
 function safeCode(error: unknown) {
   return error instanceof Error ? error.message.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 160) : "runtime_inference_failed";
+}
+
+function shouldMarkRouteFailed(error: unknown): boolean {
+  return !(error instanceof Error && error.message === "tool_call_required_but_missing");
 }
 
 function needsStructuredToolRecovery(result: GenerateResult): boolean {
@@ -159,7 +163,7 @@ export class RuntimeInferenceRouter implements ModelAdapter {
         return await generateWithToolRecovery(this.adapterFactory(route.endpoint), request);
       } catch (error) {
         failures.push(`${route.providerKey}:${safeCode(error)}`);
-        await this.markFailed(route, error);
+        if (shouldMarkRouteFailed(error)) await this.markFailed(route, error);
       }
     }
     throw new Error(`runtime_inference_capacity_unavailable:${failures.join(",").slice(0, 500)}`);
@@ -197,7 +201,7 @@ export class RuntimeInferenceRouter implements ModelAdapter {
           await onDelta(delta);
         });
       } catch (error) {
-        await this.markFailed(route, error);
+        if (shouldMarkRouteFailed(error)) await this.markFailed(route, error);
         if (emitted) throw error;
         failures.push(`${route.providerKey}:${safeCode(error)}`);
       }
