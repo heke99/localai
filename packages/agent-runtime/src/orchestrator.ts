@@ -4,6 +4,7 @@ import { redactSensitiveText } from "./redaction";
 import { assertModeAuthorization, routeSkills } from "./skill-router";
 import { assertTransition } from "./state-machine";
 import { analyzeTask } from "./task-analyzer";
+import { looksLikeRegisteredToolInvocation } from "./text-tool-call";
 import { assertCompletionAllowed, createResponseOnlyVerificationExecutor, createVerificationPlan, executeVerificationPlan } from "./verification-engine";
 
 const aliases: Record<AgentRunRequest["mode"], ModelAlias> = {
@@ -133,7 +134,7 @@ export class AgentOrchestrator {
           continue;
         }
 
-        if (looksLikeUnstructuredExecution(generated.content)) {
+        if (looksLikeUnstructuredExecution(generated.content) || looksLikeRegisteredToolInvocation(generated.content, tools)) {
           if (missingToolRecoveries >= maxMissingToolRecoveryAttempts) throw new Error("tool_call_required_but_missing");
           missingToolRecoveries += 1;
           await this.recoverMissingToolCall(record, messages, generated, tools);
