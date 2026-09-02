@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { LinuxSecurityExecutor, bearerMatches, type SecurityExecutorRequest } from "./runtime";
+import { LinuxSecurityExecutor, bearerMatches, type SecurityExecutorRequest } from "./pinned-runtime";
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -74,7 +74,8 @@ const server = createServer(async (request, response) => {
       return json(response, capabilities.ready ? 200 : 503, {
         ok: capabilities.ready,
         service: "security-executor",
-        isolation: "allowlisted-process",
+        isolation: "scope-locked-native-process",
+        dnsPinning: true,
         capabilities
       });
     }
