@@ -97,6 +97,17 @@ exec "\$REAL" -t "\$TEMPLATES" "\${args[@]}"
 EOF
 chmod 0755 "$TOOLS_ROOT/bin/nuclei"
 
+# Replace the deterministic-only bootstrap wrapper with the production wrapper:
+# a pinned curated HTTP template snapshot plus a per-invocation loopback proxy
+# that can connect only to the already DNS/IP-pinned target and port. This keeps
+# the runtime Docker-independent while preventing templates from expanding egress.
+DIV3RSA_REPOSITORY_ROOT="$APP_DIR" \
+DIV3RSA_SECURITY_TOOLS_ROOT="$TOOLS_ROOT" \
+DIV3RSA_SECURITY_CLI_HOME="$CLI_HOME" \
+DIV3RSA_SECURITY_E2E_IP="$TEST_IP" \
+DIV3RSA_SECURITY_E2E_PORT="$TEST_PORT" \
+  bash infra/runtime/install-nuclei-scoped-runtime.sh
+
 # ffuf has a dedicated JSONL stdout mode for automation. The executor still
 # requests its historical -of json -o /dev/stdout contract, so this wrapper
 # removes only that output-file pair, switches the real pinned binary to JSONL
