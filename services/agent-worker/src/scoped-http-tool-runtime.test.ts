@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { describe, expect, it } from "vitest";
 import type { ClaimedRun } from "./processor";
 import { ScopedHttpToolRuntime } from "./scoped-http-tool-runtime";
@@ -25,7 +25,9 @@ function run(capabilities: string[] = ["security.active"]): ClaimedRun {
   };
 }
 
-async function withProxy(handler: Parameters<typeof createServer>[0], test: (url: string) => Promise<void>) {
+type ProxyHandler = (request: IncomingMessage, response: ServerResponse<IncomingMessage>) => void;
+
+async function withProxy(handler: ProxyHandler, test: (url: string) => Promise<void>) {
   const server = createServer(handler);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -43,9 +45,10 @@ describe("ScopedHttpToolRuntime", () => {
     const active = await runtime.list(run());
     const passive = await runtime.list(run(["security.passive"]));
     const definition = active.find((tool) => tool.name === "http_request");
+    const properties = definition?.inputSchema.properties as Record<string, Record<string, unknown>> | undefined;
 
     expect(definition).toBeTruthy();
-    expect(definition?.inputSchema.properties?.method).toMatchObject({ enum: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"] });
+    expect(properties?.method).toMatchObject({ enum: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"] });
     expect(passive).toEqual([]);
   });
 
@@ -56,7 +59,7 @@ describe("ScopedHttpToolRuntime", () => {
       expect(request.headers["x-test"]).toBe("yes");
       let body = "";
       request.setEncoding("utf8");
-      request.on("data", (chunk) => { body += chunk; });
+      request.on("data", (chunk: string) => { body += chunk; });
       request.on("end", () => {
         expect(body).toBe("payload");
         response.writeHead(200, { "content-type": "application/json" });
