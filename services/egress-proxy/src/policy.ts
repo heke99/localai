@@ -8,6 +8,13 @@ export interface ResolvedEgressTarget {
   port: number;
 }
 
+export type EgressDnsResolver = (hostname: string) => Promise<Array<{ address: string; family: 4 | 6 }>>;
+
+const defaultResolver: EgressDnsResolver = async (hostname) => {
+  const entries = await lookup(hostname, { all: true, verbatim: true });
+  return entries.map((entry) => ({ address: entry.address, family: entry.family as 4 | 6 }));
+};
+
 export function normalizeEgressHost(value: string): string {
   return value.trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
 }
@@ -61,7 +68,7 @@ export function assertEgressPort(port: number): void {
 export async function resolvePublicEgressTarget(
   hostInput: string,
   port: number,
-  resolver: typeof lookup = lookup
+  resolver: EgressDnsResolver = defaultResolver
 ): Promise<ResolvedEgressTarget> {
   assertEgressPort(port);
   const host = normalizeEgressHost(hostInput);
@@ -69,7 +76,7 @@ export async function resolvePublicEgressTarget(
 
   const addresses = isIP(host)
     ? [{ address: host, family: isIP(host) as 4 | 6 }]
-    : await resolver(host, { all: true, verbatim: true });
+    : await resolver(host);
   if (!addresses.length) throw new Error("egress_dns_failed");
   for (const entry of addresses) {
     if (isBlockedEgressAddress(entry.address)) throw new Error("egress_address_blocked");
