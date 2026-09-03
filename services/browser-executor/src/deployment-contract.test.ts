@@ -1,10 +1,9 @@
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const root = new URL("../../", import.meta.url);
-
 async function text(path: string): Promise<string> {
-  return readFile(new URL(path, root), "utf8");
+  return readFile(resolve(process.cwd(), path), "utf8");
 }
 
 describe("browser executor deployment contract", () => {
