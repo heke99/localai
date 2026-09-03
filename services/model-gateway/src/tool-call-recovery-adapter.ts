@@ -11,36 +11,66 @@ import type {
 const executionCommandPattern = /```(?:bash|sh|shell|zsh|powershell)?[\s\S]*?\b(?:curl|wget|nmap|dig|nslookup|ping)\b/i;
 const executionIntentPattern = /\b(?:behöver|måste|ska|need|needs|must|will|going\s+to)\b[\s\S]{0,240}\b(?:bekräfta|verifiera|testa|köra|confirm|verify|check|test|run|execute)\b/i;
 
+interface RecoveryIntent {
+  toolName: string | null;
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function looksLikeRegisteredToolInvocation(content: string, tools: readonly ModelToolDefinition[]): boolean {
-  if (!content || tools.length === 0) return false;
-  return tools.some((tool) => {
-    const name = tool.name.trim();
-    if (!name) return false;
-    return new RegExp(`(?:^|[^A-Za-z0-9_])${escapeRegExp(name)}\\s*\\(`, "m").test(content);
-  });
+function registeredNames(tools: readonly ModelToolDefinition[] | undefined): string[] {
+  return (tools ?? []).map((tool) => tool.name.trim()).filter(Boolean);
 }
 
-function looksLikeJsonToolEnvelope(content: string): boolean {
+function registeredInvocationName(content: string, tools: readonly ModelToolDefinition[]): string | null {
+  for (const name of registeredNames(tools)) {
+    if (new RegExp(`(?:^|[^A-Za-z0-9_])${escapeRegExp(name)}\\s*\\(`, "m").test(content)) return name;
+  }
+  return null;
+}
+
+function explicitRegisteredIntentName(content: string, tools: readonly ModelToolDefinition[]): string | null {
+  for (const name of registeredNames(tools)) {
+    const escaped = escapeRegExp(name);
+    const patterns = [
+      new RegExp(`\\b(?:i\\s+)?(?:need|must|will|shall|am\\s+going\\s+to)\\s+(?:to\\s+)?(?:use|call|run|invoke)\\s+(?:the\\s+)?${escaped}\\b`, "i"),
+      new RegExp(`\\b(?:jag\\s+)?(?:behöver|måste|ska|kommer\\s+att)\\s+(?:använda|köra|anropa)\\s+(?:verktyget\\s+)?${escaped}\\b`, "i")
+    ];
+    if (patterns.some((pattern) => pattern.test(content))) return name;
+  }
+  return null;
+}
+
+function qwenEnvelopeToolName(content: string, tools: readonly ModelToolDefinition[]): string | null {
+  const allowed = new Set(registeredNames(tools));
+  for (const match of content.matchAll(/<tool_call\b[^>]*>\s*([\s\S]*?)\s*<\/tool_call>/gi)) {
+    const body = match[1] ?? "";
+    const functionName = /<function=([A-Za-z_][\w.:-]*)>/i.exec(body)?.[1]?.trim();
+    if (functionName && allowed.has(functionName)) return functionName;
+    const jsonName = /["'](?:name|tool)["']\s*:\s*["']([^"']+)["']/i.exec(body)?.[1]?.trim();
+    if (jsonName && allowed.has(jsonName)) return jsonName;
+  }
+  return null;
+}
+
+function jsonEnvelopeToolName(content: string, tools: readonly ModelToolDefinition[]): string | null {
   const trimmed = content.trim();
-  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return false;
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
   try {
     const parsed = JSON.parse(trimmed) as unknown;
-    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") return false;
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") return null;
     const record = parsed as Record<string, unknown>;
     const selector = typeof record.tool === "string"
       ? record.tool.trim()
       : typeof record.name === "string"
         ? record.name.trim()
         : "";
-    if (!selector) return false;
+    if (!selector || !registeredNames(tools).includes(selector)) return null;
     const parameters = record.parameters ?? record.arguments ?? record.input;
-    return Boolean(parameters && typeof parameters === "object" && !Array.isArray(parameters));
+    return parameters && typeof parameters === "object" && !Array.isArray(parameters) ? selector : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -49,23 +79,40 @@ function assertCompleteModelResult(result: GenerateResult): void {
   if (result.finishReason === "length") throw new Error("model_output_truncated");
 }
 
-function needsStructuredToolRecovery(request: GenerateRequest, result: GenerateResult): boolean {
-  if (result.finishReason === "tool_call") return !result.toolCalls?.length;
-  if (request.tools?.length && looksLikeRegisteredToolInvocation(result.content, request.tools)) return true;
-  if (request.tools !== undefined && looksLikeJsonToolEnvelope(result.content)) return true;
-  return executionCommandPattern.test(result.content) && executionIntentPattern.test(result.content);
+function recoveryIntent(request: GenerateRequest, result: GenerateResult): RecoveryIntent | null {
+  if (result.finishReason === "tool_call") return result.toolCalls?.length ? null : { toolName: request.requiredToolName?.trim() || null };
+
+  const tools = request.tools ?? [];
+  if (tools.length) {
+    const invocation = registeredInvocationName(result.content, tools);
+    if (invocation) return { toolName: invocation };
+
+    const envelope = qwenEnvelopeToolName(result.content, tools);
+    if (envelope) return { toolName: envelope };
+
+    const jsonEnvelope = jsonEnvelopeToolName(result.content, tools);
+    if (jsonEnvelope) return { toolName: jsonEnvelope };
+
+    const explicit = explicitRegisteredIntentName(result.content, tools);
+    if (explicit) return { toolName: explicit };
+  }
+
+  if (executionCommandPattern.test(result.content) && executionIntentPattern.test(result.content)) return { toolName: null };
+  return null;
 }
 
-function recoveryRequest(request: GenerateRequest, result: GenerateResult): GenerateRequest {
-  const availableTools = request.tools?.map((tool) => tool.name) ?? [];
+function recoveryRequest(request: GenerateRequest, result: GenerateResult, intent: RecoveryIntent): GenerateRequest {
+  const availableTools = registeredNames(request.tools);
+  const requiredToolName = intent.toolName && availableTools.includes(intent.toolName) ? intent.toolName : undefined;
   const instruction = availableTools.length > 0
-    ? `Runtime recovery: the previous response implied live execution but did not emit a valid structured tool call. Do not claim any command was executed and do not print function-style pseudo calls or JSON pseudo-tool envelopes such as {"tool":"...","parameters":{...}}. Emit a native function/tool call using one of the exposed structured tools when execution is needed. Available tools: ${availableTools.join(", ")}. Use only fields allowed by the selected tool schema; generation controls such as max_output_tokens are not tool parameters unless the schema explicitly defines them. If none can perform the requested action, explicitly report TOOL_UNAVAILABLE and continue without fabricated live results.`
-    : "Runtime recovery: no execution tools are exposed for this turn. Do not claim any displayed command, function-style pseudo call, or JSON pseudo-tool envelope was executed. Explicitly report TOOL_UNAVAILABLE and continue with non-executed analysis.";
+    ? `Runtime recovery: the previous response implied live execution but did not emit a valid structured tool call. Do not claim any command was executed and do not print function-style pseudo calls, Qwen <tool_call> markup, or JSON pseudo-tool envelopes such as {"tool":"...","parameters":{...}}. ${requiredToolName ? `You explicitly selected the exposed tool ${requiredToolName}; emit that native function/tool call now using only its schema.` : `Emit a native function/tool call using one of the exposed structured tools when execution is needed. Available tools: ${availableTools.join(", ")}.`} Use only fields allowed by the selected tool schema; generation controls such as max_output_tokens are not tool parameters unless the schema explicitly defines them. If none can perform the requested action, explicitly report TOOL_UNAVAILABLE and continue without fabricated live results.`
+    : "Runtime recovery: no execution tools are exposed for this turn. Do not claim any displayed command, function-style pseudo call, Qwen tool markup, or JSON pseudo-tool envelope was executed. Explicitly report TOOL_UNAVAILABLE and continue with non-executed analysis.";
 
   return {
     ...request,
     requestId: `${request.requestId}:tool-recovery`,
     temperature: 0,
+    ...(requiredToolName ? { requiredToolName } : {}),
     messages: [
       ...request.messages,
       { role: "assistant", content: result.content },
@@ -85,12 +132,17 @@ function mergeUsage(first: GenerateResult, second: GenerateResult): GenerateResu
   };
 }
 
+function assertRequiredRecoveryTool(request: GenerateRequest, result: GenerateResult): void {
+  const required = request.requiredToolName?.trim();
+  if (!required || result.finishReason !== "tool_call") return;
+  if (result.toolCalls?.length !== 1 || result.toolCalls[0]?.name !== required) throw new Error(`required_tool_call_mismatch:${required}`);
+}
+
 /**
  * Prevents an execution-looking textual response from bypassing the native tool
- * loop. It never parses shell/function text into execution and never executes JSON
- * pseudo tool envelopes. The model gets one bounded recovery turn to emit an
- * exposed structured tool call or state that execution is unavailable. Truncated
- * or provider-error generations fail closed instead of being treated as finals.
+ * loop. It never parses shell text into execution. Explicit mentions of an exposed
+ * tool are used only to force one bounded native recovery turn through the model's
+ * tool_choice contract. Truncated or provider-error generations fail closed.
  */
 export class ToolCallRecoveryAdapter implements ModelAdapter {
   constructor(private readonly inner: ModelAdapter) {}
@@ -110,19 +162,20 @@ export class ToolCallRecoveryAdapter implements ModelAdapter {
   async generate(request: GenerateRequest): Promise<GenerateResult> {
     const first = await this.inner.generate(request);
     assertCompleteModelResult(first);
-    if (!needsStructuredToolRecovery(request, first)) return first;
+    const firstIntent = recoveryIntent(request, first);
+    if (!firstIntent) return first;
 
-    const secondRequest = recoveryRequest(request, first);
+    const secondRequest = recoveryRequest(request, first, firstIntent);
     const second = await this.inner.generate(secondRequest);
     assertCompleteModelResult(second);
-    if (needsStructuredToolRecovery(secondRequest, second)) throw new Error("tool_call_required_but_missing");
+    assertRequiredRecoveryTool(secondRequest, second);
+    if (recoveryIntent(secondRequest, second)) throw new Error("tool_call_required_but_missing");
     return mergeUsage(first, second);
   }
 
   async generateStreamed(request: GenerateRequest, onDelta: ModelStreamDeltaHandler): Promise<GenerateResult> {
     // A tool-enabled turn must be validated before visible streaming. Otherwise
-    // malformed textual execution or a JSON pseudo-tool envelope has already
-    // escaped to the UI before the runtime can recover it into a native call.
+    // malformed textual execution has already escaped to the UI before recovery.
     if (request.tools !== undefined) {
       const result = await this.generate(request);
       if (result.content) await onDelta(result.content);
