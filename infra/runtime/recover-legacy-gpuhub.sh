@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 ROOT_DIR="${DIV3RSA_LEGACY_ROOT_DIR:-/root/autodl-tmp/localai}"
 REPO_DIR="${DIV3RSA_LEGACY_APP_DIR:-${ROOT_DIR}/app}"
+ENV_FILE="${DIV3RSA_LEGACY_ENV_FILE:-${ROOT_DIR}/secrets/gpuhub-worker.env}"
+WORKER_SCREEN="${DIV3RSA_LEGACY_WORKER_SCREEN:-localai-agent}"
 V2_SCRIPT="${REPO_DIR}/infra/runtime/recover-legacy-gpuhub-v2.sh"
 CANONICAL_WRAPPER="${REPO_DIR}/infra/runtime/recover-legacy-gpuhub.sh"
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -42,6 +44,28 @@ if [[ "$PRECHECKOUT_WRAPPER" -eq 1 ]]; then
   exit 0
 fi
 
+remove_browser_worker_env() {
+  [[ -f "$ENV_FILE" ]] || return 0
+  python3 - "$ENV_FILE" <<'PY'
+from pathlib import Path
+import re, sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+for key in (
+    "DIV3RSA_BROWSER_EXECUTOR_URL",
+    "DIV3RSA_BROWSER_EXECUTOR_TOKEN",
+    "DIV3RSA_BROWSER_TIMEOUT_MS",
+):
+    text = re.sub(rf"^(?:export\s+)?{re.escape(key)}=.*(?:\n|$)", "", text, flags=re.M)
+path.write_text(text, encoding="utf-8")
+PY
+  chmod 600 "$ENV_FILE"
+}
+
+browser_env_present() {
+  [[ -f "$ENV_FILE" ]] && grep -Eq '^(export[[:space:]]+)?DIV3RSA_BROWSER_EXECUTOR_(URL|TOKEN)=' "$ENV_FILE"
+}
+
 # Only the canonical post-checkout wrapper may restore independent runtimes. At
 # this point REPO_DIR is guaranteed to contain the same revision as this wrapper.
 EMBEDDING_SCRIPT="${REPO_DIR}/infra/runtime/ensure-embedding-runtime.sh"
@@ -55,8 +79,30 @@ if [[ -f "$EGRESS_SCRIPT" ]]; then
   DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" bash "$EGRESS_SCRIPT"
 fi
 if [[ -f "$BROWSER_SCRIPT" ]]; then
-  DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" \
-  DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" \
-  DIV3RSA_EGRESS_PROXY_URL="${DIV3RSA_EGRESS_PROXY_URL:-http://127.0.0.1:7318}" \
-    bash "$BROWSER_SCRIPT"
+  had_browser_env=0
+  browser_env_present && had_browser_env=1
+  browser_rc=0
+  if DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" \
+    DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" \
+    DIV3RSA_EGRESS_PROXY_URL="${DIV3RSA_EGRESS_PROXY_URL:-http://127.0.0.1:7318}" \
+    bash "$BROWSER_SCRIPT"; then
+    :
+  else
+    browser_rc=$?
+    if [[ "$browser_rc" -ne 78 ]]; then
+      printf '[gpuhub-recovery] browser provisioner failed unexpectedly: rc=%s\n' "$browser_rc" >&2
+      exit "$browser_rc"
+    fi
+
+    # Code 78 is reserved for a host that cannot prove a safe browser isolation
+    # boundary. Remove any previously persisted browser endpoint/token before a
+    # worker can advertise those tools. If this recovery inherited stale browser
+    # configuration, restart only the worker once against the cleaned env.
+    remove_browser_worker_env
+    printf '[gpuhub-recovery] browser capability disabled: unavailable_host_isolation\n'
+    if [[ "$had_browser_env" -eq 1 ]]; then
+      screen -S "$WORKER_SCREEN" -X quit >/dev/null 2>&1 || true
+      bash "$V2_SCRIPT" "$@"
+    fi
+  fi
 fi

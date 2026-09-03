@@ -44,7 +44,6 @@ requireText(browserMain, /channel:\s*"chromium"/, "browser Chromium channel");
 requireText(browserMain, /chromiumSandbox:\s*isolation\.chromiumSandbox/, "browser runtime-selected Chromium sandbox state");
 requireText(browserPolicy, /"chromium" \| "uid-firewall"/, "browser isolation mode allowlist");
 requireText(browserPolicy, /browser_outer_isolation_requires_non_root/, "browser non-root fallback guard");
-
 requireText(browserRuntime, /if \(!this\.endpoint \|\| !this\.token\) return \[\];/, "worker hides browser tools without executor configuration");
 
 requireText(upgrade, /provision-egress-proxy-gpuhub\.sh/, "GPUHub upgrade egress provisioning");
@@ -54,8 +53,16 @@ requireText(upgrade, /remove_env_value DIV3RSA_BROWSER_EXECUTOR_URL/, "GPUHub re
 requireText(upgrade, /remove_env_value DIV3RSA_BROWSER_EXECUTOR_TOKEN/, "GPUHub removes stale browser token");
 requireText(upgrade, /browser capability disabled: unavailable_host_isolation/, "GPUHub reports disabled browser capability");
 requireText(upgrade, /NODE_USE_ENV_PROXY/, "worker Node proxy enablement");
+
 requireText(recover, /provision-egress-proxy-gpuhub\.sh/, "GPUHub recovery egress restoration");
 requireText(recover, /provision-browser-executor-gpuhub\.sh/, "GPUHub recovery browser restoration");
+requireText(recover, /browser_rc.*78/, "GPUHub recovery handles only dedicated browser-unavailable code");
+requireText(recover, /remove_browser_worker_env/, "GPUHub recovery removes stale browser worker configuration");
+requireText(recover, /DIV3RSA_BROWSER_EXECUTOR_URL/, "GPUHub recovery clears stale browser URL");
+requireText(recover, /DIV3RSA_BROWSER_EXECUTOR_TOKEN/, "GPUHub recovery clears stale browser token");
+requireText(recover, /browser capability disabled: unavailable_host_isolation/, "GPUHub recovery reports disabled browser capability");
+requireText(recover, /screen -S "\$WORKER_SCREEN" -X quit/, "GPUHub recovery restarts stale worker after browser disable");
+requireText(recover, /bash "\$V2_SCRIPT" "\$@"/, "GPUHub recovery reuses bounded v2 worker restart");
 
 requireText(workflow, /workflows: \["Deploy GPUHub"\]/, "post-deploy workflow dependency");
 requireText(workflow, /\.localai-egress/, "GPUHub egress screen verification");
