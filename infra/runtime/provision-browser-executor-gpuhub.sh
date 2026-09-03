@@ -18,8 +18,8 @@ LISTEN_HOST="127.0.0.1"
 LISTEN_PORT="${DIV3RSA_BROWSER_EXECUTOR_PORT:-7320}"
 BROWSER_URL="http://${LISTEN_HOST}:${LISTEN_PORT}"
 EGRESS_URL="${DIV3RSA_EGRESS_PROXY_URL:-http://127.0.0.1:7318}"
-TOKEN_FILE="${DIV3RSA_BROWSER_EXECUTOR_TOKEN_FILE:-/etc/div3rsa/browser-executor.token}"
-ENV_FILE="${DIV3RSA_BROWSER_EXECUTOR_ENV_FILE:-/etc/div3rsa/browser-executor.env}"
+TOKEN_FILE="${DIV3RSA_BROWSER_EXECUTOR_TOKEN_FILE:-${STATE_ROOT}/executor.token}"
+ENV_FILE="${DIV3RSA_BROWSER_EXECUTOR_ENV_FILE:-${STATE_ROOT}/executor.env}"
 PLAYWRIGHT_VERSION="1.62.1"
 BROWSERS_PATH="${INSTALL_ROOT}/browsers"
 PACKAGE_FILE="${INSTALL_ROOT}/package.json"
@@ -45,7 +45,6 @@ if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 install -d -o root -g "$SERVICE_USER" -m 0750 "$INSTALL_ROOT"
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0700 "$STATE_ROOT"
-install -d -o root -g "$SERVICE_USER" -m 0750 "$(dirname "$TOKEN_FILE")"
 
 install -o root -g "$SERVICE_USER" -m 0640 "$REPO_DIR/services/browser-executor/src/main.ts" "$INSTALL_ROOT/main.ts"
 install -o root -g "$SERVICE_USER" -m 0640 "$REPO_DIR/services/browser-executor/src/policy.ts" "$INSTALL_ROOT/policy.ts"
