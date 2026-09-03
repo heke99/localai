@@ -10,6 +10,7 @@ ROOT_DIR="${DIV3RSA_LEGACY_ROOT_DIR:-/root/autodl-tmp/localai}"
 REPO_DIR="${DIV3RSA_LEGACY_APP_DIR:-${ROOT_DIR}/app}"
 NODE_BIN="${DIV3RSA_LEGACY_NODE_BIN:-${ROOT_DIR}/runtime/node-current/bin/node}"
 INSTALL_ROOT="${DIV3RSA_BROWSER_INSTALL_ROOT:-/opt/div3rsa/browser-executor}"
+SIDECAR_NODE_BIN="${INSTALL_ROOT}/node"
 STATE_ROOT="${DIV3RSA_BROWSER_STATE_ROOT:-/var/lib/div3rsa-browser}"
 LOG_DIR="${DIV3RSA_LEGACY_LOG_DIR:-${ROOT_DIR}/logs}"
 LOG_FILE="${LOG_DIR}/browser-executor.log"
@@ -45,6 +46,10 @@ fi
 mkdir -p "$LOG_DIR"
 install -d -o root -g "$SERVICE_USER" -m 0750 "$INSTALL_ROOT"
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0700 "$STATE_ROOT"
+# Keep the canonical GPUHub Node installation private below /root. The browser
+# account gets only an executable copy of the already-validated Node 24 binary.
+install -o root -g "$SERVICE_USER" -m 0755 "$NODE_BIN" "$SIDECAR_NODE_BIN"
+"$SIDECAR_NODE_BIN" -e 'if(Number(process.versions.node.split(".")[0])<24)process.exit(1)' || fatal "browser Node copy is invalid"
 
 install -o root -g "$SERVICE_USER" -m 0640 "$REPO_DIR/services/browser-executor/src/main.ts" "$INSTALL_ROOT/main.ts"
 install -o root -g "$SERVICE_USER" -m 0640 "$REPO_DIR/services/browser-executor/src/policy.ts" "$INSTALL_ROOT/policy.ts"
@@ -77,6 +82,7 @@ PLAYWRIGHT_BROWSERS_PATH="$BROWSERS_PATH" "$PLAYWRIGHT_BIN" install chromium
 chown -R root:"$SERVICE_USER" "$INSTALL_ROOT"
 chmod -R g+rX "$INSTALL_ROOT"
 chmod 0750 "$INSTALL_ROOT" "$BROWSERS_PATH" 2>/dev/null || true
+chmod 0755 "$SIDECAR_NODE_BIN"
 
 if [[ ! -s "$TOKEN_FILE" ]]; then
   umask 077
@@ -107,7 +113,7 @@ set -a
 source ${ENV_FILE}
 set +a
 cd ${INSTALL_ROOT}
-exec ${NODE_BIN} --experimental-transform-types --import ${INSTALL_ROOT}/native-typescript-register.mjs ${INSTALL_ROOT}/main.ts
+exec ${SIDECAR_NODE_BIN} --experimental-transform-types --import ${INSTALL_ROOT}/native-typescript-register.mjs ${INSTALL_ROOT}/main.ts
 EOF
 chown root:"$SERVICE_USER" "$INSTALL_ROOT/run.sh"
 chmod 0750 "$INSTALL_ROOT/run.sh"
