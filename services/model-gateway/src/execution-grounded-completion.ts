@@ -77,7 +77,7 @@ function namedAssignment(outputs: readonly unknown[], identifier: string): strin
   const patterns = [
     new RegExp(`\\b${escaped}\\b\\s*=\\s*"([^"\\r\\n]+)"`),
     new RegExp(`\\b${escaped}\\b\\s*=\\s*'([^'\\r\\n]+)'`),
-    new RegExp(`\\b${escaped}\\b\\s*=\\s*\\`([^\\`\\r\\n]+)\\``)
+    new RegExp("\\b" + escaped + "\\b\\s*=\\s*`([^`\\r\\n]+)`")
   ];
   for (let index = outputs.length - 1; index >= 0; index -= 1) {
     const strings: string[] = [];
