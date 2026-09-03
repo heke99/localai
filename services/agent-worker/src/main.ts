@@ -19,6 +19,7 @@ import { CompositeWorkerToolRuntime } from "./composite-tool-runtime";
 import { DynamicToolBroker } from "./dynamic-tool-broker";
 import { CoreToolRuntime } from "./core-tool-runtime";
 import { BrowserToolRuntime } from "./browser-tool-runtime";
+import { ScopedHttpToolRuntime } from "./scoped-http-tool-runtime";
 import { HttpSecurityToolExecutor, SecurityToolRuntime } from "./security-tool-runtime";
 import { RemoteProviderToolExecutor } from "./remote-provider-executor";
 import { RemoteRepositoryWorkspaceRuntime } from "./repository-runtime";
@@ -165,6 +166,11 @@ const coreToolRuntime = new CoreToolRuntime({
   fetchTimeoutMs: numericEnvironment("DIV3RSA_WEB_FETCH_TIMEOUT_MS", 12_000),
   searchTimeoutMs: numericEnvironment("DIV3RSA_WEB_SEARCH_TIMEOUT_MS", 10_000)
 });
+const scopedHttpToolRuntime = new ScopedHttpToolRuntime({
+  egressProxyUrl: process.env.DIV3RSA_EGRESS_PROXY_URL?.trim() || null,
+  timeoutMs: numericEnvironment("DIV3RSA_HTTP_REQUEST_TIMEOUT_MS", 30_000),
+  maxResponseBytes: numericEnvironment("DIV3RSA_HTTP_REQUEST_MAX_BYTES", 1_000_000)
+});
 const gatewayUrl = process.env.DIV3RSA_INTEGRATION_GATEWAY_URL?.trim() || "https://system.div3rsa.com/api/internal/integrations/execute";
 const remoteExecutor = new RemoteProviderToolExecutor(gatewayUrl);
 const executors = new Map([
@@ -190,7 +196,7 @@ const browserToolRuntime = new BrowserToolRuntime({
   timeoutMs: numericEnvironment("DIV3RSA_BROWSER_TIMEOUT_MS", 30_000)
 });
 const browserToolRuntimeEnabled = Boolean(browserExecutorUrl && browserExecutorToken);
-const baseToolRuntime = new CompositeWorkerToolRuntime([coreToolRuntime, integrationToolRuntime, securityToolRuntime, browserToolRuntime]);
+const baseToolRuntime = new CompositeWorkerToolRuntime([coreToolRuntime, scopedHttpToolRuntime, integrationToolRuntime, securityToolRuntime, browserToolRuntime]);
 const dynamicToolDiscoveryEnabled = booleanEnvironment("DIV3RSA_DYNAMIC_TOOL_DISCOVERY_ENABLED", false);
 const discoveredToolRuntime = new DynamicToolBroker(baseToolRuntime, {
   enabled: dynamicToolDiscoveryEnabled,
