@@ -26,6 +26,7 @@ const EXPLANATORY_ONLY = /^\s*(?:explain|describe|what\s+is|how\s+does|why\s+doe
 const READ_FIRST = /\bread(?:\s+the\s+\w+){0,3}\s+first\b/i;
 const READ_ONLY = /\bread[- ]only\b|\bdo\s+not\s+(?:call\s+any\s+)?(?:mutation|write|set|update|change)\b|\bwithout\s+(?:changing|mutating|writing|updating)\b|\bexplicitly\s+forbidden\s+to\s+mutate\b/i;
 const IDEMPOTENT = /\bidempoten(?:t|tly|cy)\b|\bonly\s+if\s+(?:needed|necessary|the\s+current\s+value\s+differs|current\s+value\s+differs)\b|\bif\s+already\b[\s\S]{0,80}\bdo\s+not\s+write\b/i;
+const WRITE_TOOL_NAME = /(?:^|[._:-])(?:set|write|update|mutate|change)(?:$|[._:-])|_(?:set|write|update|mutate|change)$/i;
 const NUMBER_WORDS: Record<string, number> = {
   one: 1,
   two: 2,
@@ -265,7 +266,8 @@ function remainingObligation(
     executedIndex += 1;
   }
 
-  if (IDEMPOTENT.test(prompt) && queue[0]?.kind === "write") {
+  const pending = queue[0];
+  if (IDEMPOTENT.test(prompt) && pending && (pending.kind === "write" || WRITE_TOOL_NAME.test(pending.toolName))) {
     const desired = desiredValue(prompt);
     const current = latestAuthoritativeValue(messages);
     if (desired && current === desired) queue.shift();
