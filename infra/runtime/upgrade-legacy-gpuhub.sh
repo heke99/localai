@@ -65,6 +65,20 @@ PY
   chmod 600 "$ENV_FILE"
 }
 
+remove_env_value() {
+  local key="$1"
+  python3 - "$ENV_FILE" "$key" <<'PY'
+from pathlib import Path
+import re, sys
+path = Path(sys.argv[1])
+key = sys.argv[2]
+text = path.read_text(encoding="utf-8")
+pattern = re.compile(rf"^(?:export\s+)?{re.escape(key)}=.*(?:\n|$)", re.M)
+path.write_text(pattern.sub("", text), encoding="utf-8")
+PY
+  chmod 600 "$ENV_FILE"
+}
+
 # GPUHub intentionally keeps the model/search/security runtimes native. Add the
 # new public-web egress boundary the same way so the agent gets outbound HTTP(S)
 # without host networking or a Docker dependency.
@@ -73,30 +87,48 @@ EGRESS_SCRIPT="${REPO_DIR}/infra/runtime/provision-egress-proxy-gpuhub.sh"
 DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" bash "$EGRESS_SCRIPT"
 EGRESS_URL="http://127.0.0.1:7318"
 
-# The browser executor is isolated from the worker under its own system account.
-# It accepts only run-scoped browser operations and routes every public request
-# through the DNS-pinned egress proxy above.
+# The browser executor is optional only when the host cannot provide any of the
+# explicitly verified isolation boundaries. That exact condition is signaled by
+# exit code 78. Every other browser provisioning failure remains fatal.
 BROWSER_SCRIPT="${REPO_DIR}/infra/runtime/provision-browser-executor-gpuhub.sh"
 [[ -f "$BROWSER_SCRIPT" ]] || { echo "GPUHub browser provisioner missing after upgrade: $BROWSER_SCRIPT" >&2; exit 1; }
-DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" \
-DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" \
-DIV3RSA_EGRESS_PROXY_URL="$EGRESS_URL" \
-  bash "$BROWSER_SCRIPT"
 BROWSER_URL="http://127.0.0.1:7320"
 BROWSER_TOKEN_FILE="${DIV3RSA_BROWSER_EXECUTOR_TOKEN_FILE:-/var/lib/div3rsa-browser/executor.token}"
-[[ -s "$BROWSER_TOKEN_FILE" ]] || { echo "GPUHub browser token missing: $BROWSER_TOKEN_FILE" >&2; exit 1; }
-BROWSER_TOKEN="$(tr -d '\r\n' <"$BROWSER_TOKEN_FILE")"
-[[ "$BROWSER_TOKEN" =~ ^[0-9a-f]{64}$ ]] || { echo "GPUHub browser token invalid" >&2; exit 1; }
+BROWSER_AVAILABLE=0
+browser_rc=0
+if DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" \
+  DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" \
+  DIV3RSA_EGRESS_PROXY_URL="$EGRESS_URL" \
+  bash "$BROWSER_SCRIPT"; then
+  BROWSER_AVAILABLE=1
+else
+  browser_rc=$?
+  if [[ "$browser_rc" -ne 78 ]]; then
+    echo "GPUHub browser provisioner failed unexpectedly: rc=${browser_rc}" >&2
+    exit "$browser_rc"
+  fi
+  echo "[gpuhub-upgrade] browser capability disabled: unavailable_host_isolation"
+fi
 
 ensure_env_value NODE_USE_ENV_PROXY "1"
 ensure_env_value HTTP_PROXY "$EGRESS_URL"
 ensure_env_value HTTPS_PROXY "$EGRESS_URL"
 ensure_env_value NO_PROXY "localhost,127.0.0.1,::1"
 ensure_env_value DIV3RSA_EGRESS_PROXY_URL "$EGRESS_URL"
-ensure_env_value DIV3RSA_BROWSER_EXECUTOR_URL "$BROWSER_URL"
-ensure_env_value DIV3RSA_BROWSER_EXECUTOR_TOKEN "$BROWSER_TOKEN"
-ensure_env_value DIV3RSA_BROWSER_TIMEOUT_MS "30000"
-unset BROWSER_TOKEN
+
+if [[ "$BROWSER_AVAILABLE" -eq 1 ]]; then
+  [[ -s "$BROWSER_TOKEN_FILE" ]] || { echo "GPUHub browser token missing: $BROWSER_TOKEN_FILE" >&2; exit 1; }
+  BROWSER_TOKEN="$(tr -d '\r\n' <"$BROWSER_TOKEN_FILE")"
+  [[ "$BROWSER_TOKEN" =~ ^[0-9a-f]{64}$ ]] || { echo "GPUHub browser token invalid" >&2; exit 1; }
+  ensure_env_value DIV3RSA_BROWSER_EXECUTOR_URL "$BROWSER_URL"
+  ensure_env_value DIV3RSA_BROWSER_EXECUTOR_TOKEN "$BROWSER_TOKEN"
+  ensure_env_value DIV3RSA_BROWSER_TIMEOUT_MS "30000"
+  unset BROWSER_TOKEN
+else
+  remove_env_value DIV3RSA_BROWSER_EXECUTOR_URL
+  remove_env_value DIV3RSA_BROWSER_EXECUTOR_TOKEN
+  remove_env_value DIV3RSA_BROWSER_TIMEOUT_MS
+fi
 
 # Reload only the agent worker so the model stays hot. The recovery path detects
 # the healthy Qwen server and recreates the missing worker with the new env.
@@ -106,6 +138,15 @@ RECOVERY_SCRIPT="${REPO_DIR}/infra/runtime/recover-legacy-gpuhub.sh"
 DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" bash "$RECOVERY_SCRIPT"
 
 curl --fail --silent --show-error --max-time 3 "${EGRESS_URL}/_div3rsa_health" >/dev/null
-curl --fail --silent --show-error --max-time 3 "${BROWSER_URL}/health" >/dev/null
+if [[ "$BROWSER_AVAILABLE" -eq 1 ]]; then
+  curl --fail --silent --show-error --max-time 3 "${BROWSER_URL}/health" >/dev/null
+  browser_state="$BROWSER_URL"
+else
+  if curl --fail --silent --show-error --max-time 2 "${BROWSER_URL}/health" >/dev/null 2>&1; then
+    echo "GPUHub browser listener remained active after unavailable_host_isolation" >&2
+    exit 1
+  fi
+  browser_state="unavailable_host_isolation"
+fi
 screen -list | grep -F ".${WORKER_SCREEN}" >/dev/null || { echo "GPUHub worker unavailable after network sidecar cutover" >&2; exit 1; }
-printf '[gpuhub-upgrade] network sidecars ready egress=%s browser=%s worker=%s\n' "$EGRESS_URL" "$BROWSER_URL" "$WORKER_SCREEN"
+printf '[gpuhub-upgrade] network sidecars ready egress=%s browser=%s worker=%s\n' "$EGRESS_URL" "$browser_state" "$WORKER_SCREEN"

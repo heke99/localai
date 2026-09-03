@@ -24,6 +24,7 @@ BROWSER_URL="http://${LISTEN_HOST}:${LISTEN_PORT}"
 EGRESS_URL="${DIV3RSA_EGRESS_PROXY_URL:-http://127.0.0.1:7318}"
 TOKEN_FILE="${DIV3RSA_BROWSER_EXECUTOR_TOKEN_FILE:-${STATE_ROOT}/executor.token}"
 ENV_FILE="${DIV3RSA_BROWSER_EXECUTOR_ENV_FILE:-${STATE_ROOT}/executor.env}"
+UNAVAILABLE_FILE="${DIV3RSA_BROWSER_UNAVAILABLE_FILE:-${STATE_ROOT}/unavailable.reason}"
 PLAYWRIGHT_VERSION="1.62.1"
 BROWSERS_PATH="${INSTALL_ROOT}/browsers"
 PACKAGE_FILE="${INSTALL_ROOT}/package.json"
@@ -68,6 +69,16 @@ install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0700 "$STATE_ROOT" "$TMP_ROO
 # account gets only an executable copy of the already-validated Node 24 binary.
 install -o root -g "$SERVICE_USER" -m 0755 "$NODE_BIN" "$SIDECAR_NODE_BIN"
 "$SIDECAR_NODE_BIN" -e 'if(Number(process.versions.node.split(".")[0])<24)process.exit(1)' || fatal "browser Node copy is invalid"
+
+mark_host_isolation_unavailable() {
+  screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
+  rm -f "$TOKEN_FILE" "$ENV_FILE"
+  printf '%s\n' 'unavailable_host_isolation' >"$UNAVAILABLE_FILE"
+  chown root:"$SERVICE_USER" "$UNAVAILABLE_FILE"
+  chmod 0640 "$UNAVAILABLE_FILE"
+  log "browser unavailable: host cannot provide a safe Chromium or outer network isolation boundary"
+  exit 78
+}
 
 install -o root -g "$SERVICE_USER" -m 0640 "$REPO_DIR/services/browser-executor/src/main.ts" "$INSTALL_ROOT/main.ts"
 install -o root -g "$SERVICE_USER" -m 0640 "$REPO_DIR/services/browser-executor/src/policy.ts" "$INSTALL_ROOT/policy.ts"
@@ -217,10 +228,11 @@ elif try_selective_apparmor_userns; then
   ISOLATION_MODE="chromium"
 else
   log "Chromium user-namespace sandbox unavailable; requiring kernel UID firewall outer isolation"
-  configure_uid_firewall || fatal "no safe browser isolation mode is available on this GPUHub host"
+  configure_uid_firewall || mark_host_isolation_unavailable
   ISOLATION_MODE="uid-firewall"
 fi
 
+rm -f "$UNAVAILABLE_FILE"
 if [[ ! -s "$TOKEN_FILE" ]]; then
   umask 077
   "$NODE_BIN" -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))' >"$TOKEN_FILE"
