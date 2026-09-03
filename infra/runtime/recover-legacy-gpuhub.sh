@@ -63,7 +63,7 @@ PY
 }
 
 browser_env_present() {
-  [[ -f "$ENV_FILE" ]] && grep -Eq '^(?:export[[:space:]]+)?DIV3RSA_BROWSER_EXECUTOR_(URL|TOKEN)=' "$ENV_FILE"
+  [[ -f "$ENV_FILE" ]] && grep -Eq '^(export[[:space:]]+)?DIV3RSA_BROWSER_EXECUTOR_(URL|TOKEN)=' "$ENV_FILE"
 }
 
 # Only the canonical post-checkout wrapper may restore independent runtimes. At
