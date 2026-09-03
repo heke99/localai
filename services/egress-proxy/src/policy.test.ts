@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isBlockedEgressAddress, isBlockedEgressHostname, resolvePublicEgressTarget } from "./policy";
+import { isBlockedEgressAddress, isBlockedEgressHostname, resolvePublicEgressTarget, type EgressDnsResolver } from "./policy";
 
 describe("egress proxy policy", () => {
   it.each([
@@ -29,16 +29,16 @@ describe("egress proxy policy", () => {
   });
 
   it("fails closed if any DNS answer resolves to a blocked address", async () => {
-    const resolver = (async () => [
-      { address: "1.1.1.1", family: 4 as const },
-      { address: "127.0.0.1", family: 4 as const }
-    ]) as typeof import("node:dns/promises").lookup;
+    const resolver: EgressDnsResolver = async () => [
+      { address: "1.1.1.1", family: 4 },
+      { address: "127.0.0.1", family: 4 }
+    ];
 
     await expect(resolvePublicEgressTarget("example.test", 443, resolver)).rejects.toThrow("egress_address_blocked");
   });
 
   it("pins a public DNS answer and only allows web ports", async () => {
-    const resolver = (async () => [{ address: "1.1.1.1", family: 4 as const }]) as typeof import("node:dns/promises").lookup;
+    const resolver: EgressDnsResolver = async () => [{ address: "1.1.1.1", family: 4 }];
     await expect(resolvePublicEgressTarget("example.test", 443, resolver)).resolves.toEqual({
       host: "example.test",
       address: "1.1.1.1",
