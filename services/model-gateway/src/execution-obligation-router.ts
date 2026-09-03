@@ -48,10 +48,10 @@ function executedToolNames(messages: readonly ModelMessage[]): string[] {
   return names;
 }
 
-function latestToolMessage(messages: readonly ModelMessage[]): Extract<ModelMessage, { role: "tool" }> | null {
+function latestToolMessage(messages: readonly ModelMessage[]): ModelMessage | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message?.role === "tool") return message as Extract<ModelMessage, { role: "tool" }>;
+    if (message?.role === "tool") return message;
   }
   return null;
 }
@@ -186,8 +186,6 @@ function normalizeObligations(prompt: string, tools: readonly ModelToolDefinitio
   const combined = [...explicitToolObligations(prompt, tools), ...semanticObligations(prompt, tools)]
     .sort((a, b) => a.position - b.position);
 
-  // "Read first" is an explicit sequencing override even when a sentence begins
-  // with the mutation goal (for example: "Set X idempotently. Read first...").
   if (READ_FIRST.test(prompt)) {
     const readIndex = combined.findIndex((item) => item.kind === "read" || /(?:^|[_:. -])read$/i.test(item.toolName));
     if (readIndex > 0) {
@@ -196,8 +194,6 @@ function normalizeObligations(prompt: string, tools: readonly ModelToolDefinitio
     }
   }
 
-  // Exact tool names and semantic intent often describe the same obligation.
-  // Collapse adjacent duplicates while keeping intentional repeated chain steps.
   const deduped: Obligation[] = [];
   for (const obligation of combined) {
     const previous = deduped[deduped.length - 1];
@@ -223,9 +219,6 @@ function remainingObligation(
       executedIndex += 1;
       continue;
     }
-
-    // A tool outside the explicit plan may supply supporting evidence. Do not
-    // consume the obligation; keep looking at the next actual call.
     executedIndex += 1;
   }
 
@@ -249,12 +242,6 @@ function obligationInstruction(prompt: string, route: Obligation, executed: read
   ].filter(Boolean).join(" ");
 }
 
-/**
- * Finds the next tool that the user explicitly required but the actual native
- * tool trace has not yet satisfied. This is an execution-completion router, not
- * a planner: it stays inactive for explanatory prompts and never invents a new
- * capability. The selected tool must already be exposed in the request.
- */
 export function routeExecutionObligation(request: GenerateRequest): ExecutionObligationRoute | null {
   const tools = request.tools ?? [];
   if (!tools.length || request.requiredToolName?.trim()) return null;
