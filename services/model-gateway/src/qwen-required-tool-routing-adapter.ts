@@ -75,28 +75,92 @@ function isSingletonPropertySchema(value: unknown): boolean {
   return Array.isArray(property.enum) && property.enum.length === 1;
 }
 
+function latestAuthoritativeToolResult(request: GenerateRequest): Record<string, unknown> | null {
+  for (let index = request.messages.length - 1; index >= 0; index -= 1) {
+    const message = request.messages[index];
+    if (message?.role !== "tool") continue;
+    try {
+      const parsed = JSON.parse(message.content) as unknown;
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") return null;
+      return parsed as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 /**
- * The schema fallback is deliberately narrower than ordinary JSON-schema
- * validation. Every top-level argument must be required, additional properties
- * must be forbidden, and every value must have exactly one possible value. This
- * means the grammar can only serialize arguments that are already fixed by the
- * tool contract; it cannot invent evidence-bearing or user-derived values.
+ * Build the only schema-grammar fallback we permit after llama.cpp/Qwen ignored
+ * an explicit required tool twice.
+ *
+ * The fallback stays fail-closed:
+ * - every top-level argument is required and additional properties are forbidden;
+ * - already-singleton arguments keep their existing deterministic constraint;
+ * - a free string argument is allowed only when the most recent runtime tool
+ *   result contains the same field name with an exact string value;
+ * - that authoritative value is converted into a one-value enum before the
+ *   grammar request is sent, so the model cannot invent or transform evidence.
+ *
+ * This supports exact tool-result continuation without turning arbitrary user,
+ * web, repository, or model text into executable tool arguments.
  */
-function hasClosedSingletonArguments(request: GenerateRequest): boolean {
+function deterministicSchemaFallbackRequest(request: GenerateRequest): GenerateRequest | null {
   const tool = requiredToolDefinition(request);
-  if (!tool) return false;
+  if (!tool) return null;
   const schema = tool.inputSchema as Record<string, unknown>;
-  if (schema.type !== "object" || schema.additionalProperties !== false) return false;
-  if (!Array.isArray(schema.required) || !schema.required.length) return false;
-  if (!schema.properties || typeof schema.properties !== "object" || Array.isArray(schema.properties)) return false;
+  if (schema.type !== "object" || schema.additionalProperties !== false) return null;
+  if (!Array.isArray(schema.required) || !schema.required.length) return null;
+  if (!schema.properties || typeof schema.properties !== "object" || Array.isArray(schema.properties)) return null;
 
   const required = schema.required.filter((value): value is string => typeof value === "string");
-  if (required.length !== schema.required.length) return false;
+  if (required.length !== schema.required.length) return null;
   const properties = schema.properties as Record<string, unknown>;
   const keys = Object.keys(properties);
-  if (keys.length !== required.length) return false;
-  if (keys.some((key) => !required.includes(key))) return false;
-  return required.every((key) => isSingletonPropertySchema(properties[key]));
+  if (keys.length !== required.length) return null;
+  if (keys.some((key) => !required.includes(key))) return null;
+
+  const authoritative = latestAuthoritativeToolResult(request);
+  const constrainedProperties: Record<string, unknown> = {};
+  let copiedFromToolResult = false;
+
+  for (const key of required) {
+    const rawProperty = properties[key];
+    if (!rawProperty || typeof rawProperty !== "object" || Array.isArray(rawProperty)) return null;
+    const property = rawProperty as Record<string, unknown>;
+
+    if (isSingletonPropertySchema(property)) {
+      constrainedProperties[key] = property;
+      continue;
+    }
+
+    if (property.type !== "string" || !authoritative) return null;
+    const authoritativeValue = authoritative[key];
+    if (typeof authoritativeValue !== "string") return null;
+    if (Array.isArray(property.enum) && !property.enum.includes(authoritativeValue)) return null;
+
+    constrainedProperties[key] = { ...property, enum: [authoritativeValue] };
+    copiedFromToolResult = true;
+  }
+
+  if (!required.every((key) => isSingletonPropertySchema(constrainedProperties[key]))) return null;
+
+  const constrainedTool: ModelToolDefinition = {
+    ...tool,
+    inputSchema: {
+      ...schema,
+      properties: constrainedProperties
+    }
+  };
+
+  // Pure singleton contracts are already deterministic. Evidence-copy contracts
+  // are deterministic only because copied fields were bound to the runtime result.
+  if (!copiedFromToolResult && required.some((key) => !isSingletonPropertySchema(properties[key]))) return null;
+
+  return {
+    ...request,
+    tools: [constrainedTool]
+  };
 }
 
 /**
@@ -108,10 +172,10 @@ function hasClosedSingletonArguments(request: GenerateRequest): boolean {
  *
  * Some llama.cpp/Qwen chat-template combinations accept tool_choice=required but
  * do not enforce it. Required-tool traffic therefore tries native no-thinking,
- * then one native thinking-enabled retry. If both are ignored, only a completely
- * closed singleton argument schema may use the existing Qwen json_schema grammar
- * path. Free-form/evidence-derived arguments never take that fallback and remain
- * fail-closed on a missing native call.
+ * then one native thinking-enabled retry. If both are ignored, only arguments
+ * that are already deterministic (singleton schema values or exact same-key
+ * strings from the latest runtime tool result) may use the Qwen json_schema
+ * grammar path. Everything else remains fail-closed.
  */
 export class QwenRequiredToolRoutingAdapter implements ModelAdapter {
   private readonly strict: StrictToolProtocolOpenAiCompatibleAdapter;
@@ -172,8 +236,9 @@ export class QwenRequiredToolRoutingAdapter implements ModelAdapter {
         return await this.requiredNativeThinkingFallback.generate(nativeRequest);
       } catch (retryError) {
         if (!isRequiredToolMismatch(retryError, requiredToolName)) throw retryError;
-        if (!hasClosedSingletonArguments(nativeRequest)) throw retryError;
-        return this.requiredSchemaFallback.generate(nativeRequest);
+        const fallbackRequest = deterministicSchemaFallbackRequest(nativeRequest);
+        if (!fallbackRequest) throw retryError;
+        return this.requiredSchemaFallback.generate(fallbackRequest);
       }
     }
   }
