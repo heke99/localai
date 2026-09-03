@@ -83,7 +83,7 @@ DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" \
 DIV3RSA_EGRESS_PROXY_URL="$EGRESS_URL" \
   bash "$BROWSER_SCRIPT"
 BROWSER_URL="http://127.0.0.1:7320"
-BROWSER_TOKEN_FILE="${DIV3RSA_BROWSER_EXECUTOR_TOKEN_FILE:-/etc/div3rsa/browser-executor.token}"
+BROWSER_TOKEN_FILE="${DIV3RSA_BROWSER_EXECUTOR_TOKEN_FILE:-/var/lib/div3rsa-browser/executor.token}"
 [[ -s "$BROWSER_TOKEN_FILE" ]] || { echo "GPUHub browser token missing: $BROWSER_TOKEN_FILE" >&2; exit 1; }
 BROWSER_TOKEN="$(tr -d '\r\n' <"$BROWSER_TOKEN_FILE")"
 [[ "$BROWSER_TOKEN" =~ ^[0-9a-f]{64}$ ]] || { echo "GPUHub browser token invalid" >&2; exit 1; }
