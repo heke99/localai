@@ -7,6 +7,13 @@ export interface BrowserScope {
   allowIpv4Cidrs: string[];
 }
 
+export type BrowserDnsResolver = (hostname: string) => Promise<Array<{ address: string; family: 4 | 6 }>>;
+
+const defaultResolver: BrowserDnsResolver = async (hostname) => {
+  const entries = await lookup(hostname, { all: true, verbatim: true });
+  return entries.map((entry) => ({ address: entry.address, family: entry.family as 4 | 6 }));
+};
+
 function normalizeHost(value: string): string {
   return value.trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
 }
@@ -71,7 +78,7 @@ export function scopeFingerprint(scope: BrowserScope): string {
 export async function assertBrowserUrlAllowed(
   rawUrl: string,
   scope: BrowserScope,
-  resolver: typeof lookup = lookup
+  resolver: BrowserDnsResolver = defaultResolver
 ): Promise<URL> {
   let url: URL;
   try {
@@ -89,7 +96,7 @@ export async function assertBrowserUrlAllowed(
 
   const addresses = isIP(host)
     ? [{ address: host, family: isIP(host) as 4 | 6 }]
-    : await resolver(host, { all: true, verbatim: true });
+    : await resolver(host);
   if (!addresses.length) throw new Error("browser_target_dns_failed");
   for (const entry of addresses) {
     const address = normalizeHost(entry.address);
