@@ -67,7 +67,7 @@ jobs:
           app_dir="/root/autodl-tmp/localai/app"
           proxy="http://127.0.0.1:7318"
           browser="http://127.0.0.1:7320"
-          token_file="/etc/div3rsa/browser-executor.token"
+          token_file="/var/lib/div3rsa-browser/executor.token"
 
           cd "$app_dir"
           git cat-file -e "${expected_sha}^{commit}"
