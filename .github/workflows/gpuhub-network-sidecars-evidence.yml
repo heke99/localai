@@ -65,10 +65,12 @@ jobs:
           set -Eeuo pipefail
           expected_sha="$1"
           app_dir="/root/autodl-tmp/localai/app"
+          node_bin="/root/autodl-tmp/localai/runtime/node-current/bin/node"
           proxy="http://127.0.0.1:7318"
           browser="http://127.0.0.1:7320"
           token_file="/var/lib/div3rsa-browser/executor.token"
-          sandbox_file="/opt/div3rsa/browser-executor/chrome-devel-sandbox"
+          browser_user="div3rsa-browser"
+          firewall_chain="DIV3RSA_BROWSER"
 
           cd "$app_dir"
           git cat-file -e "${expected_sha}^{commit}"
@@ -77,27 +79,38 @@ jobs:
             echo "GPUHub checkout does not contain verified deployment: expected=$expected_sha current=$current_sha" >&2
             exit 1
           }
+          [[ -x "$node_bin" ]] || { echo "tracked GPUHub Node runtime missing" >&2; exit 1; }
 
           screen -list | grep -F '.localai-egress' >/dev/null
           screen -list | grep -F '.localai-browser' >/dev/null
           curl --fail --silent --show-error --max-time 3 "$proxy/_div3rsa_health" >/dev/null
-          curl --fail --silent --show-error --max-time 3 "$browser/health" >/dev/null
+          health_json="$(curl --fail --silent --show-error --max-time 3 "$browser/health")"
+          isolation="$($node_bin -e 'const h=JSON.parse(process.argv[1]);if(h.ok!==true||h.service!=="browser-executor"||h.proxy!==true)process.exit(1);process.stdout.write(String(h.isolation||""))' "$health_json")"
+          chromium_sandbox="$($node_bin -e 'const h=JSON.parse(process.argv[1]);process.stdout.write(String(h.chromiumSandbox))' "$health_json")"
+          case "$isolation" in
+            chromium)
+              [[ "$chromium_sandbox" == "true" ]] || { echo "Chromium isolation reported without Chromium sandbox" >&2; exit 1; }
+              ;;
+            uid-firewall)
+              [[ "$chromium_sandbox" == "false" ]] || { echo "UID-firewall isolation must disable only Chromium's unavailable inner sandbox" >&2; exit 1; }
+              ;;
+            *)
+              echo "unknown browser isolation mode: $isolation" >&2
+              exit 1
+              ;;
+          esac
 
           egress_pid="$(pgrep -f '/opt/div3rsa/egress-proxy/main\.ts' | head -n1 || true)"
           browser_pid="$(pgrep -f '/opt/div3rsa/browser-executor/main\.ts' | head -n1 || true)"
           [[ -n "$egress_pid" && -n "$browser_pid" ]] || { echo "sidecar process PID missing" >&2; exit 1; }
           grep -Eq '^NoNewPrivs:[[:space:]]+1$' "/proc/${egress_pid}/status"
-          grep -Eq '^NoNewPrivs:[[:space:]]+0$' "/proc/${browser_pid}/status"
+          grep -Eq '^NoNewPrivs:[[:space:]]+1$' "/proc/${browser_pid}/status"
           [[ "$(awk '/^Uid:/{print $2}' "/proc/${egress_pid}/status")" != "0" ]]
-          [[ "$(awk '/^Uid:/{print $2}' "/proc/${browser_pid}/status")" != "0" ]]
-          [[ -f "$sandbox_file" ]] || { echo "Chromium SUID sandbox helper missing" >&2; exit 1; }
-          [[ "$(stat -c '%u:%g:%a' "$sandbox_file")" == "0:0:4755" ]] || {
-            echo "Chromium SUID sandbox helper permissions invalid" >&2
-            stat -c '%u:%g:%a %n' "$sandbox_file" >&2 || true
-            exit 1
-          }
-          browser_env="$(tr '\0' '\n' <"/proc/${browser_pid}/environ")"
-          grep -Fxq "CHROME_DEVEL_SANDBOX=${sandbox_file}" <<<"$browser_env"
+          browser_uid="$(awk '/^Uid:/{print $2}' "/proc/${browser_pid}/status")"
+          [[ "$browser_uid" != "0" ]] || { echo "browser executor unexpectedly runs as root" >&2; exit 1; }
+          grep -Eq '^CapEff:[[:space:]]+0+$' "/proc/${browser_pid}/status" || { echo "browser executor effective capabilities are not empty" >&2; exit 1; }
+          grep -Eq '^CapBnd:[[:space:]]+0+$' "/proc/${browser_pid}/status" || { echo "browser executor capability bounding set is not empty" >&2; exit 1; }
+          browser_gid="$(id -g "$browser_user")"
 
           blocked_code="$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' --proxy "$proxy" http://127.0.0.1/ || true)"
           [[ "$blocked_code" == "403" ]] || { echo "loopback egress negative gate failed: $blocked_code" >&2; exit 1; }
@@ -111,22 +124,60 @@ jobs:
 
           allowed_payload='{"runId":"gpuhub-evidence","requestId":"navigate-allowed","traceId":"gpuhub-network-evidence","action":"browser_navigate","timeoutMs":15000,"executionClass":"passive","scope":{"scopeId":"evidence-example","allowHosts":["example.com"],"allowIpv4Cidrs":[]},"input":{"url":"https://example.com/"}}'
           allowed_result="$(curl --fail --silent --show-error --max-time 20 -H "authorization: Bearer ${token}" -H 'content-type: application/json' --data-binary "$allowed_payload" "$browser/v1/execute")"
-          node -e 'const v=JSON.parse(process.argv[1]);if(v.ok!==true||v.action!=="browser_navigate"||!String(v.url||"").startsWith("https://example.com"))process.exit(1)' "$allowed_result"
+          "$node_bin" -e 'const v=JSON.parse(process.argv[1]);if(v.ok!==true||v.action!=="browser_navigate"||!String(v.url||"").startsWith("https://example.com"))process.exit(1)' "$allowed_result"
 
-          browser_uid="$(awk '/^Uid:/{print $2}' "/proc/${browser_pid}/status")"
           chromium_processes="$(pgrep -a -u "$browser_uid" -f '/opt/div3rsa/browser-executor/browsers/chromium-.*/chrome-linux64/chrome' || true)"
-          [[ -n "$chromium_processes" ]] || { echo "sandboxed Chromium process missing" >&2; exit 1; }
-          if grep -F -- '--no-sandbox' <<<"$chromium_processes" >/dev/null; then
-            echo "Chromium unexpectedly launched with --no-sandbox" >&2
-            exit 1
-          fi
-          renderer_pid="$(pgrep -u "$browser_uid" -f 'chrome.*--type=renderer' | head -n1 || true)"
-          [[ -n "$renderer_pid" ]] || { echo "Chromium renderer process missing after navigation" >&2; exit 1; }
-          grep -Eq '^Seccomp:[[:space:]]+2$' "/proc/${renderer_pid}/status" || {
-            echo "Chromium renderer seccomp sandbox not active" >&2
-            cat "/proc/${renderer_pid}/status" >&2 || true
+          [[ -n "$chromium_processes" ]] || { echo "Chromium process missing after navigation" >&2; exit 1; }
+          grep -F -- '--proxy-server=http://127.0.0.1:7318' <<<"$chromium_processes" >/dev/null || {
+            echo "Chromium is not pinned to the controlled egress proxy" >&2
             exit 1
           }
+
+          if [[ "$isolation" == "chromium" ]]; then
+            if grep -F -- '--no-sandbox' <<<"$chromium_processes" >/dev/null; then
+              echo "Chromium isolation mode unexpectedly launched with --no-sandbox" >&2
+              exit 1
+            fi
+            renderer_pid="$(pgrep -u "$browser_uid" -f 'chrome.*--type=renderer' | head -n1 || true)"
+            [[ -n "$renderer_pid" ]] || { echo "Chromium renderer process missing after navigation" >&2; exit 1; }
+            grep -Eq '^Seccomp:[[:space:]]+2$' "/proc/${renderer_pid}/status" || {
+              echo "Chromium renderer seccomp sandbox not active" >&2
+              cat "/proc/${renderer_pid}/status" >&2 || true
+              exit 1
+            }
+          else
+            command -v iptables >/dev/null 2>&1 || { echo "iptables missing for uid-firewall isolation" >&2; exit 1; }
+            command -v ip6tables >/dev/null 2>&1 || { echo "ip6tables missing for uid-firewall isolation" >&2; exit 1; }
+            iptables -C OUTPUT -m owner --uid-owner "$browser_uid" -j "$firewall_chain"
+            iptables -C "$firewall_chain" -p tcp -d 127.0.0.1 --dport 7318 -j ACCEPT
+            iptables -C "$firewall_chain" -j REJECT
+            ip6tables -C OUTPUT -m owner --uid-owner "$browser_uid" -j "$firewall_chain"
+            ip6tables -C "$firewall_chain" -j REJECT
+
+            run_browser() {
+              setpriv \
+                --reuid="$browser_uid" \
+                --regid="$browser_gid" \
+                --init-groups \
+                --no-new-privs \
+                --bounding-set=-all \
+                --inh-caps=-all \
+                --ambient-caps=-all \
+                "$@"
+            }
+            if run_browser curl --silent --fail --max-time 3 http://127.0.0.1:6006/health >/dev/null 2>&1; then
+              echo "uid-firewall browser can reach the model directly" >&2
+              exit 1
+            fi
+            if run_browser curl --silent --fail --insecure --max-time 3 https://1.1.1.1/ >/dev/null 2>&1; then
+              echo "uid-firewall browser can reach the public internet directly" >&2
+              exit 1
+            fi
+            run_browser curl --silent --fail --max-time 10 --proxy "$proxy" https://example.com/ >/dev/null || {
+              echo "uid-firewall browser cannot use the approved proxy" >&2
+              exit 1
+            }
+          fi
 
           blocked_payload='{"runId":"gpuhub-evidence-blocked","requestId":"navigate-blocked","traceId":"gpuhub-network-evidence","action":"browser_navigate","timeoutMs":10000,"executionClass":"passive","scope":{"scopeId":"evidence-example","allowHosts":["example.com"],"allowIpv4Cidrs":[]},"input":{"url":"https://www.iana.org/"}}'
           browser_blocked_code="$(curl --silent --show-error --max-time 15 --output /tmp/div3rsa-browser-blocked.json --write-out '%{http_code}' -H "authorization: Bearer ${token}" -H 'content-type: application/json' --data-binary "$blocked_payload" "$browser/v1/execute" || true)"
@@ -143,5 +194,5 @@ jobs:
           grep -Fxq 'DIV3RSA_BROWSER_EXECUTOR_URL=http://127.0.0.1:7320' <<<"$worker_env"
           grep -Eq '^DIV3RSA_BROWSER_EXECUTOR_TOKEN=[0-9a-f]{64}$' <<<"$worker_env"
 
-          echo "GPUHUB_NETWORK_SIDECARS_E2E_OK commit=${current_sha} chromium_sandbox=suid+seccomp"
+          echo "GPUHUB_NETWORK_SIDECARS_E2E_OK commit=${current_sha} browser_isolation=${isolation}"
           REMOTE
