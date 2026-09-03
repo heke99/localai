@@ -18,6 +18,7 @@ import { PermissionedIntegrationToolRuntime } from "./integration-tool-runtime";
 import { CompositeWorkerToolRuntime } from "./composite-tool-runtime";
 import { DynamicToolBroker } from "./dynamic-tool-broker";
 import { CoreToolRuntime } from "./core-tool-runtime";
+import { BrowserToolRuntime } from "./browser-tool-runtime";
 import { HttpSecurityToolExecutor, SecurityToolRuntime } from "./security-tool-runtime";
 import { RemoteProviderToolExecutor } from "./remote-provider-executor";
 import { RemoteRepositoryWorkspaceRuntime } from "./repository-runtime";
@@ -180,7 +181,16 @@ const securityToolRuntime = new SecurityToolRuntime(
   securityToolRuntimeEnabled ? new HttpSecurityToolExecutor(securityExecutorUrl, securityExecutorToken) : null,
   async (run) => (await prepareSkills(run.mode, run.prompt)).names
 );
-const baseToolRuntime = new CompositeWorkerToolRuntime([coreToolRuntime, integrationToolRuntime, securityToolRuntime]);
+const browserExecutorUrl = process.env.DIV3RSA_BROWSER_EXECUTOR_URL?.trim() || "";
+const browserExecutorToken = process.env.DIV3RSA_BROWSER_EXECUTOR_TOKEN?.trim() || "";
+if (Boolean(browserExecutorUrl) !== Boolean(browserExecutorToken)) throw new Error("browser_executor_configuration_required");
+const browserToolRuntime = new BrowserToolRuntime({
+  endpoint: browserExecutorUrl || null,
+  bearerToken: browserExecutorToken || null,
+  timeoutMs: numericEnvironment("DIV3RSA_BROWSER_TIMEOUT_MS", 30_000)
+});
+const browserToolRuntimeEnabled = Boolean(browserExecutorUrl && browserExecutorToken);
+const baseToolRuntime = new CompositeWorkerToolRuntime([coreToolRuntime, integrationToolRuntime, securityToolRuntime, browserToolRuntime]);
 const dynamicToolDiscoveryEnabled = booleanEnvironment("DIV3RSA_DYNAMIC_TOOL_DISCOVERY_ENABLED", false);
 const discoveredToolRuntime = new DynamicToolBroker(baseToolRuntime, {
   enabled: dynamicToolDiscoveryEnabled,
@@ -266,7 +276,7 @@ const errorBackoffMs = Math.max(250, numericEnvironment("DIV3RSA_QUEUE_ERROR_BAC
 const kernelStatus = agentKernelConfig.enabled
   ? `${agentKernelConfig.mode}${agentKernelConfig.mode === "active" ? `-${agentKernelConfig.activeCanaryBasisPoints}bps` : ""}`
   : "disabled";
-console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; modelProtocol=${modelProtocolProfile.protocol}; modelVersion=${modelProtocolProfile.modelVersionId}; aggregateIdlePollMs=${idlePollMs}; agentKernel=${kernelStatus}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}; dynamicToolDiscovery=${dynamicToolDiscoveryEnabled ? "enabled" : "disabled"}; securityToolRuntime=${securityToolRuntimeEnabled ? "scoped-remote" : "disabled"}; checkpointRewind=${checkpointRewindEnabled ? "enabled" : "disabled"}; verifiedMemory=${verifiedMemoryEnabled ? "enabled" : "disabled"}; verifiedLearning=${verifiedLearningEnabled ? "enabled" : "disabled"}; trainingEligibility=${trainingEligibilityEnabled ? "enabled" : "disabled"}; rag=${process.env.DIV3RSA_RAG_ENABLED?.trim() === "0" ? "disabled" : "enabled"}`);
+console.info(`[agent-worker] processing lanes ready; worker=${workerId}; concurrency=${workerConcurrency}; modelParallel=${modelParallel}; inferenceRouting=${routingMode}; modelProtocol=${modelProtocolProfile.protocol}; modelVersion=${modelProtocolProfile.modelVersionId}; aggregateIdlePollMs=${idlePollMs}; agentKernel=${kernelStatus}; agentKernelShadowProbes=${shadowProbeConfig.enabled ? `sample-${shadowProbeConfig.sampleBasisPoints}bps` : "disabled"}; dynamicToolDiscovery=${dynamicToolDiscoveryEnabled ? "enabled" : "disabled"}; securityToolRuntime=${securityToolRuntimeEnabled ? "scoped-remote" : "disabled"}; browserToolRuntime=${browserToolRuntimeEnabled ? "scoped-remote" : "disabled"}; checkpointRewind=${checkpointRewindEnabled ? "enabled" : "disabled"}; verifiedMemory=${verifiedMemoryEnabled ? "enabled" : "disabled"}; verifiedLearning=${verifiedLearningEnabled ? "enabled" : "disabled"}; trainingEligibility=${trainingEligibilityEnabled ? "enabled" : "disabled"}; rag=${process.env.DIV3RSA_RAG_ENABLED?.trim() === "0" ? "disabled" : "enabled"}`);
 
 await runWorkerLanes({
   concurrency: workerConcurrency,
