@@ -36,7 +36,9 @@ export DIV3RSA_MODEL_JINJA="${DIV3RSA_MODEL_JINJA:-true}"
 bash "$V2_SCRIPT" "$@"
 
 if [[ "$PRECHECKOUT_WRAPPER" -eq 1 ]]; then
-  printf '[gpuhub-recovery] pre-checkout wrapper detected; deferring post-checkout recovery until exact target checkout\n'
+  # Keep the established log contract: embeddings remain the first post-checkout
+  # hook, while egress/browser recovery is also deferred by this same exit.
+  printf '[gpuhub-recovery] pre-checkout wrapper detected; deferring embedding recovery until exact target checkout\n'
   exit 0
 fi
 
