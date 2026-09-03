@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isBlockedEgressAddress, isBlockedEgressHostname, resolvePublicEgressTarget, type EgressDnsResolver } from "./policy";
+import {
+  isBlockedEgressAddress,
+  isBlockedEgressHostname,
+  resolvePublicEgressTarget,
+  resolvePublicEgressTargets,
+  type EgressDnsResolver
+} from "./policy";
 
 describe("egress proxy policy", () => {
   it.each([
@@ -46,5 +52,21 @@ describe("egress proxy policy", () => {
       port: 443
     });
     await expect(resolvePublicEgressTarget("example.test", 22, resolver)).rejects.toThrow("egress_port_not_allowed");
+  });
+
+  it("prefers IPv4 while retaining every validated DNS-pinned fallback candidate", async () => {
+    const resolver: EgressDnsResolver = async () => [
+      { address: "2606:4700:4700::1111", family: 6 },
+      { address: "1.1.1.1", family: 4 },
+      { address: "2606:4700:4700::1001", family: 6 },
+      { address: "1.0.0.1", family: 4 }
+    ];
+
+    await expect(resolvePublicEgressTargets("example.test", 443, resolver)).resolves.toEqual([
+      { host: "example.test", address: "1.0.0.1", family: 4, port: 443 },
+      { host: "example.test", address: "1.1.1.1", family: 4, port: 443 },
+      { host: "example.test", address: "2606:4700:4700::1001", family: 6, port: 443 },
+      { host: "example.test", address: "2606:4700:4700::1111", family: 6, port: 443 }
+    ]);
   });
 });
