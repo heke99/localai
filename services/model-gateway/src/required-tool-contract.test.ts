@@ -14,6 +14,17 @@ const continuationTool: ModelToolDefinition = {
   }
 };
 
+const singletonTool: ModelToolDefinition = {
+  name: "fixed_probe",
+  description: "Run the single deterministic probe mode allowed by this contract.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["mode"],
+    properties: { mode: { type: "string", enum: ["copy-once"] } }
+  }
+};
+
 function request(overrides: Partial<GenerateRequest> = {}): GenerateRequest {
   return {
     requestId: "required-tool-test",
@@ -138,12 +149,57 @@ describe("portable required-tool contract", () => {
     expect(result.toolCalls).toEqual([{ id: "qwen-thinking-retry", name: continuationTool.name, input: { continuationToken: "TOKEN_RETRY" } }]);
   });
 
-  it("fails closed when Qwen ignores the explicit required tool", async () => {
-    const fetcher = (async () => new Response(JSON.stringify({
-      choices: [{ message: { content: "I ignored the tool." }, finish_reason: "stop" }]
-    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+  it("falls back to Qwen schema grammar only for a closed singleton required tool", async () => {
+    const wireBodies: Record<string, unknown>[] = [];
+    const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      wireBodies.push(body);
+      if (wireBodies.length <= 2) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "I ignored the tool." }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 4 }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{
+          message: { content: JSON.stringify({ name: singletonTool.name, arguments: { mode: "copy-once" } }) },
+          finish_reason: "stop"
+        }],
+        usage: { prompt_tokens: 12, completion_tokens: 5 }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const result = await qwenAdapter(fetcher).generate(request({
+      tools: [singletonTool],
+      requiredToolName: singletonTool.name,
+      messages: [{ role: "user", content: "Run the fixed probe." }]
+    }));
+
+    expect(wireBodies).toHaveLength(3);
+    expect(wireBodies[0]?.tool_choice).toBe("required");
+    expect(wireBodies[1]?.tool_choice).toBe("required");
+    expect(wireBodies[2]?.tools).toBeUndefined();
+    expect(wireBodies[2]?.tool_choice).toBeUndefined();
+    expect(wireBodies[2]?.json_schema).toBeDefined();
+    expect(wireBodies[2]?.reasoning_effort).toBe("none");
+    expect(wireBodies[2]?.chat_template_kwargs).toEqual({ enable_thinking: false });
+    expect(result.finishReason).toBe("tool_call");
+    expect(result.content).toBe("");
+    expect(result.toolCalls).toEqual([{ id: "required-tool-test:forced-tool", name: singletonTool.name, input: { mode: "copy-once" } }]);
+  });
+
+  it("fails closed when Qwen ignores a required tool with evidence-derived arguments", async () => {
+    const wireBodies: Record<string, unknown>[] = [];
+    const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      wireBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "I ignored the tool." }, finish_reason: "stop" }]
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
 
     await expect(qwenAdapter(fetcher).generate(request())).rejects.toThrow(`required_tool_call_mismatch:${continuationTool.name}`);
+    expect(wireBodies).toHaveLength(2);
+    expect(wireBodies.every((body) => body.json_schema === undefined)).toBe(true);
   });
 
   it("maps the same contract to native OpenAI tool_choice and validates the provider response", async () => {
