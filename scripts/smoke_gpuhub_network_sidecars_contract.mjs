@@ -7,6 +7,7 @@ const read = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
 const egress = read("infra/runtime/provision-egress-proxy-gpuhub.sh");
 const browser = read("infra/runtime/provision-browser-executor-gpuhub.sh");
 const upgrade = read("infra/runtime/upgrade-legacy-gpuhub.sh");
+const recover = read("infra/runtime/recover-legacy-gpuhub.sh");
 const workflow = read(".github/workflows/gpuhub-network-sidecars-evidence.yml");
 
 const requireText = (source, pattern, label) => {
@@ -15,10 +16,12 @@ const requireText = (source, pattern, label) => {
 
 requireText(egress, /127\.0\.0\.1/,
   "loopback-only egress bind");
-requireText(egress, /div3rsa-egress-proxy\.service/,
-  "egress systemd unit");
-requireText(egress, /NoNewPrivileges=true/,
-  "egress no-new-privileges hardening");
+requireText(egress, /localai-egress/,
+  "egress screen supervisor");
+requireText(egress, /setpriv[\s\S]*--no-new-privs/,
+  "egress privilege drop");
+requireText(egress, /--reuid=/,
+  "egress non-root uid");
 requireText(egress, /_div3rsa_health/,
   "egress health gate");
 requireText(egress, /169\.254\.169\.254/,
@@ -26,16 +29,20 @@ requireText(egress, /169\.254\.169\.254/,
 
 requireText(browser, /127\.0\.0\.1/,
   "loopback-only browser bind");
-requireText(browser, /div3rsa-browser-executor\.service/,
-  "browser systemd unit");
-requireText(browser, /@playwright\/test@1\.62\.1/,
-  "pinned Playwright runtime");
+requireText(browser, /localai-browser/,
+  "browser screen supervisor");
+requireText(browser, /setpriv[\s\S]*--no-new-privs/,
+  "browser privilege drop");
+requireText(browser, /--reuid=/,
+  "browser non-root uid");
+requireText(browser, /@playwright\/test@\$\{PLAYWRIGHT_VERSION\}/,
+  "pinned Playwright install");
+requireText(browser, /PLAYWRIGHT_VERSION="1\.62\.1"/,
+  "pinned Playwright version");
 requireText(browser, /DIV3RSA_BROWSER_EXECUTOR_TOKEN/,
   "browser executor token");
 requireText(browser, /DIV3RSA_EGRESS_PROXY_URL/,
   "browser proxy requirement");
-requireText(browser, /NoNewPrivileges=true/,
-  "browser no-new-privileges hardening");
 
 requireText(upgrade, /provision-egress-proxy-gpuhub\.sh/,
   "GPUHub upgrade egress provisioning");
@@ -48,8 +55,19 @@ requireText(upgrade, /DIV3RSA_BROWSER_EXECUTOR_URL/,
 requireText(upgrade, /screen -S \"\$WORKER_SCREEN\" -X quit/,
   "worker-only restart before recovery");
 
+requireText(recover, /provision-egress-proxy-gpuhub\.sh/,
+  "GPUHub recovery egress restoration");
+requireText(recover, /provision-browser-executor-gpuhub\.sh/,
+  "GPUHub recovery browser restoration");
+
 requireText(workflow, /workflows: \["Deploy GPUHub"\]/,
   "post-deploy workflow dependency");
+requireText(workflow, /\.localai-egress/,
+  "GPUHub egress screen verification");
+requireText(workflow, /\.localai-browser/,
+  "GPUHub browser screen verification");
+requireText(workflow, /NoNewPrivs/,
+  "GPUHub no-new-privileges verification");
 requireText(workflow, /127\.0\.0\.1:7318/,
   "GPUHub egress health verification");
 requireText(workflow, /127\.0\.0\.1:7320/,
