@@ -83,6 +83,12 @@ const rules: Rule[] = [
   { category: "build", pattern: /build|implement|create|add|make|develop/i }
 ];
 
+// "current" is ambiguous. In phrases such as "current fixture value", "current
+// state", "current branch" or "current record" it describes the selected/local
+// runtime object, not a request for fresh external information. Keep those local
+// collocations stable so a hermetic read/write task never acquires a web_search
+// dependency merely because it asks for the current value of an internal object.
+const LOCAL_CURRENT_OBJECT = /\bcurrent\s+(?:fixture|state|value|configuration|config|record|resource|file|repository|repo|branch|workspace|project|document|code|codebase|database|table|row|job|run)\b/i;
 const CURRENT_LANGUAGE = /\b(latest|newest|current|currently|today|recent|recently|up[- ]to[- ]date|as of now|senaste|nyaste|aktuell(?:t|a)?|idag|nyligen|just nu|nuvarande)\b/i;
 const DIRECT_TIME_OR_DATE = /\b(what time is it|current time|time in|what is today'?s date|today'?s date|current date|date in|klockan|vilken tid|dagens datum|vilket datum|datum i)\b/i;
 const LIVE_FACT = /\b(weather|väder|forecast|prognos|exchange rate|valutakurs|stock price|aktiekurs|live score|livescore|traffic|trafik|availability|lagerstatus|in stock)\b/i;
@@ -119,7 +125,7 @@ function informationRouting(mode: AgentMode, prompt: string, complexity: TaskCom
   requiresLiveData: boolean;
   liveDataKind: LiveDataKind;
 } {
-  const currentLanguage = CURRENT_LANGUAGE.test(prompt);
+  const currentLanguage = CURRENT_LANGUAGE.test(prompt) && !LOCAL_CURRENT_OBJECT.test(prompt);
   const directTimeQuestion = DIRECT_TIME_OR_DATE.test(prompt);
   const externalLiveFact = LIVE_FACT.test(prompt) && currentLanguage;
   const requiresLiveData = directTimeQuestion || externalLiveFact;
