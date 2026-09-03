@@ -6,6 +6,7 @@ const read = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
 
 const egress = read("infra/runtime/provision-egress-proxy-gpuhub.sh");
 const browser = read("infra/runtime/provision-browser-executor-gpuhub.sh");
+const browserMain = read("services/browser-executor/src/main.ts");
 const upgrade = read("infra/runtime/upgrade-legacy-gpuhub.sh");
 const recover = read("infra/runtime/recover-legacy-gpuhub.sh");
 const workflow = read(".github/workflows/gpuhub-network-sidecars-evidence.yml");
@@ -37,10 +38,9 @@ requireText(browser, /127\.0\.0\.1/,
   "loopback-only browser bind");
 requireText(browser, /localai-browser/,
   "browser screen supervisor");
-requireText(browser, /setpriv[\s\S]*--no-new-privs/,
-  "browser privilege drop");
-requireText(browser, /--reuid=/,
-  "browser non-root uid");
+requireText(browser, /setpriv[\s\S]*--reuid=/,
+  "browser non-root privilege drop");
+if (/setpriv[^\n]*--no-new-privs/.test(browser)) throw new Error("browser must permit Chromium SUID sandbox helper");
 requireText(browser, /SIDECAR_NODE_BIN="\$\{INSTALL_ROOT\}\/node"/,
   "browser accessible Node path");
 requireText(browser, /install -o root -g "\$SERVICE_USER" -m 0755 "\$NODE_BIN" "\$SIDECAR_NODE_BIN"/,
@@ -59,10 +59,23 @@ requireText(browser, /@playwright\/test@\$\{PLAYWRIGHT_VERSION\}/,
   "pinned Playwright install");
 requireText(browser, /PLAYWRIGHT_VERSION="1\.62\.1"/,
   "pinned Playwright version");
+requireText(browser, /CHROME_SANDBOX_BIN="\$\{INSTALL_ROOT\}\/chrome-devel-sandbox"/,
+  "browser SUID sandbox destination");
+requireText(browser, /chrome-linux64\/chrome_sandbox/,
+  "browser bundled Chromium sandbox source");
+requireText(browser, /install -o root -g root -m 4755/,
+  "browser root-owned SUID sandbox install");
+requireText(browser, /CHROME_DEVEL_SANDBOX=\$\{CHROME_SANDBOX_BIN\}/,
+  "browser Chromium sandbox environment");
 requireText(browser, /DIV3RSA_BROWSER_EXECUTOR_TOKEN/,
   "browser executor token");
 requireText(browser, /DIV3RSA_EGRESS_PROXY_URL/,
   "browser proxy requirement");
+
+requireText(browserMain, /channel:\s*"chromium"/,
+  "browser new Chromium headless channel");
+requireText(browserMain, /chromiumSandbox:\s*true/,
+  "browser Chromium sandbox enabled");
 
 requireText(upgrade, /provision-egress-proxy-gpuhub\.sh/,
   "GPUHub upgrade egress provisioning");
@@ -87,7 +100,11 @@ requireText(workflow, /\.localai-egress/,
 requireText(workflow, /\.localai-browser/,
   "GPUHub browser screen verification");
 requireText(workflow, /NoNewPrivs/,
-  "GPUHub no-new-privileges verification");
+  "GPUHub egress no-new-privileges verification");
+requireText(workflow, /chrome-devel-sandbox/,
+  "GPUHub Chromium SUID sandbox verification");
+requireText(workflow, /Seccomp/,
+  "GPUHub Chromium seccomp verification");
 requireText(workflow, /127\.0\.0\.1:7318/,
   "GPUHub egress health verification");
 requireText(workflow, /127\.0\.0\.1:7320/,

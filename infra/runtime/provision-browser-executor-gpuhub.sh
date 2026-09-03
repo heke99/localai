@@ -11,6 +11,7 @@ REPO_DIR="${DIV3RSA_LEGACY_APP_DIR:-${ROOT_DIR}/app}"
 NODE_BIN="${DIV3RSA_LEGACY_NODE_BIN:-${ROOT_DIR}/runtime/node-current/bin/node}"
 INSTALL_ROOT="${DIV3RSA_BROWSER_INSTALL_ROOT:-/opt/div3rsa/browser-executor}"
 SIDECAR_NODE_BIN="${INSTALL_ROOT}/node"
+CHROME_SANDBOX_BIN="${INSTALL_ROOT}/chrome-devel-sandbox"
 STATE_ROOT="${DIV3RSA_BROWSER_STATE_ROOT:-/var/lib/div3rsa-browser}"
 LOG_DIR="${DIV3RSA_LEGACY_LOG_DIR:-${ROOT_DIR}/logs}"
 LOG_FILE="${LOG_DIR}/browser-executor.log"
@@ -42,7 +43,7 @@ if [[ ! -x "$NPM_BIN" ]]; then
 fi
 [[ -n "$NPM_BIN" && -x "$NPM_BIN" ]] || fatal "npm paired with the Node runtime is required"
 export PATH="${NODE_BIN_DIR}:$PATH"
-for cmd in curl screen setpriv useradd; do command -v "$cmd" >/dev/null 2>&1 || fatal "$cmd is required"; done
+for cmd in curl screen setpriv useradd find stat; do command -v "$cmd" >/dev/null 2>&1 || fatal "$cmd is required"; done
 
 curl --fail --silent --show-error --max-time 3 "${EGRESS_URL}/_div3rsa_health" >/dev/null \
   || fatal "egress proxy must be healthy before browser provisioning"
@@ -69,7 +70,7 @@ fi
 if [[ "$current_version" != "$PLAYWRIGHT_VERSION" ]]; then
   log "installing pinned @playwright/test@${PLAYWRIGHT_VERSION}"
   cat >"$PACKAGE_FILE" <<EOF
-{"name":"div3rsa-gpuhub-browser-runtime","private":true,"version":"1.0.0","dependencies":{"@playwright/test":"${PLAYWRIGHT_VERSION}"}}
+{"name":"div3rsa-gpuhub-browser-runtime","private":true,"version":"1.0.0","type":"module","dependencies":{"@playwright/test":"${PLAYWRIGHT_VERSION}"}}
 EOF
   "$NPM_BIN" --prefix "$INSTALL_ROOT" install --omit=dev --ignore-scripts --no-audit --no-fund --save-exact "@playwright/test@${PLAYWRIGHT_VERSION}"
 fi
@@ -91,6 +92,14 @@ chmod -R g+rX "$INSTALL_ROOT"
 chmod 0750 "$INSTALL_ROOT" "$BROWSERS_PATH" 2>/dev/null || true
 chmod 0755 "$SIDECAR_NODE_BIN"
 
+# GPUHub disables unprivileged user namespaces. Preserve Chromium's internal
+# sandbox by installing the sandbox helper from the root-owned full Chromium
+# payload as SUID root instead of falling back to --no-sandbox.
+CHROME_SANDBOX_SOURCE="$(find "$BROWSERS_PATH" -type f -path '*/chrome-linux64/chrome_sandbox' -print | sort | tail -n1)"
+[[ -n "$CHROME_SANDBOX_SOURCE" && -f "$CHROME_SANDBOX_SOURCE" ]] || fatal "bundled Chromium chrome_sandbox helper missing"
+install -o root -g root -m 4755 "$CHROME_SANDBOX_SOURCE" "$CHROME_SANDBOX_BIN"
+[[ "$(stat -c '%u:%g:%a' "$CHROME_SANDBOX_BIN")" == "0:0:4755" ]] || fatal "Chromium SUID sandbox helper permissions invalid"
+
 if [[ ! -s "$TOKEN_FILE" ]]; then
   umask 077
   "$NODE_BIN" -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))' >"$TOKEN_FILE"
@@ -108,6 +117,7 @@ DIV3RSA_BROWSER_EXECUTOR_HOST=${LISTEN_HOST}
 DIV3RSA_BROWSER_EXECUTOR_PORT=${LISTEN_PORT}
 DIV3RSA_EGRESS_PROXY_URL=${EGRESS_URL}
 PLAYWRIGHT_BROWSERS_PATH=${BROWSERS_PATH}
+CHROME_DEVEL_SANDBOX=${CHROME_SANDBOX_BIN}
 HOME=${STATE_ROOT}
 EOF
 chown root:"$SERVICE_USER" "$ENV_FILE"
@@ -142,7 +152,10 @@ uid="$(id -u "$SERVICE_USER")"
 gid="$(id -g "$SERVICE_USER")"
 : >"$LOG_FILE"
 chmod 0640 "$LOG_FILE"
-screen -dmS "$SCREEN_NAME" bash -lc "exec setpriv --reuid=${uid} --regid=${gid} --init-groups --no-new-privs '${INSTALL_ROOT}/run.sh' >>'${LOG_FILE}' 2>&1"
+# Do not set PR_SET_NO_NEW_PRIVS on this launcher: Chromium's supported SUID
+# sandbox helper needs the exec-time privilege transition to construct its PID,
+# network and filesystem sandbox before dropping privileges again internally.
+screen -dmS "$SCREEN_NAME" bash -lc "exec setpriv --reuid=${uid} --regid=${gid} --init-groups '${INSTALL_ROOT}/run.sh' >>'${LOG_FILE}' 2>&1"
 
 deadline=$((SECONDS + ${DIV3RSA_BROWSER_BOOT_TIMEOUT_SECONDS:-60}))
 while ! curl --fail --silent --show-error --max-time 2 "${BROWSER_URL}/health" >/dev/null 2>&1; do
@@ -158,5 +171,5 @@ while ! curl --fail --silent --show-error --max-time 2 "${BROWSER_URL}/health" >
 done
 
 screen -list | grep -F ".${SCREEN_NAME}" >/dev/null || fatal "browser executor screen is not active"
-log "browser executor healthy at ${BROWSER_URL}; screen=${SCREEN_NAME}; outbound browser traffic forced through ${EGRESS_URL}"
+log "browser executor healthy at ${BROWSER_URL}; screen=${SCREEN_NAME}; Chromium SUID sandbox=${CHROME_SANDBOX_BIN}; outbound browser traffic forced through ${EGRESS_URL}"
 printf 'DIV3RSA_BROWSER_EXECUTOR_URL=%s\n' "$BROWSER_URL"

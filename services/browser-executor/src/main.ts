@@ -104,6 +104,7 @@ const listenHost = process.env.DIV3RSA_BROWSER_EXECUTOR_HOST?.trim() || "0.0.0.0
 const listenPort = integerEnvironment("DIV3RSA_BROWSER_EXECUTOR_PORT", 7320);
 const browser: Browser = await chromium.launch({
   headless: true,
+  channel: "chromium",
   chromiumSandbox: true,
   proxy: { server: proxyUrl }
 });
