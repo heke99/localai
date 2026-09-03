@@ -4,10 +4,16 @@ import type {
   ModelAdapter,
   ModelCapability,
   ModelHealth,
+  ModelMessage,
   ModelStreamDeltaHandler,
+  ModelToolCall,
   ModelToolDefinition
 } from "@div3rsa/model-sdk";
-import { withExecutionObligation } from "./execution-obligation-router";
+import {
+  materializeExecutionObligation,
+  routeExecutionObligation,
+  withExecutionObligation
+} from "./execution-obligation-router";
 
 const executionCommandPattern = /```(?:bash|sh|shell|zsh|powershell)?[\s\S]*?\b(?:curl|wget|nmap|dig|nslookup|ping)\b/i;
 const executionIntentPattern = /\b(?:behöver|måste|ska|need|needs|must|will|going\s+to)\b[\s\S]{0,240}\b(?:bekräfta|verifiera|testa|köra|confirm|verify|check|test|run|execute)\b/i;
@@ -139,16 +145,95 @@ function assertRequiredRecoveryTool(request: GenerateRequest, result: GenerateRe
   if (result.toolCalls?.length !== 1 || result.toolCalls[0]?.name !== required) throw new Error(`required_tool_call_mismatch:${required}`);
 }
 
+function deterministicToolResult(call: ModelToolCall): GenerateResult {
+  return {
+    modelVersionId: "runtime-deterministic-tool-router",
+    content: "",
+    finishReason: "tool_call",
+    toolCalls: [call],
+    usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0 }
+  };
+}
+
+function stableValue(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableValue).join(",")}]`;
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableValue(item)}`)
+    .join(",")}}`;
+}
+
+function parseToolOutput(message: ModelMessage): Record<string, unknown> | null {
+  if (message.role !== "tool") return null;
+  try {
+    const parsed = JSON.parse(message.content) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function latestExecutedTool(messages: readonly ModelMessage[]): { call: ModelToolCall; output: Record<string, unknown> | null } | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const toolMessage = messages[index];
+    if (toolMessage?.role !== "tool" || !toolMessage.toolCallId) continue;
+    for (let assistantIndex = index - 1; assistantIndex >= 0; assistantIndex -= 1) {
+      const assistant = messages[assistantIndex];
+      if (assistant?.role !== "assistant") continue;
+      const call = assistant.toolCalls?.find((candidate) => candidate.id === toolMessage.toolCallId);
+      if (call) return { call, output: parseToolOutput(toolMessage) };
+    }
+  }
+  return null;
+}
+
+function successfulToolOutput(output: Record<string, unknown> | null): boolean {
+  if (!output) return false;
+  if (output.retryable === true) return false;
+  return output.ok === true || output.retryable === false || output.recovered === true || output.changed === true;
+}
+
+function isRedundantLatestSuccessfulCall(request: GenerateRequest, result: GenerateResult): boolean {
+  if (result.finishReason !== "tool_call" || result.toolCalls?.length !== 1) return false;
+  const latest = latestExecutedTool(request.messages);
+  const candidate = result.toolCalls[0];
+  return Boolean(
+    latest &&
+    candidate &&
+    latest.call.name === candidate.name &&
+    stableValue(latest.call.input) === stableValue(candidate.input) &&
+    successfulToolOutput(latest.output)
+  );
+}
+
+async function finalizeAfterRedundantCall(inner: ModelAdapter, request: GenerateRequest, duplicate: GenerateResult): Promise<GenerateResult> {
+  const latest = latestExecutedTool(request.messages);
+  const instruction = `Runtime duplicate suppression: the model attempted to repeat ${latest?.call.name ?? "the latest tool"} with identical arguments even though the immediately preceding authoritative result already completed successfully and was not retryable. The duplicate was NOT executed. Use the existing tool result to answer the user's request now. Do not call tools again in this turn.`;
+  const final = await inner.generate({
+    ...request,
+    requestId: `${request.requestId}:duplicate-suppressed-final`,
+    tools: [],
+    requiredToolName: undefined,
+    temperature: 0,
+    messages: [...request.messages, { role: "system", content: instruction }]
+  });
+  assertCompleteModelResult(final);
+  if (final.finishReason === "tool_call") throw new Error("duplicate_tool_suppression_failed");
+  return mergeUsage(duplicate, final);
+}
+
 /**
  * Prevents an execution-looking textual response from bypassing the native tool
- * loop. Before inference, explicit unfinished user-requested tool work is routed
- * through requiredToolName so Qwen uses the already-hardened native required-tool
- * path. It never invents a capability: obligation routing can only select tools
- * already exposed in the request.
+ * loop. Explicit user-requested tool work is first routed through a deterministic
+ * runtime materializer. The materializer may emit a native tool call only when
+ * every required argument is provable from the tool schema, the user's request,
+ * or authoritative prior tool results. Otherwise the existing hardened Qwen
+ * required-tool path remains the fallback and fails closed.
  *
- * Textual execution recovery remains as a bounded secondary guard. It never
- * parses shell text into execution. Truncated or provider-error generations fail
- * closed.
+ * Pure model-conformance requests are unaffected because deterministic
+ * materialization is activated only for execution obligations inferred from the
+ * user's agent request, never for a bare requiredToolName supplied by the caller.
  */
 export class ToolCallRecoveryAdapter implements ModelAdapter {
   constructor(private readonly inner: ModelAdapter) {}
@@ -166,9 +251,24 @@ export class ToolCallRecoveryAdapter implements ModelAdapter {
   }
 
   async generate(request: GenerateRequest): Promise<GenerateResult> {
-    const routedRequest = withExecutionObligation(request);
+    const obligation = routeExecutionObligation(request);
+    if (obligation) {
+      const materialized = materializeExecutionObligation(request, obligation);
+      if (materialized) return deterministicToolResult(materialized);
+    }
+
+    const routedRequest = withExecutionObligation(request, obligation);
     const first = await this.inner.generate(routedRequest);
     assertCompleteModelResult(first);
+
+    // Once an explicit obligation has succeeded, prevent the model from spinning
+    // on the exact same successful call. A retryable result is deliberately not
+    // suppressed, and an identical read after an intervening mutation is not the
+    // latest tool result so it remains allowed.
+    if (!obligation && isRedundantLatestSuccessfulCall(request, first)) {
+      return finalizeAfterRedundantCall(this.inner, request, first);
+    }
+
     const firstIntent = recoveryIntent(routedRequest, first);
     if (!firstIntent) return first;
 
@@ -181,8 +281,6 @@ export class ToolCallRecoveryAdapter implements ModelAdapter {
   }
 
   async generateStreamed(request: GenerateRequest, onDelta: ModelStreamDeltaHandler): Promise<GenerateResult> {
-    // A tool-enabled turn must be validated before visible streaming. Otherwise
-    // malformed textual execution has already escaped to the UI before recovery.
     if (request.tools !== undefined) {
       const result = await this.generate(request);
       if (result.content) await onDelta(result.content);
