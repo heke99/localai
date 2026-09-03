@@ -10,6 +10,7 @@ ROOT_DIR="${DIV3RSA_LEGACY_ROOT_DIR:-/root/autodl-tmp/localai}"
 REPO_DIR="${DIV3RSA_LEGACY_APP_DIR:-${ROOT_DIR}/app}"
 NODE_BIN="${DIV3RSA_LEGACY_NODE_BIN:-${ROOT_DIR}/runtime/node-current/bin/node}"
 INSTALL_ROOT="${DIV3RSA_EGRESS_INSTALL_ROOT:-/opt/div3rsa/egress-proxy}"
+SIDECAR_NODE_BIN="${INSTALL_ROOT}/node"
 LOG_DIR="${DIV3RSA_LEGACY_LOG_DIR:-${ROOT_DIR}/logs}"
 LOG_FILE="${LOG_DIR}/egress-proxy.log"
 SCREEN_NAME="${DIV3RSA_EGRESS_SCREEN_NAME:-localai-egress}"
@@ -35,6 +36,11 @@ fi
 
 mkdir -p "$LOG_DIR"
 install -d -o root -g root -m 0755 "$INSTALL_ROOT"
+# GPUHub keeps its canonical Node runtime below /root, which the intentionally
+# unprivileged sidecar account cannot traverse. Copy the already-verified exact
+# Node binary into the root-owned sidecar tree instead of weakening /root perms.
+install -o root -g root -m 0755 "$NODE_BIN" "$SIDECAR_NODE_BIN"
+"$SIDECAR_NODE_BIN" -e 'if(Number(process.versions.node.split(".")[0])<24)process.exit(1)' || fatal "sidecar Node copy is invalid"
 install -o root -g root -m 0644 "$REPO_DIR/services/egress-proxy/src/main.ts" "$INSTALL_ROOT/main.ts"
 install -o root -g root -m 0644 "$REPO_DIR/services/egress-proxy/src/policy.ts" "$INSTALL_ROOT/policy.ts"
 install -o root -g root -m 0644 "$REPO_DIR/infra/runpod/native-typescript-register.mjs" "$INSTALL_ROOT/native-typescript-register.mjs"
@@ -45,7 +51,7 @@ set -Eeuo pipefail
 export DIV3RSA_EGRESS_PROXY_HOST=${LISTEN_HOST}
 export DIV3RSA_EGRESS_PROXY_PORT=${LISTEN_PORT}
 cd ${INSTALL_ROOT}
-exec ${NODE_BIN} --experimental-transform-types --import ${INSTALL_ROOT}/native-typescript-register.mjs ${INSTALL_ROOT}/main.ts
+exec ${SIDECAR_NODE_BIN} --experimental-transform-types --import ${INSTALL_ROOT}/native-typescript-register.mjs ${INSTALL_ROOT}/main.ts
 EOF
 chmod 0755 "$INSTALL_ROOT/run.sh"
 chown root:root "$INSTALL_ROOT/run.sh"

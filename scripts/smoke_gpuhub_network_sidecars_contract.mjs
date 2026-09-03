@@ -22,6 +22,12 @@ requireText(egress, /setpriv[\s\S]*--no-new-privs/,
   "egress privilege drop");
 requireText(egress, /--reuid=/,
   "egress non-root uid");
+requireText(egress, /SIDECAR_NODE_BIN="\$\{INSTALL_ROOT\}\/node"/,
+  "egress accessible Node path");
+requireText(egress, /install -o root -g root -m 0755 "\$NODE_BIN" "\$SIDECAR_NODE_BIN"/,
+  "egress verified Node copy");
+requireText(egress, /exec \$\{SIDECAR_NODE_BIN\}/,
+  "egress sidecar Node execution");
 requireText(egress, /_div3rsa_health/,
   "egress health gate");
 requireText(egress, /169\.254\.169\.254/,
@@ -35,6 +41,12 @@ requireText(browser, /setpriv[\s\S]*--no-new-privs/,
   "browser privilege drop");
 requireText(browser, /--reuid=/,
   "browser non-root uid");
+requireText(browser, /SIDECAR_NODE_BIN="\$\{INSTALL_ROOT\}\/node"/,
+  "browser accessible Node path");
+requireText(browser, /install -o root -g "\$SERVICE_USER" -m 0755 "\$NODE_BIN" "\$SIDECAR_NODE_BIN"/,
+  "browser verified Node copy");
+requireText(browser, /exec \$\{SIDECAR_NODE_BIN\}/,
+  "browser sidecar Node execution");
 requireText(browser, /@playwright\/test@\$\{PLAYWRIGHT_VERSION\}/,
   "pinned Playwright install");
 requireText(browser, /PLAYWRIGHT_VERSION="1\.62\.1"/,
