@@ -55,7 +55,7 @@ function explicitIntentToolName(content: string, tools: readonly ModelToolDefini
 }
 
 const progressPreamblePattern = /^(?:jag\s+(?:startar|börjar)\s+med\s+att|jag\s+ska\s+börja\s+med\s+att|i(?:['’]ll|\s+will)\s+(?:start|begin)\s+by|first,?\s+i(?:['’]ll|\s+will))/i;
-const progressActionPattern = /\b(?:ladda|kartlägga|undersöka|kontrollera|verifiera|analysera|läsa|söka|granska|testa|köra|load|map|inspect|check|verify|analy[sz]e|read|search|review|test|run)\b/i;
+const progressActionPattern = /\b(?:ladda|kartlägga|undersöka|kontrollera|verifiera|analysera|läsa|söka|granska|testa|köra|load(?:ing)?|map(?:ping)?|inspect(?:ing)?|check(?:ing)?|verify(?:ing)?|analy[sz](?:e|ing)|read(?:ing)?|search(?:ing)?|review(?:ing)?|test(?:ing)?|run(?:ning)?)\b/i;
 const commandLikeExecutionPattern = /(?:```(?:bash|sh|shell|zsh|powershell)?\s*[\s\S]*?\b(?:curl|wget|nmap|dig|nslookup|ping)\b|(?:^|\n)\s*(?:\$\s*)?(?:curl|wget|nmap|dig|nslookup|ping)\b)/i;
 const executionIntentPattern = /\b(?:behöver|måste|ska|need|needs|must|will|going\s+to)\b[\s\S]{0,240}\b(?:bekräfta|verifiera|testa|köra|confirm|verify|check|test|run|execute)\b/i;
 
