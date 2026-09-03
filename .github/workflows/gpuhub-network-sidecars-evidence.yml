@@ -47,7 +47,7 @@ jobs:
           printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" >"$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
 
-      - name: Verify egress, browser and worker wiring on GPUHub
+      - name: Verify egress, browser capability and worker wiring on GPUHub
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -69,6 +69,7 @@ jobs:
           proxy="http://127.0.0.1:7318"
           browser="http://127.0.0.1:7320"
           token_file="/var/lib/div3rsa-browser/executor.token"
+          unavailable_file="/var/lib/div3rsa-browser/unavailable.reason"
           browser_user="div3rsa-browser"
           firewall_chain="DIV3RSA_BROWSER"
 
@@ -82,8 +83,56 @@ jobs:
           [[ -x "$node_bin" ]] || { echo "tracked GPUHub Node runtime missing" >&2; exit 1; }
 
           screen -list | grep -F '.localai-egress' >/dev/null
-          screen -list | grep -F '.localai-browser' >/dev/null
           curl --fail --silent --show-error --max-time 3 "$proxy/_div3rsa_health" >/dev/null
+          egress_pid="$(pgrep -f '/opt/div3rsa/egress-proxy/main\.ts' | head -n1 || true)"
+          [[ -n "$egress_pid" ]] || { echo "egress process PID missing" >&2; exit 1; }
+          grep -Eq '^NoNewPrivs:[[:space:]]+1$' "/proc/${egress_pid}/status"
+          [[ "$(awk '/^Uid:/{print $2}' "/proc/${egress_pid}/status")" != "0" ]]
+
+          blocked_code="$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' --proxy "$proxy" http://127.0.0.1/ || true)"
+          [[ "$blocked_code" == "403" ]] || { echo "loopback egress negative gate failed: $blocked_code" >&2; exit 1; }
+          metadata_code="$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' --proxy "$proxy" http://169.254.169.254/latest/meta-data/ || true)"
+          [[ "$metadata_code" == "403" ]] || { echo "metadata egress negative gate failed: $metadata_code" >&2; exit 1; }
+          curl --fail --silent --show-error --max-time 10 --proxy "$proxy" https://example.com/ >/dev/null
+
+          worker_pid="$(pgrep -f 'services/agent-worker/src/main\.ts' | head -n1 || true)"
+          [[ -n "$worker_pid" ]] || { echo "agent worker PID unavailable" >&2; exit 1; }
+          worker_env="$(tr '\0' '\n' <"/proc/${worker_pid}/environ")"
+          grep -Fxq 'NODE_USE_ENV_PROXY=1' <<<"$worker_env"
+          grep -Fxq 'HTTP_PROXY=http://127.0.0.1:7318' <<<"$worker_env"
+          grep -Fxq 'HTTPS_PROXY=http://127.0.0.1:7318' <<<"$worker_env"
+          grep -Fxq 'DIV3RSA_EGRESS_PROXY_URL=http://127.0.0.1:7318' <<<"$worker_env"
+
+          if [[ -f "$unavailable_file" ]]; then
+            reason="$(tr -d '\r\n' <"$unavailable_file")"
+            [[ "$reason" == "unavailable_host_isolation" ]] || { echo "unexpected browser unavailable reason: $reason" >&2; exit 1; }
+            [[ "$(stat -c '%u:%a' "$unavailable_file")" == "0:640" ]] || { echo "browser unavailable marker permissions invalid" >&2; exit 1; }
+            if screen -list | grep -F '.localai-browser' >/dev/null; then
+              echo "browser screen must be absent when capability is disabled" >&2
+              exit 1
+            fi
+            if pgrep -f '/opt/div3rsa/browser-executor/main\.ts' >/dev/null; then
+              echo "browser executor process must be absent when capability is disabled" >&2
+              exit 1
+            fi
+            if curl --fail --silent --show-error --max-time 2 "$browser/health" >/dev/null 2>&1; then
+              echo "browser listener must be absent when capability is disabled" >&2
+              exit 1
+            fi
+            [[ ! -e "$token_file" ]] || { echo "browser token must be absent when capability is disabled" >&2; exit 1; }
+            if grep -q '^DIV3RSA_BROWSER_EXECUTOR_URL=' <<<"$worker_env"; then
+              echo "worker must not receive DIV3RSA_BROWSER_EXECUTOR_URL when browser is unavailable" >&2
+              exit 1
+            fi
+            if grep -q '^DIV3RSA_BROWSER_EXECUTOR_TOKEN=' <<<"$worker_env"; then
+              echo "worker must not receive DIV3RSA_BROWSER_EXECUTOR_TOKEN when browser is unavailable" >&2
+              exit 1
+            fi
+            echo "GPUHUB_NETWORK_SIDECARS_E2E_OK commit=${current_sha} browser_isolation=unavailable_host_isolation"
+            exit 0
+          fi
+
+          screen -list | grep -F '.localai-browser' >/dev/null
           health_json="$(curl --fail --silent --show-error --max-time 3 "$browser/health")"
           isolation="$($node_bin -e 'const h=JSON.parse(process.argv[1]);if(h.ok!==true||h.service!=="browser-executor"||h.proxy!==true)process.exit(1);process.stdout.write(String(h.isolation||""))' "$health_json")"
           chromium_sandbox="$($node_bin -e 'const h=JSON.parse(process.argv[1]);process.stdout.write(String(h.chromiumSandbox))' "$health_json")"
@@ -100,27 +149,20 @@ jobs:
               ;;
           esac
 
-          egress_pid="$(pgrep -f '/opt/div3rsa/egress-proxy/main\.ts' | head -n1 || true)"
           browser_pid="$(pgrep -f '/opt/div3rsa/browser-executor/main\.ts' | head -n1 || true)"
-          [[ -n "$egress_pid" && -n "$browser_pid" ]] || { echo "sidecar process PID missing" >&2; exit 1; }
-          grep -Eq '^NoNewPrivs:[[:space:]]+1$' "/proc/${egress_pid}/status"
+          [[ -n "$browser_pid" ]] || { echo "browser process PID missing" >&2; exit 1; }
           grep -Eq '^NoNewPrivs:[[:space:]]+1$' "/proc/${browser_pid}/status"
-          [[ "$(awk '/^Uid:/{print $2}' "/proc/${egress_pid}/status")" != "0" ]]
           browser_uid="$(awk '/^Uid:/{print $2}' "/proc/${browser_pid}/status")"
           [[ "$browser_uid" != "0" ]] || { echo "browser executor unexpectedly runs as root" >&2; exit 1; }
           grep -Eq '^CapEff:[[:space:]]+0+$' "/proc/${browser_pid}/status" || { echo "browser executor effective capabilities are not empty" >&2; exit 1; }
           grep -Eq '^CapBnd:[[:space:]]+0+$' "/proc/${browser_pid}/status" || { echo "browser executor capability bounding set is not empty" >&2; exit 1; }
           browser_gid="$(id -g "$browser_user")"
 
-          blocked_code="$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' --proxy "$proxy" http://127.0.0.1/ || true)"
-          [[ "$blocked_code" == "403" ]] || { echo "loopback egress negative gate failed: $blocked_code" >&2; exit 1; }
-          metadata_code="$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' --proxy "$proxy" http://169.254.169.254/latest/meta-data/ || true)"
-          [[ "$metadata_code" == "403" ]] || { echo "metadata egress negative gate failed: $metadata_code" >&2; exit 1; }
-          curl --fail --silent --show-error --max-time 10 --proxy "$proxy" https://example.com/ >/dev/null
-
           [[ -s "$token_file" ]] || { echo "browser token missing" >&2; exit 1; }
           token="$(tr -d '\r\n' <"$token_file")"
           [[ "$token" =~ ^[0-9a-f]{64}$ ]] || { echo "browser token invalid" >&2; exit 1; }
+          grep -Fxq 'DIV3RSA_BROWSER_EXECUTOR_URL=http://127.0.0.1:7320' <<<"$worker_env"
+          grep -Eq '^DIV3RSA_BROWSER_EXECUTOR_TOKEN=[0-9a-f]{64}$' <<<"$worker_env"
 
           allowed_payload='{"runId":"gpuhub-evidence","requestId":"navigate-allowed","traceId":"gpuhub-network-evidence","action":"browser_navigate","timeoutMs":15000,"executionClass":"passive","scope":{"scopeId":"evidence-example","allowHosts":["example.com"],"allowIpv4Cidrs":[]},"input":{"url":"https://example.com/"}}'
           allowed_result="$(curl --fail --silent --show-error --max-time 20 -H "authorization: Bearer ${token}" -H 'content-type: application/json' --data-binary "$allowed_payload" "$browser/v1/execute")"
@@ -128,10 +170,7 @@ jobs:
 
           chromium_processes="$(pgrep -a -u "$browser_uid" -f '/opt/div3rsa/browser-executor/browsers/chromium-.*/chrome-linux64/chrome' || true)"
           [[ -n "$chromium_processes" ]] || { echo "Chromium process missing after navigation" >&2; exit 1; }
-          grep -F -- '--proxy-server=http://127.0.0.1:7318' <<<"$chromium_processes" >/dev/null || {
-            echo "Chromium is not pinned to the controlled egress proxy" >&2
-            exit 1
-          }
+          grep -F -- '--proxy-server=http://127.0.0.1:7318' <<<"$chromium_processes" >/dev/null || { echo "Chromium is not pinned to controlled egress proxy" >&2; exit 1; }
 
           if [[ "$isolation" == "chromium" ]]; then
             if grep -F -- '--no-sandbox' <<<"$chromium_processes" >/dev/null; then
@@ -140,11 +179,7 @@ jobs:
             fi
             renderer_pid="$(pgrep -u "$browser_uid" -f 'chrome.*--type=renderer' | head -n1 || true)"
             [[ -n "$renderer_pid" ]] || { echo "Chromium renderer process missing after navigation" >&2; exit 1; }
-            grep -Eq '^Seccomp:[[:space:]]+2$' "/proc/${renderer_pid}/status" || {
-              echo "Chromium renderer seccomp sandbox not active" >&2
-              cat "/proc/${renderer_pid}/status" >&2 || true
-              exit 1
-            }
+            grep -Eq '^Seccomp:[[:space:]]+2$' "/proc/${renderer_pid}/status" || { echo "Chromium renderer seccomp sandbox not active" >&2; exit 1; }
           else
             command -v iptables >/dev/null 2>&1 || { echo "iptables missing for uid-firewall isolation" >&2; exit 1; }
             command -v ip6tables >/dev/null 2>&1 || { echo "ip6tables missing for uid-firewall isolation" >&2; exit 1; }
@@ -153,46 +188,21 @@ jobs:
             iptables -C "$firewall_chain" -j REJECT
             ip6tables -C OUTPUT -m owner --uid-owner "$browser_uid" -j "$firewall_chain"
             ip6tables -C "$firewall_chain" -j REJECT
-
             run_browser() {
-              setpriv \
-                --reuid="$browser_uid" \
-                --regid="$browser_gid" \
-                --init-groups \
-                --no-new-privs \
-                --bounding-set=-all \
-                --inh-caps=-all \
-                --ambient-caps=-all \
-                "$@"
+              setpriv --reuid="$browser_uid" --regid="$browser_gid" --init-groups --no-new-privs --bounding-set=-all --inh-caps=-all --ambient-caps=-all "$@"
             }
             if run_browser curl --silent --fail --max-time 3 http://127.0.0.1:6006/health >/dev/null 2>&1; then
-              echo "uid-firewall browser can reach the model directly" >&2
-              exit 1
+              echo "uid-firewall browser can reach model directly" >&2; exit 1
             fi
             if run_browser curl --silent --fail --insecure --max-time 3 https://1.1.1.1/ >/dev/null 2>&1; then
-              echo "uid-firewall browser can reach the public internet directly" >&2
-              exit 1
+              echo "uid-firewall browser can reach public internet directly" >&2; exit 1
             fi
-            run_browser curl --silent --fail --max-time 10 --proxy "$proxy" https://example.com/ >/dev/null || {
-              echo "uid-firewall browser cannot use the approved proxy" >&2
-              exit 1
-            }
+            run_browser curl --silent --fail --max-time 10 --proxy "$proxy" https://example.com/ >/dev/null
           fi
 
           blocked_payload='{"runId":"gpuhub-evidence-blocked","requestId":"navigate-blocked","traceId":"gpuhub-network-evidence","action":"browser_navigate","timeoutMs":10000,"executionClass":"passive","scope":{"scopeId":"evidence-example","allowHosts":["example.com"],"allowIpv4Cidrs":[]},"input":{"url":"https://www.iana.org/"}}'
           browser_blocked_code="$(curl --silent --show-error --max-time 15 --output /tmp/div3rsa-browser-blocked.json --write-out '%{http_code}' -H "authorization: Bearer ${token}" -H 'content-type: application/json' --data-binary "$blocked_payload" "$browser/v1/execute" || true)"
           [[ "$browser_blocked_code" == "400" ]] || { cat /tmp/div3rsa-browser-blocked.json >&2 || true; echo "browser out-of-scope gate failed: $browser_blocked_code" >&2; exit 1; }
-          unset token allowed_result
-
-          worker_pid="$(pgrep -f 'services/agent-worker/src/main\.ts' | head -n1 || true)"
-          [[ -n "$worker_pid" ]] || { echo "agent worker PID unavailable" >&2; exit 1; }
-          worker_env="$(tr '\0' '\n' <"/proc/${worker_pid}/environ")"
-          grep -Fxq 'NODE_USE_ENV_PROXY=1' <<<"$worker_env"
-          grep -Fxq 'HTTP_PROXY=http://127.0.0.1:7318' <<<"$worker_env"
-          grep -Fxq 'HTTPS_PROXY=http://127.0.0.1:7318' <<<"$worker_env"
-          grep -Fxq 'DIV3RSA_EGRESS_PROXY_URL=http://127.0.0.1:7318' <<<"$worker_env"
-          grep -Fxq 'DIV3RSA_BROWSER_EXECUTOR_URL=http://127.0.0.1:7320' <<<"$worker_env"
-          grep -Eq '^DIV3RSA_BROWSER_EXECUTOR_TOKEN=[0-9a-f]{64}$' <<<"$worker_env"
 
           echo "GPUHUB_NETWORK_SIDECARS_E2E_OK commit=${current_sha} browser_isolation=${isolation}"
           REMOTE
