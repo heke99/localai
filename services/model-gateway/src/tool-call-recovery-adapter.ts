@@ -9,6 +9,7 @@ import type {
   ModelToolCall,
   ModelToolDefinition
 } from "@div3rsa/model-sdk";
+import { materializeExecutionGroundedAnswer } from "./execution-grounded-completion";
 import {
   materializeExecutionObligation,
   routeExecutionObligation,
@@ -155,6 +156,24 @@ function deterministicToolResult(call: ModelToolCall): GenerateResult {
   };
 }
 
+async function finalizeGroundedExecution(inner: ModelAdapter, request: GenerateRequest, content: string): Promise<GenerateResult> {
+  const probe = await inner.generate({
+    ...request,
+    requestId: `${request.requestId}:runtime-grounded-final`,
+    tools: [],
+    requiredToolName: undefined,
+    temperature: 0,
+    maxOutputTokens: 32,
+    disableThinking: true,
+    messages: [
+      { role: "system", content: "Runtime finalization probe. No tools are available. Reply only OK." },
+      { role: "user", content: "OK" }
+    ]
+  });
+  assertCompleteModelResult(probe);
+  return { ...probe, content, finishReason: "stop", toolCalls: undefined };
+}
+
 function stableValue(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableValue).join(",")}]`;
@@ -231,9 +250,10 @@ async function finalizeAfterRedundantCall(inner: ModelAdapter, request: Generate
  * or authoritative prior tool results. Otherwise the existing hardened Qwen
  * required-tool path remains the fallback and fails closed.
  *
- * Pure model-conformance requests are unaffected because deterministic
- * materialization is activated only for execution obligations inferred from the
- * user's agent request, never for a bare requiredToolName supplied by the caller.
+ * When all explicit execution obligations are complete and the user asked for an
+ * exact scalar from authoritative tool output, the runtime preserves that exact
+ * value. A tool-free model probe supplies the real model version/usage without
+ * allowing another tool protocol turn to corrupt already verified evidence.
  */
 export class ToolCallRecoveryAdapter implements ModelAdapter {
   constructor(private readonly inner: ModelAdapter) {}
@@ -257,14 +277,15 @@ export class ToolCallRecoveryAdapter implements ModelAdapter {
       if (materialized) return deterministicToolResult(materialized);
     }
 
+    if (!obligation) {
+      const grounded = materializeExecutionGroundedAnswer(request);
+      if (grounded !== null) return finalizeGroundedExecution(this.inner, request, grounded);
+    }
+
     const routedRequest = withExecutionObligation(request, obligation);
     const first = await this.inner.generate(routedRequest);
     assertCompleteModelResult(first);
 
-    // Once an explicit obligation has succeeded, prevent the model from spinning
-    // on the exact same successful call. A retryable result is deliberately not
-    // suppressed, and an identical read after an intervening mutation is not the
-    // latest tool result so it remains allowed.
     if (!obligation && isRedundantLatestSuccessfulCall(request, first)) {
       return finalizeAfterRedundantCall(this.inner, request, first);
     }
