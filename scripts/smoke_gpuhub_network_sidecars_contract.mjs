@@ -47,6 +47,14 @@ requireText(browser, /install -o root -g "\$SERVICE_USER" -m 0755 "\$NODE_BIN" "
   "browser verified Node copy");
 requireText(browser, /exec \$\{SIDECAR_NODE_BIN\}/,
   "browser sidecar Node execution");
+requireText(browser, /NODE_BIN_DIR="\$\(dirname "\$NODE_BIN"\)"/,
+  "browser paired Node bin directory");
+requireText(browser, /NPM_BIN="\$\{NODE_BIN_DIR\}\/npm"/,
+  "browser paired npm path");
+requireText(browser, /"\$NPM_BIN" --prefix "\$INSTALL_ROOT" install/,
+  "browser pinned-runtime npm execution");
+requireText(browser, /export PATH="\$\{NODE_BIN_DIR\}:\$PATH"/,
+  "browser Playwright CLI Node path");
 requireText(browser, /@playwright\/test@\$\{PLAYWRIGHT_VERSION\}/,
   "pinned Playwright install");
 requireText(browser, /PLAYWRIGHT_VERSION="1\.62\.1"/,

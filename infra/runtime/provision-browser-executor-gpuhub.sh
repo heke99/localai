@@ -35,7 +35,14 @@ if [[ ! -x "$NODE_BIN" ]]; then
 fi
 [[ -n "$NODE_BIN" && -x "$NODE_BIN" ]] || fatal "Node.js 24 runtime missing"
 "$NODE_BIN" -e 'if(Number(process.versions.node.split(".")[0])<24)process.exit(1)' || fatal "Node.js >=24 is required"
-for cmd in npm curl screen setpriv useradd; do command -v "$cmd" >/dev/null 2>&1 || fatal "$cmd is required"; done
+NODE_BIN_DIR="$(dirname "$NODE_BIN")"
+NPM_BIN="${NODE_BIN_DIR}/npm"
+if [[ ! -x "$NPM_BIN" ]]; then
+  NPM_BIN="$(command -v npm || true)"
+fi
+[[ -n "$NPM_BIN" && -x "$NPM_BIN" ]] || fatal "npm paired with the Node runtime is required"
+export PATH="${NODE_BIN_DIR}:$PATH"
+for cmd in curl screen setpriv useradd; do command -v "$cmd" >/dev/null 2>&1 || fatal "$cmd is required"; done
 
 curl --fail --silent --show-error --max-time 3 "${EGRESS_URL}/_div3rsa_health" >/dev/null \
   || fatal "egress proxy must be healthy before browser provisioning"
@@ -64,7 +71,7 @@ if [[ "$current_version" != "$PLAYWRIGHT_VERSION" ]]; then
   cat >"$PACKAGE_FILE" <<EOF
 {"name":"div3rsa-gpuhub-browser-runtime","private":true,"version":"1.0.0","dependencies":{"@playwright/test":"${PLAYWRIGHT_VERSION}"}}
 EOF
-  npm --prefix "$INSTALL_ROOT" install --omit=dev --ignore-scripts --no-audit --no-fund --save-exact "@playwright/test@${PLAYWRIGHT_VERSION}"
+  "$NPM_BIN" --prefix "$INSTALL_ROOT" install --omit=dev --ignore-scripts --no-audit --no-fund --save-exact "@playwright/test@${PLAYWRIGHT_VERSION}"
 fi
 
 PLAYWRIGHT_BIN="$INSTALL_ROOT/node_modules/.bin/playwright"
