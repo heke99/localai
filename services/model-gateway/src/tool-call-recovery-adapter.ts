@@ -7,6 +7,7 @@ import type {
   ModelStreamDeltaHandler,
   ModelToolDefinition
 } from "@div3rsa/model-sdk";
+import { withExecutionObligation } from "./execution-obligation-router";
 
 const executionCommandPattern = /```(?:bash|sh|shell|zsh|powershell)?[\s\S]*?\b(?:curl|wget|nmap|dig|nslookup|ping)\b/i;
 const executionIntentPattern = /\b(?:behöver|måste|ska|need|needs|must|will|going\s+to)\b[\s\S]{0,240}\b(?:bekräfta|verifiera|testa|köra|confirm|verify|check|test|run|execute)\b/i;
@@ -140,9 +141,14 @@ function assertRequiredRecoveryTool(request: GenerateRequest, result: GenerateRe
 
 /**
  * Prevents an execution-looking textual response from bypassing the native tool
- * loop. It never parses shell text into execution. Explicit mentions of an exposed
- * tool are used only to force one bounded native recovery turn through the model's
- * tool_choice contract. Truncated or provider-error generations fail closed.
+ * loop. Before inference, explicit unfinished user-requested tool work is routed
+ * through requiredToolName so Qwen uses the already-hardened native required-tool
+ * path. It never invents a capability: obligation routing can only select tools
+ * already exposed in the request.
+ *
+ * Textual execution recovery remains as a bounded secondary guard. It never
+ * parses shell text into execution. Truncated or provider-error generations fail
+ * closed.
  */
 export class ToolCallRecoveryAdapter implements ModelAdapter {
   constructor(private readonly inner: ModelAdapter) {}
@@ -160,12 +166,13 @@ export class ToolCallRecoveryAdapter implements ModelAdapter {
   }
 
   async generate(request: GenerateRequest): Promise<GenerateResult> {
-    const first = await this.inner.generate(request);
+    const routedRequest = withExecutionObligation(request);
+    const first = await this.inner.generate(routedRequest);
     assertCompleteModelResult(first);
-    const firstIntent = recoveryIntent(request, first);
+    const firstIntent = recoveryIntent(routedRequest, first);
     if (!firstIntent) return first;
 
-    const secondRequest = recoveryRequest(request, first, firstIntent);
+    const secondRequest = recoveryRequest(routedRequest, first, firstIntent);
     const second = await this.inner.generate(secondRequest);
     assertCompleteModelResult(second);
     assertRequiredRecoveryTool(secondRequest, second);
