@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { timingSafeEqual } from "node:crypto";
 import { chromium, type Browser, type BrowserContext, type Page, type Route } from "@playwright/test";
 import { assertBrowserUrlAllowed, scopeFingerprint, type BrowserScope } from "./policy";
+import { resolveBrowserIsolationConfig } from "./runtime-policy";
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_TEXT_CHARS = 64_000;
@@ -102,10 +103,16 @@ const token = required("DIV3RSA_BROWSER_EXECUTOR_TOKEN");
 const proxyUrl = required("DIV3RSA_EGRESS_PROXY_URL");
 const listenHost = process.env.DIV3RSA_BROWSER_EXECUTOR_HOST?.trim() || "0.0.0.0";
 const listenPort = integerEnvironment("DIV3RSA_BROWSER_EXECUTOR_PORT", 7320);
+const isolation = resolveBrowserIsolationConfig({
+  mode: process.env.DIV3RSA_BROWSER_ISOLATION_MODE,
+  uid: process.getuid?.(),
+  listenHost,
+  proxyUrl
+});
 const browser: Browser = await chromium.launch({
   headless: true,
   channel: "chromium",
-  chromiumSandbox: true,
+  chromiumSandbox: isolation.chromiumSandbox,
   proxy: { server: proxyUrl }
 });
 const sessions = new Map<string, Session>();
@@ -204,7 +211,14 @@ async function execute(input: BrowserExecutorRequest): Promise<Record<string, un
 const server = createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/health") {
-      return json(response, 200, { ok: browser.isConnected(), service: "browser-executor", sessions: sessions.size, proxy: true });
+      return json(response, 200, {
+        ok: browser.isConnected(),
+        service: "browser-executor",
+        sessions: sessions.size,
+        proxy: true,
+        isolation: isolation.mode,
+        chromiumSandbox: isolation.chromiumSandbox
+      });
     }
     if (request.method !== "POST" || request.url !== "/v1/execute") return json(response, 404, { error: "not_found" });
     if (!bearerMatches(request.headers.authorization, token)) return json(response, 401, { error: "unauthorized" });
@@ -226,7 +240,7 @@ cleanup.unref?.();
 server.requestTimeout = 65_000;
 server.headersTimeout = 5_000;
 server.keepAliveTimeout = 5_000;
-server.listen(listenPort, listenHost, () => console.info(`[browser-executor] listening host=${listenHost} port=${listenPort}`));
+server.listen(listenPort, listenHost, () => console.info(`[browser-executor] listening host=${listenHost} port=${listenPort} isolation=${isolation.mode} chromiumSandbox=${isolation.chromiumSandbox}`));
 
 async function stop() {
   clearInterval(cleanup);
