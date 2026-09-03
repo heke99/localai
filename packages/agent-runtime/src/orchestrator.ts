@@ -4,7 +4,7 @@ import { redactSensitiveText } from "./redaction";
 import { assertModeAuthorization, routeSkills } from "./skill-router";
 import { assertTransition } from "./state-machine";
 import { analyzeTask } from "./task-analyzer";
-import { looksLikeRegisteredToolInvocation } from "./text-tool-call";
+import { detectRegisteredToolIntent } from "./text-tool-call";
 import { assertCompletionAllowed, createResponseOnlyVerificationExecutor, createVerificationPlan, executeVerificationPlan } from "./verification-engine";
 
 const aliases: Record<AgentRunRequest["mode"], ModelAlias> = {
@@ -18,13 +18,6 @@ const defaultToolTimeoutMs = 30_000;
 const defaultModelTimeoutMs = 120_000;
 const defaultMaxToolIterations = 8;
 const maxMissingToolRecoveryAttempts = 1;
-
-const executionCommandPattern = /```(?:bash|sh|shell|zsh|powershell)?[\s\S]*?\b(?:curl|wget|nmap|dig|nslookup|ping)\b/i;
-const executionIntentPattern = /\b(?:behöver|måste|ska|need|needs|must|will|going\s+to)\b[\s\S]{0,240}\b(?:bekräfta|verifiera|testa|köra|confirm|verify|check|test|run|execute)\b/i;
-
-function looksLikeUnstructuredExecution(content: string): boolean {
-  return executionCommandPattern.test(content) && executionIntentPattern.test(content);
-}
 
 function sanitizeResult(result: GenerateResult): GenerateResult {
   return { ...result, content: redactSensitiveText(result.content), toolCalls: undefined };
@@ -93,16 +86,20 @@ export class AgentOrchestrator {
 
       let toolIterations = 0;
       let missingToolRecoveries = 0;
+      let pendingRequiredToolName: string | undefined;
       while (true) {
         await this.throwIfCancelled(record);
         record.attempts += 1;
         await this.dependencies.runs.update(record);
 
+        const requiredToolName = pendingRequiredToolName;
+        pendingRequiredToolName = undefined;
         const generated = await this.generateWithTimeout({
           requestId: request.requestId,
           alias: record.alias,
           messages: [...messages],
-          tools: tools.length > 0 ? tools : undefined
+          tools: tools.length > 0 ? tools : undefined,
+          ...(requiredToolName ? { requiredToolName } : {})
         });
 
         const runtimeFinishReason = (generated as { finishReason?: string }).finishReason;
@@ -134,10 +131,12 @@ export class AgentOrchestrator {
           continue;
         }
 
-        if (looksLikeUnstructuredExecution(generated.content) || looksLikeRegisteredToolInvocation(generated.content, tools)) {
+        const textToolIntent = detectRegisteredToolIntent(generated.content, tools);
+        if (textToolIntent) {
           if (missingToolRecoveries >= maxMissingToolRecoveryAttempts) throw new Error("tool_call_required_but_missing");
           missingToolRecoveries += 1;
-          await this.recoverMissingToolCall(record, messages, generated, tools);
+          pendingRequiredToolName = textToolIntent.toolName ?? undefined;
+          await this.recoverMissingToolCall(record, messages, generated, tools, textToolIntent.toolName);
           continue;
         }
 
@@ -172,14 +171,18 @@ export class AgentOrchestrator {
     record: AgentRunRecord,
     messages: ModelMessage[],
     generated: GenerateResult,
-    tools: ModelToolDefinition[]
+    tools: ModelToolDefinition[],
+    requiredToolName: string | null = null
   ): Promise<void> {
     await this.transition(record, "retrying", "model", "Recover missing structured tool call");
     messages.push({ role: "assistant", content: generated.content });
+    const requiredInstruction = requiredToolName
+      ? ` The runtime identified ${requiredToolName} as the registered tool you explicitly intended to use; emit that native tool call now.`
+      : "";
     messages.push({
       role: "system",
       content: tools.length > 0
-        ? "Runtime recovery: your previous response implied live execution but did not emit a structured tool call. Do not claim the command ran. Either call one of the available structured tools now, or explicitly explain why no execution can be performed."
+        ? `Runtime recovery: your previous response implied live execution but did not emit a structured tool call. Do not claim the command ran.${requiredInstruction} Otherwise call the appropriate available structured tool now, or explicitly explain why no execution can be performed.`
         : "Runtime recovery: no execution tools are available in this run. Do not claim any shown command ran. Answer with a clear TOOL_UNAVAILABLE limitation and continue with non-executed analysis where possible."
     });
     await this.transition(record, "running", "model", "Retry after missing structured tool call");
