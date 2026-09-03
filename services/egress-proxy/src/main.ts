@@ -1,7 +1,11 @@
 import { createServer, request as requestHttp, type IncomingHttpHeaders } from "node:http";
 import { request as requestHttps } from "node:https";
 import { connect, type Socket } from "node:net";
-import { resolvePublicEgressTarget } from "./policy";
+import {
+  resolvePublicEgressTarget,
+  resolvePublicEgressTargets,
+  type ResolvedEgressTarget
+} from "./policy";
 
 const host = process.env.DIV3RSA_EGRESS_PROXY_HOST?.trim() || "0.0.0.0";
 const port = Number(process.env.DIV3RSA_EGRESS_PROXY_PORT?.trim() || "3128");
@@ -35,6 +39,59 @@ function closeSocket(socket: Socket, status = "502 Bad Gateway"): void {
   }
 }
 
+function connectPinnedTarget(
+  targets: ResolvedEgressTarget[],
+  clientSocket: Socket,
+  head: Buffer
+): void {
+  let index = 0;
+
+  const attempt = (): void => {
+    if (clientSocket.destroyed) return;
+    const target = targets[index++];
+    if (!target) {
+      closeSocket(clientSocket);
+      return;
+    }
+
+    const upstream = connect({ host: target.address, family: target.family, port: target.port });
+    let connected = false;
+
+    const retry = (error?: Error & { code?: string }): void => {
+      if (connected) {
+        if (!clientSocket.destroyed) clientSocket.destroy(error);
+        return;
+      }
+      upstream.destroy();
+      console.warn(
+        `[egress-proxy] CONNECT candidate failed host=${target.host} address=${target.address} family=${target.family} code=${error?.code || "unknown"}; trying_next=${index < targets.length}`
+      );
+      attempt();
+    };
+
+    upstream.setTimeout(10_000, () => {
+      const timeout = Object.assign(new Error("egress_connect_timeout"), { code: "ETIMEDOUT" });
+      retry(timeout);
+    });
+    upstream.once("error", retry);
+    upstream.once("connect", () => {
+      connected = true;
+      upstream.removeListener("error", retry);
+      upstream.setTimeout(30_000, () => upstream.destroy(new Error("egress_tunnel_idle_timeout")));
+      upstream.on("error", () => {
+        if (!clientSocket.destroyed) clientSocket.destroy();
+      });
+      clientSocket.on("error", () => upstream.destroy());
+      clientSocket.write("HTTP/1.1 200 Connection Established\r\nProxy-Agent: div3rsa-egress\r\n\r\n");
+      if (head.length) upstream.write(head);
+      upstream.pipe(clientSocket);
+      clientSocket.pipe(upstream);
+    });
+  };
+
+  attempt();
+}
+
 const server = createServer(async (request, response) => {
   if (request.url === "/_div3rsa_health") {
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
@@ -65,7 +122,10 @@ const server = createServer(async (request, response) => {
       upstreamResponse.pipe(response);
     });
     upstream.setTimeout(30_000, () => upstream.destroy(new Error("egress_upstream_timeout")));
-    upstream.on("error", () => {
+    upstream.on("error", (error: Error & { code?: string }) => {
+      console.warn(
+        `[egress-proxy] request candidate failed host=${target.host} address=${target.address} family=${target.family} code=${error.code || "unknown"}`
+      );
       if (!response.headersSent) response.writeHead(502, { "content-length": "0", "cache-control": "no-store" });
       response.end();
     });
@@ -85,18 +145,8 @@ server.on("connect", async (request, clientSocket, head) => {
     const authority = request.url?.trim() || "";
     const parsed = new URL(`http://${authority}`);
     const targetPort = Number(parsed.port || 443);
-    const target = await resolvePublicEgressTarget(parsed.hostname, targetPort);
-    const upstream = connect({ host: target.address, family: target.family, port: target.port });
-    const fail = () => closeSocket(clientSocket as Socket);
-    upstream.setTimeout(30_000, () => upstream.destroy(new Error("egress_connect_timeout")));
-    upstream.once("error", fail);
-    upstream.once("connect", () => {
-      upstream.removeListener("error", fail);
-      clientSocket.write("HTTP/1.1 200 Connection Established\r\nProxy-Agent: div3rsa-egress\r\n\r\n");
-      if (head.length) upstream.write(head);
-      upstream.pipe(clientSocket);
-      clientSocket.pipe(upstream);
-    });
+    const targets = await resolvePublicEgressTargets(parsed.hostname, targetPort);
+    connectPinnedTarget(targets, clientSocket as Socket, head);
   } catch (error) {
     const message = error instanceof Error ? error.message : "egress_connect_failed";
     closeSocket(clientSocket as Socket, /blocked|not_allowed|port/.test(message) ? "403 Forbidden" : "502 Bad Gateway");
