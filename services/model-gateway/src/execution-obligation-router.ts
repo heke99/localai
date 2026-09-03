@@ -158,6 +158,10 @@ function chainCount(prompt: string, toolName?: string): number {
   return 1;
 }
 
+function normalizePromptToken(value: string): string {
+  return value.replace(/[.,;!?]+$/, "");
+}
+
 function desiredValue(prompt: string): string | null {
   const patterns = [
     /\b(?:desired|target)\s+value\s+(?:is|=|:)\s*[`"']?([A-Za-z0-9._:/-]+)[`"']?/i,
@@ -166,7 +170,9 @@ function desiredValue(prompt: string): string | null {
     /\bverify\b(?:\s+(?:with\s+)?expected)?\s*[`"']?([A-Za-z0-9._:/-]+)[`"']?/i
   ];
   for (const pattern of patterns) {
-    const value = pattern.exec(prompt)?.[1];
+    const raw = pattern.exec(prompt)?.[1];
+    if (!raw) continue;
+    const value = normalizePromptToken(raw);
     if (value && !/^(?:the|current|value|state|result)$/i.test(value)) return value;
   }
   return null;
@@ -323,7 +329,9 @@ function enumOrConst(schema: JsonRecord): unknown {
 
 function explicitFieldValue(prompt: string, field: string): string | number | null {
   const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const direct = new RegExp(`\\b${escaped}\\b\\s*(?:=|:|is|to)?\\s*[\u0060\"']?([A-Za-z0-9._:/-]+)[\u0060\"']?`, "i").exec(prompt)?.[1];
+  const raw = new RegExp(`\\b${escaped}\\b\\s*(?:=|:|is|to)?\\s*[\u0060\"']?([A-Za-z0-9._:/-]+)[\u0060\"']?`, "i").exec(prompt)?.[1];
+  if (!raw) return null;
+  const direct = normalizePromptToken(raw);
   if (direct && direct.toLowerCase() !== field.toLowerCase()) return /^\d+$/.test(direct) ? Number(direct) : direct;
   return null;
 }
@@ -373,7 +381,10 @@ function chainField(messages: readonly ModelMessage[], prompt: string, field: st
   if (field === "step") {
     if (typeof latestOutput?.step === "number" && Number.isInteger(latestOutput.step)) return latestOutput.step + 1;
     if (typeof latest?.input.step === "number" && Number.isInteger(latest.input.step)) return (latest.input.step as number) + 1;
-    return explicitFieldValue(prompt, field) ?? (/\bstart\s+step\s+(\d+)\b/i.exec(prompt)?.[1] ? Number(/\bstart\s+step\s+(\d+)\b/i.exec(prompt)![1]) : null);
+    const explicit = explicitFieldValue(prompt, field);
+    if (typeof explicit === "number") return explicit;
+    const start = /\bstart\s+step\s+(\d+)\b/i.exec(prompt)?.[1];
+    return start ? Number(start) : null;
   }
   return undefined;
 }
@@ -401,17 +412,18 @@ function resolveField(request: GenerateRequest, route: ExecutionObligationRoute,
   if (fixed !== undefined) return fixed;
 
   const prompt = firstUserContent(request.messages);
-  const sameKey = latestOutputField(request.messages, field);
-  if (sameKey !== undefined && validateSchemaValue(sameKey, schema)) return sameKey;
-
   const lower = field.toLowerCase();
   let candidate: unknown;
+
   if (lower === "value") candidate = desiredValue(prompt) ?? explicitFieldValue(prompt, field);
   else if (lower === "expected") candidate = explicitFieldValue(prompt, field) ?? desiredValue(prompt) ?? latestAuthoritativeValue(request.messages);
   else if (lower === "query") candidate = searchPhrase(prompt);
   else if (lower === "path") candidate = rankedPath(latestHistory(request.messages)?.output) ?? explicitFieldValue(prompt, field);
   else if (lower === "previoustoken" || lower === "step") candidate = chainField(request.messages, prompt, field);
-  else candidate = explicitFieldValue(prompt, field);
+  else {
+    const sameKey = latestOutputField(request.messages, field);
+    candidate = sameKey !== undefined ? sameKey : explicitFieldValue(prompt, field);
+  }
 
   return candidate !== null && candidate !== undefined && validateSchemaValue(candidate, schema) ? candidate : undefined;
 }
