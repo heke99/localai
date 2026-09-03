@@ -95,6 +95,49 @@ describe("portable required-tool contract", () => {
     expect(result.toolCalls).toEqual([{ id: "qwen-native-call", name: continuationTool.name, input: { continuationToken: "TOKEN_QWEN" } }]);
   });
 
+  it("retries a missing required Qwen tool once with thinking enabled", async () => {
+    const wireBodies: Record<string, unknown>[] = [];
+    const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      wireBodies.push(body);
+      if (wireBodies.length === 1) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "I ignored the tool." }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 4 }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "qwen-thinking-retry",
+              type: "function",
+              function: { name: continuationTool.name, arguments: JSON.stringify({ continuationToken: "TOKEN_RETRY" }) }
+            }]
+          },
+          finish_reason: "tool_calls"
+        }],
+        usage: { prompt_tokens: 12, completion_tokens: 5 }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const result = await qwenAdapter(fetcher).generate(request());
+
+    expect(wireBodies).toHaveLength(2);
+    expect(wireBodies[0]?.tool_choice).toBe("required");
+    expect(wireBodies[0]?.reasoning_effort).toBe("none");
+    expect(wireBodies[0]?.chat_template_kwargs).toEqual({ enable_thinking: false });
+    expect(wireBodies[1]?.tool_choice).toBe("required");
+    expect(wireBodies[1]?.reasoning_effort).toBeUndefined();
+    expect(wireBodies[1]?.chat_template_kwargs).toEqual({ enable_thinking: true });
+    const retryTools = wireBodies[1]?.tools as Array<{ function?: { name?: string } }>;
+    expect(retryTools).toHaveLength(1);
+    expect(retryTools[0]?.function?.name).toBe(continuationTool.name);
+    expect(result.finishReason).toBe("tool_call");
+    expect(result.toolCalls).toEqual([{ id: "qwen-thinking-retry", name: continuationTool.name, input: { continuationToken: "TOKEN_RETRY" } }]);
+  });
+
   it("fails closed when Qwen ignores the explicit required tool", async () => {
     const fetcher = (async () => new Response(JSON.stringify({
       choices: [{ message: { content: "I ignored the tool." }, finish_reason: "stop" }]

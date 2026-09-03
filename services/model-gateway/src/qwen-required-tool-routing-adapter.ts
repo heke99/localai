@@ -13,7 +13,7 @@ import { StrictToolProtocolOpenAiCompatibleAdapter } from "./strict-tool-protoco
 
 type Fetch = typeof fetch;
 
-function qwenNativeRequiredToolFetcher(fetcher: Fetch): Fetch {
+function qwenNativeRequiredToolFetcher(fetcher: Fetch, thinking: "disabled" | "enabled" = "disabled"): Fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     if (!init?.body) return fetcher(input, init);
 
@@ -26,10 +26,15 @@ function qwenNativeRequiredToolFetcher(fetcher: Fetch): Fetch {
 
     if (Array.isArray(body.tools) && body.tools.length === 1 && body.tool_choice) {
       body.tool_choice = "required";
-      body.reasoning_effort = "none";
-      body.chat_template_kwargs = { enable_thinking: false };
       body.cache_prompt = true;
       body.stream = false;
+      if (thinking === "disabled") {
+        body.reasoning_effort = "none";
+        body.chat_template_kwargs = { enable_thinking: false };
+      } else {
+        delete body.reasoning_effort;
+        body.chat_template_kwargs = { enable_thinking: true };
+      }
     }
 
     return fetcher(input, { ...init, body: JSON.stringify(body) });
@@ -51,16 +56,27 @@ function requiredToolRequest(request: GenerateRequest): GenerateRequest | null {
   };
 }
 
+function isRequiredToolMismatch(error: unknown, requiredToolName: string): boolean {
+  return error instanceof Error && error.message === `required_tool_call_mismatch:${requiredToolName}`;
+}
+
 /**
  * Keeps the hardened Qwen Strict/Execution/Security stack for ordinary traffic,
  * while explicit portable requiredToolName requests use llama.cpp's native
  * OpenAI-compatible tool protocol. Native mode preserves assistant tool_calls
- * and role=tool history in the chat template, which is required for grounded
- * multi-turn tool continuation.
+ * and role=tool history, which is required for grounded multi-turn tool
+ * continuation.
+ *
+ * Some llama.cpp Qwen chat-template builds accept tool_choice=required but fail
+ * to enforce it when enable_thinking=false. Required-tool traffic therefore gets
+ * one bounded retry with thinking enabled only after the provider has returned a
+ * structurally invalid/missing required call. The same one-tool exposure and
+ * exact response validation remain in force on the retry.
  */
 export class QwenRequiredToolRoutingAdapter implements ModelAdapter {
   private readonly strict: StrictToolProtocolOpenAiCompatibleAdapter;
   private readonly requiredNative: GenericOpenAiCompatibleAdapter;
+  private readonly requiredNativeThinkingFallback: GenericOpenAiCompatibleAdapter;
 
   constructor(
     baseUrl: string,
@@ -70,15 +86,23 @@ export class QwenRequiredToolRoutingAdapter implements ModelAdapter {
     admission?: AdmissionController
   ) {
     this.strict = new StrictToolProtocolOpenAiCompatibleAdapter(baseUrl, apiKey, fetcher, admission);
+    const nativeProfile = {
+      runtimeModel: profile.runtimeModel,
+      modelVersionId: profile.modelVersionId,
+      capabilities: profile.capabilities
+    };
     this.requiredNative = new GenericOpenAiCompatibleAdapter(
       baseUrl,
       apiKey,
-      {
-        runtimeModel: profile.runtimeModel,
-        modelVersionId: profile.modelVersionId,
-        capabilities: profile.capabilities
-      },
-      qwenNativeRequiredToolFetcher(fetcher),
+      nativeProfile,
+      qwenNativeRequiredToolFetcher(fetcher, "disabled"),
+      admission
+    );
+    this.requiredNativeThinkingFallback = new GenericOpenAiCompatibleAdapter(
+      baseUrl,
+      apiKey,
+      nativeProfile,
+      qwenNativeRequiredToolFetcher(fetcher, "enabled"),
       admission
     );
   }
@@ -95,15 +119,26 @@ export class QwenRequiredToolRoutingAdapter implements ModelAdapter {
     return this.strict.healthCheck();
   }
 
+  private async generateRequired(nativeRequest: GenerateRequest): Promise<GenerateResult> {
+    const requiredToolName = nativeRequest.requiredToolName?.trim();
+    if (!requiredToolName) return this.requiredNative.generate(nativeRequest);
+    try {
+      return await this.requiredNative.generate(nativeRequest);
+    } catch (error) {
+      if (!isRequiredToolMismatch(error, requiredToolName)) throw error;
+      return this.requiredNativeThinkingFallback.generate(nativeRequest);
+    }
+  }
+
   async generate(request: GenerateRequest): Promise<GenerateResult> {
     const nativeRequest = requiredToolRequest(request);
-    return nativeRequest ? this.requiredNative.generate(nativeRequest) : this.strict.generate(request);
+    return nativeRequest ? this.generateRequired(nativeRequest) : this.strict.generate(request);
   }
 
   async generateStreamed(request: GenerateRequest, onDelta: ModelStreamDeltaHandler): Promise<GenerateResult> {
     const nativeRequest = requiredToolRequest(request);
     if (!nativeRequest) return this.strict.generateStreamed(request, onDelta);
-    const result = await this.requiredNative.generate(nativeRequest);
+    const result = await this.generateRequired(nativeRequest);
     if (result.content) await onDelta(result.content);
     return result;
   }
@@ -114,7 +149,7 @@ export class QwenRequiredToolRoutingAdapter implements ModelAdapter {
       yield* this.strict.stream(request);
       return;
     }
-    const result = await this.requiredNative.generate(nativeRequest);
+    const result = await this.generateRequired(nativeRequest);
     if (result.content) yield result.content;
   }
 }
