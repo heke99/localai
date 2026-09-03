@@ -1,0 +1,115 @@
+name: GPUHub Network Sidecars Evidence
+
+on:
+  workflow_run:
+    workflows: ["Deploy GPUHub"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpuhub-network-sidecars-evidence
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-gpuhub
+    env:
+      GPUHUB_SSH_HOST: ${{ secrets.GPUHUB_SSH_HOST }}
+      GPUHUB_SSH_PORT: ${{ secrets.GPUHUB_SSH_PORT }}
+      GPUHUB_SSH_USER: ${{ secrets.GPUHUB_SSH_USER }}
+      GPUHUB_SSH_PRIVATE_KEY: ${{ secrets.GPUHUB_SSH_PRIVATE_KEY }}
+      GPUHUB_SSH_KNOWN_HOSTS: ${{ secrets.GPUHUB_SSH_KNOWN_HOSTS }}
+      DEPLOYED_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Validate production SSH material
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in GPUHUB_SSH_HOST GPUHUB_SSH_PORT GPUHUB_SSH_USER GPUHUB_SSH_PRIVATE_KEY GPUHUB_SSH_KNOWN_HOSTS DEPLOYED_SHA; do
+            [[ -n "${!name:-}" ]] || { echo "Missing ${name}" >&2; exit 1; }
+          done
+          [[ "$DEPLOYED_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "invalid deployed sha" >&2; exit 1; }
+
+      - name: Configure pinned SSH host identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$GPUHUB_SSH_PRIVATE_KEY" >"$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$GPUHUB_SSH_KNOWN_HOSTS" >"$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Verify egress, browser and worker wiring on GPUHub
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          remote="${GPUHUB_SSH_USER}@${GPUHUB_SSH_HOST}"
+          ssh_opts=(
+            -i "$HOME/.ssh/id_ed25519"
+            -p "$GPUHUB_SSH_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=3
+          )
+          ssh "${ssh_opts[@]}" "$remote" "bash -s -- '${DEPLOYED_SHA}'" <<'REMOTE'
+          set -Eeuo pipefail
+          expected_sha="$1"
+          app_dir="/root/autodl-tmp/localai/app"
+          proxy="http://127.0.0.1:7318"
+          browser="http://127.0.0.1:7320"
+          token_file="/var/lib/div3rsa-browser/executor.token"
+
+          cd "$app_dir"
+          git cat-file -e "${expected_sha}^{commit}"
+          current_sha="$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$expected_sha" "$current_sha" || {
+            echo "GPUHub checkout does not contain verified deployment: expected=$expected_sha current=$current_sha" >&2
+            exit 1
+          }
+
+          systemctl is-active --quiet div3rsa-egress-proxy.service
+          systemctl is-active --quiet div3rsa-browser-executor.service
+          curl --fail --silent --show-error --max-time 3 "$proxy/_div3rsa_health" >/dev/null
+          curl --fail --silent --show-error --max-time 3 "$browser/health" >/dev/null
+
+          blocked_code="$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' --proxy "$proxy" http://127.0.0.1/ || true)"
+          [[ "$blocked_code" == "403" ]] || { echo "loopback egress negative gate failed: $blocked_code" >&2; exit 1; }
+          metadata_code="$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' --proxy "$proxy" http://169.254.169.254/latest/meta-data/ || true)"
+          [[ "$metadata_code" == "403" ]] || { echo "metadata egress negative gate failed: $metadata_code" >&2; exit 1; }
+          curl --fail --silent --show-error --max-time 10 --proxy "$proxy" https://example.com/ >/dev/null
+
+          [[ -s "$token_file" ]] || { echo "browser token missing" >&2; exit 1; }
+          token="$(tr -d '\r\n' <"$token_file")"
+          [[ "$token" =~ ^[0-9a-f]{64}$ ]] || { echo "browser token invalid" >&2; exit 1; }
+
+          allowed_payload='{"runId":"gpuhub-evidence","requestId":"navigate-allowed","traceId":"gpuhub-network-evidence","action":"browser_navigate","timeoutMs":15000,"executionClass":"passive","scope":{"scopeId":"evidence-example","allowHosts":["example.com"],"allowIpv4Cidrs":[]},"input":{"url":"https://example.com/"}}'
+          allowed_result="$(curl --fail --silent --show-error --max-time 20 -H "authorization: Bearer ${token}" -H 'content-type: application/json' --data-binary "$allowed_payload" "$browser/v1/execute")"
+          node -e 'const v=JSON.parse(process.argv[1]);if(v.ok!==true||v.action!=="browser_navigate"||!String(v.url||"").startsWith("https://example.com"))process.exit(1)' "$allowed_result"
+
+          blocked_payload='{"runId":"gpuhub-evidence-blocked","requestId":"navigate-blocked","traceId":"gpuhub-network-evidence","action":"browser_navigate","timeoutMs":10000,"executionClass":"passive","scope":{"scopeId":"evidence-example","allowHosts":["example.com"],"allowIpv4Cidrs":[]},"input":{"url":"https://www.iana.org/"}}'
+          browser_blocked_code="$(curl --silent --show-error --max-time 15 --output /tmp/div3rsa-browser-blocked.json --write-out '%{http_code}' -H "authorization: Bearer ${token}" -H 'content-type: application/json' --data-binary "$blocked_payload" "$browser/v1/execute" || true)"
+          [[ "$browser_blocked_code" == "400" ]] || { cat /tmp/div3rsa-browser-blocked.json >&2 || true; echo "browser out-of-scope gate failed: $browser_blocked_code" >&2; exit 1; }
+          unset token allowed_result
+
+          worker_pid="$(pgrep -f 'services/agent-worker/src/main\.ts' | head -n1 || true)"
+          [[ -n "$worker_pid" ]] || { echo "agent worker PID unavailable" >&2; exit 1; }
+          worker_env="$(tr '\0' '\n' <"/proc/${worker_pid}/environ")"
+          grep -Fxq 'NODE_USE_ENV_PROXY=1' <<<"$worker_env"
+          grep -Fxq 'HTTP_PROXY=http://127.0.0.1:7318' <<<"$worker_env"
+          grep -Fxq 'HTTPS_PROXY=http://127.0.0.1:7318' <<<"$worker_env"
+          grep -Fxq 'DIV3RSA_EGRESS_PROXY_URL=http://127.0.0.1:7318' <<<"$worker_env"
+          grep -Fxq 'DIV3RSA_BROWSER_EXECUTOR_URL=http://127.0.0.1:7320' <<<"$worker_env"
+          grep -Eq '^DIV3RSA_BROWSER_EXECUTOR_TOKEN=[0-9a-f]{64}$' <<<"$worker_env"
+
+          echo "GPUHUB_NETWORK_SIDECARS_E2E_OK commit=${current_sha}"
+          REMOTE
