@@ -32,6 +32,23 @@ jobs:
       - name: Install locked dependencies
         run: npm ci --ignore-scripts
 
+      - name: Validate Docker tool network
+        env:
+          NODE_IMAGE: node:24-bookworm-slim@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          LLAMA_CPP_IMAGE: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:1111111111111111111111111111111111111111111111111111111111111111
+          PLAYWRIGHT_IMAGE: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:2222222222222222222222222222222222222222222222222222222222222222
+          SUPABASE_URL: https://example.supabase.co
+          SUPABASE_SECRET_KEY: ci-server-secret
+          QWEN_INFERENCE_API_KEY: ci-inference-secret
+          QWEN_INFERENCE_BASE_URL: https://inference.example.com/v1
+          SEARXNG_SECRET: ci-search-secret
+          DIV3RSA_BROWSER_EXECUTOR_TOKEN: ci-browser-secret
+          DIV3RSA_BROWSER_EXECUTOR_URL: http://browser-executor:7320
+          DIV3RSA_MODEL_DIR: /tmp/models
+        run: |
+          docker compose -f infra/docker/model-worker.compose.yaml --profile browser config >/dev/null
+          docker compose -f infra/docker/agent-worker.external.compose.yaml --profile browser config >/dev/null
+
       - name: Validate GPUHub upgrade shell
         run: bash -n infra/runtime/upgrade-legacy-gpuhub.sh
 
