@@ -5,10 +5,12 @@ import type {
   ModelCapability,
   ModelHealth,
   ModelProtocolProfile,
-  ModelStreamDeltaHandler
+  ModelStreamDeltaHandler,
+  ModelToolDefinition
 } from "@div3rsa/model-sdk";
 import type { AdmissionController } from "./admission-control";
 import { GenericOpenAiCompatibleAdapter } from "./generic-openai-compatible-adapter";
+import { OpenAiCompatibleAdapter } from "./openai-compatible-adapter";
 import { StrictToolProtocolOpenAiCompatibleAdapter } from "./strict-tool-protocol-openai-compatible-adapter";
 
 type Fetch = typeof fetch;
@@ -60,6 +62,43 @@ function isRequiredToolMismatch(error: unknown, requiredToolName: string): boole
   return error instanceof Error && error.message === `required_tool_call_mismatch:${requiredToolName}`;
 }
 
+function requiredToolDefinition(request: GenerateRequest): ModelToolDefinition | null {
+  const name = request.requiredToolName?.trim();
+  if (!name) return null;
+  return request.tools?.find((tool) => tool.name === name) ?? null;
+}
+
+function isSingletonPropertySchema(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const property = value as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(property, "const")) return true;
+  return Array.isArray(property.enum) && property.enum.length === 1;
+}
+
+/**
+ * The schema fallback is deliberately narrower than ordinary JSON-schema
+ * validation. Every top-level argument must be required, additional properties
+ * must be forbidden, and every value must have exactly one possible value. This
+ * means the grammar can only serialize arguments that are already fixed by the
+ * tool contract; it cannot invent evidence-bearing or user-derived values.
+ */
+function hasClosedSingletonArguments(request: GenerateRequest): boolean {
+  const tool = requiredToolDefinition(request);
+  if (!tool) return false;
+  const schema = tool.inputSchema as Record<string, unknown>;
+  if (schema.type !== "object" || schema.additionalProperties !== false) return false;
+  if (!Array.isArray(schema.required) || !schema.required.length) return false;
+  if (!schema.properties || typeof schema.properties !== "object" || Array.isArray(schema.properties)) return false;
+
+  const required = schema.required.filter((value): value is string => typeof value === "string");
+  if (required.length !== schema.required.length) return false;
+  const properties = schema.properties as Record<string, unknown>;
+  const keys = Object.keys(properties);
+  if (keys.length !== required.length) return false;
+  if (keys.some((key) => !required.includes(key))) return false;
+  return required.every((key) => isSingletonPropertySchema(properties[key]));
+}
+
 /**
  * Keeps the hardened Qwen Strict/Execution/Security stack for ordinary traffic,
  * while explicit portable requiredToolName requests use llama.cpp's native
@@ -67,16 +106,18 @@ function isRequiredToolMismatch(error: unknown, requiredToolName: string): boole
  * and role=tool history, which is required for grounded multi-turn tool
  * continuation.
  *
- * Some llama.cpp Qwen chat-template builds accept tool_choice=required but fail
- * to enforce it when enable_thinking=false. Required-tool traffic therefore gets
- * one bounded retry with thinking enabled only after the provider has returned a
- * structurally invalid/missing required call. The same one-tool exposure and
- * exact response validation remain in force on the retry.
+ * Some llama.cpp/Qwen chat-template combinations accept tool_choice=required but
+ * do not enforce it. Required-tool traffic therefore tries native no-thinking,
+ * then one native thinking-enabled retry. If both are ignored, only a completely
+ * closed singleton argument schema may use the existing Qwen json_schema grammar
+ * path. Free-form/evidence-derived arguments never take that fallback and remain
+ * fail-closed on a missing native call.
  */
 export class QwenRequiredToolRoutingAdapter implements ModelAdapter {
   private readonly strict: StrictToolProtocolOpenAiCompatibleAdapter;
   private readonly requiredNative: GenericOpenAiCompatibleAdapter;
   private readonly requiredNativeThinkingFallback: GenericOpenAiCompatibleAdapter;
+  private readonly requiredSchemaFallback: OpenAiCompatibleAdapter;
 
   constructor(
     baseUrl: string,
@@ -105,6 +146,7 @@ export class QwenRequiredToolRoutingAdapter implements ModelAdapter {
       qwenNativeRequiredToolFetcher(fetcher, "enabled"),
       admission
     );
+    this.requiredSchemaFallback = new OpenAiCompatibleAdapter(baseUrl, apiKey, fetcher, admission);
   }
 
   getCapabilities(): ReadonlySet<ModelCapability> {
@@ -126,7 +168,13 @@ export class QwenRequiredToolRoutingAdapter implements ModelAdapter {
       return await this.requiredNative.generate(nativeRequest);
     } catch (error) {
       if (!isRequiredToolMismatch(error, requiredToolName)) throw error;
-      return this.requiredNativeThinkingFallback.generate(nativeRequest);
+      try {
+        return await this.requiredNativeThinkingFallback.generate(nativeRequest);
+      } catch (retryError) {
+        if (!isRequiredToolMismatch(retryError, requiredToolName)) throw retryError;
+        if (!hasClosedSingletonArguments(nativeRequest)) throw retryError;
+        return this.requiredSchemaFallback.generate(nativeRequest);
+      }
     }
   }
 
