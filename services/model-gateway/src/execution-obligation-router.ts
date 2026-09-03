@@ -251,6 +251,14 @@ function normalizeObligations(prompt: string, tools: readonly ModelToolDefinitio
   return deduped;
 }
 
+function skipSatisfiedIdempotentWrites(queue: Obligation[], prompt: string, messages: readonly ModelMessage[]): void {
+  if (!IDEMPOTENT.test(prompt)) return;
+  const desired = desiredValue(prompt);
+  const current = latestAuthoritativeValue(messages);
+  if (!desired || current !== desired) return;
+  while (queue[0] && (queue[0].kind === "write" || WRITE_TOOL_NAME.test(queue[0].toolName))) queue.shift();
+}
+
 function remainingObligation(
   prompt: string,
   obligations: readonly Obligation[],
@@ -259,19 +267,19 @@ function remainingObligation(
 ): Obligation | null {
   const queue = [...obligations];
   let executedIndex = 0;
+  skipSatisfiedIdempotentWrites(queue, prompt, messages);
   while (queue.length && executedIndex < executed.length) {
+    skipSatisfiedIdempotentWrites(queue, prompt, messages);
+    if (!queue.length) break;
     const expected = queue[0]!;
     const actual = executed[executedIndex]!;
-    if (actual === expected.toolName) queue.shift();
+    if (actual === expected.toolName) {
+      queue.shift();
+      skipSatisfiedIdempotentWrites(queue, prompt, messages);
+    }
     executedIndex += 1;
   }
-
-  const pending = queue[0];
-  if (IDEMPOTENT.test(prompt) && pending && (pending.kind === "write" || WRITE_TOOL_NAME.test(pending.toolName))) {
-    const desired = desiredValue(prompt);
-    const current = latestAuthoritativeValue(messages);
-    if (desired && current === desired) queue.shift();
-  }
+  skipSatisfiedIdempotentWrites(queue, prompt, messages);
   return queue[0] ?? null;
 }
 
