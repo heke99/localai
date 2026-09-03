@@ -65,11 +65,11 @@ export function assertEgressPort(port: number): void {
   if (!Number.isInteger(port) || (port !== 80 && port !== 443)) throw new Error("egress_port_not_allowed");
 }
 
-export async function resolvePublicEgressTarget(
+export async function resolvePublicEgressTargets(
   hostInput: string,
   port: number,
   resolver: EgressDnsResolver = defaultResolver
-): Promise<ResolvedEgressTarget> {
+): Promise<ResolvedEgressTarget[]> {
   assertEgressPort(port);
   const host = normalizeEgressHost(hostInput);
   if (!host || isBlockedEgressHostname(host)) throw new Error("egress_host_blocked");
@@ -78,11 +78,31 @@ export async function resolvePublicEgressTarget(
     ? [{ address: host, family: isIP(host) as 4 | 6 }]
     : await resolver(host);
   if (!addresses.length) throw new Error("egress_dns_failed");
+
   for (const entry of addresses) {
-    if (isBlockedEgressAddress(entry.address)) throw new Error("egress_address_blocked");
+    if ((entry.family !== 4 && entry.family !== 6) || isBlockedEgressAddress(entry.address)) {
+      throw new Error("egress_address_blocked");
+    }
   }
-  const ordered = [...addresses].sort((left, right) => right.family - left.family || left.address.localeCompare(right.address));
-  const selected = ordered[0];
-  if (!selected || (selected.family !== 4 && selected.family !== 6)) throw new Error("egress_dns_failed");
-  return { host, address: selected.address, family: selected.family, port };
+
+  const ordered = [...addresses]
+    .sort((left, right) => left.family - right.family || left.address.localeCompare(right.address));
+
+  return ordered.map((entry) => ({
+    host,
+    address: entry.address,
+    family: entry.family,
+    port
+  }));
+}
+
+export async function resolvePublicEgressTarget(
+  hostInput: string,
+  port: number,
+  resolver: EgressDnsResolver = defaultResolver
+): Promise<ResolvedEgressTarget> {
+  const targets = await resolvePublicEgressTargets(hostInput, port, resolver);
+  const selected = targets[0];
+  if (!selected) throw new Error("egress_dns_failed");
+  return selected;
 }
