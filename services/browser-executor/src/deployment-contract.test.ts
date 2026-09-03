@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
-const root = new URL("../../../", import.meta.url);
+const root = new URL("../../", import.meta.url);
 
 async function text(path: string): Promise<string> {
   return readFile(new URL(path, root), "utf8");
