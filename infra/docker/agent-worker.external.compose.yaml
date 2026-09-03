@@ -9,6 +9,8 @@ services:
     depends_on:
       egress-proxy:
         condition: service_healthy
+      searxng:
+        condition: service_healthy
     environment:
       SUPABASE_URL: "${SUPABASE_URL:?Set Supabase URL}"
       SUPABASE_SECRET_KEY: "${SUPABASE_SECRET_KEY:?Set server-only Supabase secret}"
@@ -17,6 +19,7 @@ services:
       DIV3RSA_WORKER_ID: "${DIV3RSA_WORKER_ID:-agent-worker-1}"
       DIV3RSA_REPOSITORY_ROOT: /app
       DIV3RSA_INTEGRATION_GATEWAY_URL: "${DIV3RSA_INTEGRATION_GATEWAY_URL:-https://system.div3rsa.com/api/internal/integrations/execute}"
+      DIV3RSA_SEARCH_BASE_URL: http://searxng:8080
       DIV3RSA_MODEL_CONTEXT_SIZE: "${DIV3RSA_MODEL_CONTEXT_SIZE:-32768}"
       DIV3RSA_MODEL_BATCH_SIZE: "${DIV3RSA_MODEL_BATCH_SIZE:-2048}"
       DIV3RSA_MODEL_STARTUP_TIMEOUT_MS: "${DIV3RSA_MODEL_STARTUP_TIMEOUT_MS:-900000}"
@@ -37,7 +40,7 @@ services:
       NODE_USE_ENV_PROXY: "${NODE_USE_ENV_PROXY:-1}"
       HTTP_PROXY: "${HTTP_PROXY:-http://egress-proxy:3128}"
       HTTPS_PROXY: "${HTTPS_PROXY:-http://egress-proxy:3128}"
-      NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,::1,egress-proxy,browser-executor}"
+      NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,::1,searxng,egress-proxy,browser-executor}"
       DIV3RSA_EGRESS_PROXY_URL: "${DIV3RSA_EGRESS_PROXY_URL:-http://egress-proxy:3128}"
       DIV3RSA_BROWSER_EXECUTOR_URL: "${DIV3RSA_BROWSER_EXECUTOR_URL:-}"
       DIV3RSA_BROWSER_EXECUTOR_TOKEN: "${DIV3RSA_BROWSER_EXECUTOR_TOKEN:-}"
@@ -87,6 +90,33 @@ services:
     networks:
       - control-plane
 
+  searxng:
+    image: ghcr.io/searxng/searxng:2026.8.20-8d3dd0cd4@sha256:e7bb47bebf338c52c55c7bed92293873cfe757b554b261829c0d710fd8307fa3
+    restart: unless-stopped
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
+    environment:
+      SEARXNG_SECRET: "${SEARXNG_SECRET:?Set a private SearXNG secret}"
+      SEARXNG_BASE_URL: http://searxng:8080/
+    volumes:
+      - ../search/searxng/settings-proxied.yml:/etc/searxng/settings.yml:ro
+      - div3rsa-searxng-cache:/var/cache/searxng
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://127.0.0.1:8080/search?q=health&format=json' || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - control-plane
+
   egress-proxy:
     build:
       context: ../..
@@ -114,6 +144,9 @@ services:
       start_period: 5s
     networks:
       - control-plane
+
+volumes:
+  div3rsa-searxng-cache:
 
 networks:
   control-plane: {}
