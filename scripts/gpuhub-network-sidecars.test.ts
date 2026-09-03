@@ -18,9 +18,10 @@ describe("GPUHub network sidecar deployment contract", () => {
     expect(output).toContain("GPUHUB_NETWORK_SIDECARS_CONTRACT_OK");
   });
 
-  it("keeps both native provisioners shell-parseable", () => {
+  it("keeps native provisioning and recovery scripts shell-parseable", () => {
     expect(() => run("bash", ["-n", "infra/runtime/provision-egress-proxy-gpuhub.sh"])).not.toThrow();
     expect(() => run("bash", ["-n", "infra/runtime/provision-browser-executor-gpuhub.sh"])).not.toThrow();
     expect(() => run("bash", ["-n", "infra/runtime/upgrade-legacy-gpuhub.sh"])).not.toThrow();
+    expect(() => run("bash", ["-n", "infra/runtime/recover-legacy-gpuhub.sh"])).not.toThrow();
   });
 });

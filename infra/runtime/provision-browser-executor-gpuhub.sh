@@ -11,8 +11,9 @@ REPO_DIR="${DIV3RSA_LEGACY_APP_DIR:-${ROOT_DIR}/app}"
 NODE_BIN="${DIV3RSA_LEGACY_NODE_BIN:-${ROOT_DIR}/runtime/node-current/bin/node}"
 INSTALL_ROOT="${DIV3RSA_BROWSER_INSTALL_ROOT:-/opt/div3rsa/browser-executor}"
 STATE_ROOT="${DIV3RSA_BROWSER_STATE_ROOT:-/var/lib/div3rsa-browser}"
-SERVICE_NAME="div3rsa-browser-executor.service"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}"
+LOG_DIR="${DIV3RSA_LEGACY_LOG_DIR:-${ROOT_DIR}/logs}"
+LOG_FILE="${LOG_DIR}/browser-executor.log"
+SCREEN_NAME="${DIV3RSA_BROWSER_SCREEN_NAME:-localai-browser}"
 SERVICE_USER="div3rsa-browser"
 LISTEN_HOST="127.0.0.1"
 LISTEN_PORT="${DIV3RSA_BROWSER_EXECUTOR_PORT:-7320}"
@@ -33,9 +34,7 @@ if [[ ! -x "$NODE_BIN" ]]; then
 fi
 [[ -n "$NODE_BIN" && -x "$NODE_BIN" ]] || fatal "Node.js 24 runtime missing"
 "$NODE_BIN" -e 'if(Number(process.versions.node.split(".")[0])<24)process.exit(1)' || fatal "Node.js >=24 is required"
-command -v npm >/dev/null 2>&1 || fatal "npm is required"
-command -v curl >/dev/null 2>&1 || fatal "curl is required"
-command -v systemctl >/dev/null 2>&1 || fatal "systemd is required"
+for cmd in npm curl screen setpriv useradd; do command -v "$cmd" >/dev/null 2>&1 || fatal "$cmd is required"; done
 
 curl --fail --silent --show-error --max-time 3 "${EGRESS_URL}/_div3rsa_health" >/dev/null \
   || fatal "egress proxy must be healthy before browser provisioning"
@@ -43,6 +42,7 @@ curl --fail --silent --show-error --max-time 3 "${EGRESS_URL}/_div3rsa_health" >
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
   useradd --system --create-home --home-dir "$STATE_ROOT" --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
+mkdir -p "$LOG_DIR"
 install -d -o root -g "$SERVICE_USER" -m 0750 "$INSTALL_ROOT"
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0700 "$STATE_ROOT"
 
@@ -100,58 +100,50 @@ EOF
 chown root:"$SERVICE_USER" "$ENV_FILE"
 chmod 0640 "$ENV_FILE"
 
-cat >"$SERVICE_FILE" <<EOF
-[Unit]
-Description=DIV3RSA scoped Playwright browser executor
-After=network-online.target div3rsa-egress-proxy.service
-Wants=network-online.target
-Requires=div3rsa-egress-proxy.service
-
-[Service]
-Type=simple
-User=${SERVICE_USER}
-Group=${SERVICE_USER}
-WorkingDirectory=${INSTALL_ROOT}
-EnvironmentFile=${ENV_FILE}
-ExecStart=${NODE_BIN} --experimental-transform-types --import ${INSTALL_ROOT}/native-typescript-register.mjs ${INSTALL_ROOT}/main.ts
-Restart=always
-RestartSec=2
-TimeoutStopSec=20
-KillMode=mixed
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectKernelLogs=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-LockPersonality=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-CapabilityBoundingSet=
-AmbientCapabilities=
-ReadWritePaths=${STATE_ROOT}
-
-[Install]
-WantedBy=multi-user.target
+cat >"$INSTALL_ROOT/run.sh" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+set -a
+source ${ENV_FILE}
+set +a
+cd ${INSTALL_ROOT}
+exec ${NODE_BIN} --experimental-transform-types --import ${INSTALL_ROOT}/native-typescript-register.mjs ${INSTALL_ROOT}/main.ts
 EOF
-chmod 0644 "$SERVICE_FILE"
+chown root:"$SERVICE_USER" "$INSTALL_ROOT/run.sh"
+chmod 0750 "$INSTALL_ROOT/run.sh"
 
-systemctl daemon-reload
-systemctl enable "$SERVICE_NAME" >/dev/null
-systemctl restart "$SERVICE_NAME"
+screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
+sleep 0.5
+if ! "$NODE_BIN" - "$LISTEN_PORT" <<'NODE'
+const net = require("node:net");
+const port = Number(process.argv[2]);
+const server = net.createServer();
+server.once("error", () => process.exit(1));
+server.listen({ host: "127.0.0.1", port, exclusive: true }, () => server.close((error) => process.exit(error ? 1 : 0)));
+NODE
+then
+  fatal "browser port ${LISTEN_HOST}:${LISTEN_PORT} is owned by an unrecognized listener"
+fi
+
+uid="$(id -u "$SERVICE_USER")"
+gid="$(id -g "$SERVICE_USER")"
+: >"$LOG_FILE"
+chmod 0640 "$LOG_FILE"
+screen -dmS "$SCREEN_NAME" bash -lc "exec setpriv --reuid=${uid} --regid=${gid} --init-groups --no-new-privs '${INSTALL_ROOT}/run.sh' >>'${LOG_FILE}' 2>&1"
 
 deadline=$((SECONDS + ${DIV3RSA_BROWSER_BOOT_TIMEOUT_SECONDS:-60}))
 while ! curl --fail --silent --show-error --max-time 2 "${BROWSER_URL}/health" >/dev/null 2>&1; do
+  if ! screen -list | grep -F ".${SCREEN_NAME}" >/dev/null 2>&1; then
+    tail -n 160 "$LOG_FILE" >&2 || true
+    fatal "browser executor screen exited before health"
+  fi
   if (( SECONDS >= deadline )); then
-    systemctl --no-pager --full status "$SERVICE_NAME" >&2 || true
-    journalctl -u "$SERVICE_NAME" -n 120 --no-pager >&2 || true
+    tail -n 160 "$LOG_FILE" >&2 || true
     fatal "browser executor did not become healthy"
   fi
   sleep 1
 done
 
-systemctl is-active --quiet "$SERVICE_NAME" || fatal "browser executor service is not active"
-log "browser executor healthy at ${BROWSER_URL}; outbound browser traffic forced through ${EGRESS_URL}"
+screen -list | grep -F ".${SCREEN_NAME}" >/dev/null || fatal "browser executor screen is not active"
+log "browser executor healthy at ${BROWSER_URL}; screen=${SCREEN_NAME}; outbound browser traffic forced through ${EGRESS_URL}"
 printf 'DIV3RSA_BROWSER_EXECUTOR_URL=%s\n' "$BROWSER_URL"

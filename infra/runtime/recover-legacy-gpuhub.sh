@@ -15,8 +15,8 @@ fi
 # GitHub deploys the target-revision wrapper from /tmp before the target revision
 # is checked out on the host. During that phase, only recover the already deployed
 # generation/worker runtime. Never invoke target-dependent post-checkout hooks from
-# the old checkout: doing so can run an obsolete embedding provisioner before the
-# exact revision has replaced it.
+# the old checkout: doing so can run an obsolete provisioner before the exact
+# revision has replaced it.
 if [[ ! -f "$V2_SCRIPT" ]]; then
   LEGACY_SCRIPT="${REPO_DIR}/infra/runtime/recover-legacy-gpuhub-p1.sh"
   if [[ -f "$LEGACY_SCRIPT" ]]; then
@@ -36,14 +36,27 @@ export DIV3RSA_MODEL_JINJA="${DIV3RSA_MODEL_JINJA:-true}"
 bash "$V2_SCRIPT" "$@"
 
 if [[ "$PRECHECKOUT_WRAPPER" -eq 1 ]]; then
+  # Keep the established log contract: embeddings remain the first post-checkout
+  # hook, while egress/browser recovery is also deferred by this same exit.
   printf '[gpuhub-recovery] pre-checkout wrapper detected; deferring embedding recovery until exact target checkout\n'
   exit 0
 fi
 
-# Only the canonical post-checkout wrapper may restore the independent embedding
-# runtime. At this point REPO_DIR is guaranteed to contain the same revision as
-# the wrapper, so the provisioner and its lifecycle contract cannot be stale.
+# Only the canonical post-checkout wrapper may restore independent runtimes. At
+# this point REPO_DIR is guaranteed to contain the same revision as this wrapper.
 EMBEDDING_SCRIPT="${REPO_DIR}/infra/runtime/ensure-embedding-runtime.sh"
 if [[ -f "$EMBEDDING_SCRIPT" ]]; then
   DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" bash "$EMBEDDING_SCRIPT"
+fi
+
+EGRESS_SCRIPT="${REPO_DIR}/infra/runtime/provision-egress-proxy-gpuhub.sh"
+BROWSER_SCRIPT="${REPO_DIR}/infra/runtime/provision-browser-executor-gpuhub.sh"
+if [[ -f "$EGRESS_SCRIPT" ]]; then
+  DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" bash "$EGRESS_SCRIPT"
+fi
+if [[ -f "$BROWSER_SCRIPT" ]]; then
+  DIV3RSA_LEGACY_ROOT_DIR="$ROOT_DIR" \
+  DIV3RSA_LEGACY_APP_DIR="$REPO_DIR" \
+  DIV3RSA_EGRESS_PROXY_URL="${DIV3RSA_EGRESS_PROXY_URL:-http://127.0.0.1:7318}" \
+    bash "$BROWSER_SCRIPT"
 fi
