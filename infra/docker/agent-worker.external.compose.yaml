@@ -6,6 +6,9 @@ services:
       args:
         NODE_IMAGE: "${NODE_IMAGE:?Set an immutable Node image reference with @sha256 digest}"
     restart: unless-stopped
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
     environment:
       SUPABASE_URL: "${SUPABASE_URL:?Set Supabase URL}"
       SUPABASE_SECRET_KEY: "${SUPABASE_SECRET_KEY:?Set server-only Supabase secret}"
@@ -31,11 +34,46 @@ services:
       DIV3RSA_ADMISSION_MAX_WAIT_MS: "${DIV3RSA_ADMISSION_MAX_WAIT_MS:-30000}"
       DIV3RSA_ADMISSION_TELEMETRY_TIMEOUT_MS: "${DIV3RSA_ADMISSION_TELEMETRY_TIMEOUT_MS:-1000}"
       DIV3RSA_GPU_METRICS_URL: "${DIV3RSA_GPU_METRICS_URL:-}"
+      NODE_USE_ENV_PROXY: "${NODE_USE_ENV_PROXY:-1}"
+      HTTP_PROXY: "${HTTP_PROXY:-http://egress-proxy:3128}"
+      HTTPS_PROXY: "${HTTPS_PROXY:-http://egress-proxy:3128}"
+      NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,::1,egress-proxy}"
+      DIV3RSA_EGRESS_PROXY_URL: "${DIV3RSA_EGRESS_PROXY_URL:-http://egress-proxy:3128}"
+      DIV3RSA_BROWSER_EXECUTOR_URL: "${DIV3RSA_BROWSER_EXECUTOR_URL:-http://browser-executor:7320}"
+      DIV3RSA_BROWSER_EXECUTOR_TOKEN: "${DIV3RSA_BROWSER_EXECUTOR_TOKEN:-}"
     read_only: true
     tmpfs:
       - /tmp:size=512m,noexec,nosuid
     security_opt:
       - no-new-privileges:true
+    networks:
+      - control-plane
+
+  egress-proxy:
+    build:
+      context: ../..
+      dockerfile: infra/docker/egress-proxy.Dockerfile
+      args:
+        NODE_IMAGE: "${NODE_IMAGE:?Set an immutable Node image reference with @sha256 digest}"
+    restart: unless-stopped
+    environment:
+      DIV3RSA_EGRESS_PROXY_HOST: 0.0.0.0
+      DIV3RSA_EGRESS_PROXY_PORT: "3128"
+    expose:
+      - "3128"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3128/_div3rsa_health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     networks:
       - control-plane
 
