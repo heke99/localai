@@ -77,10 +77,18 @@ jobs:
             exit 1
           }
 
-          systemctl is-active --quiet div3rsa-egress-proxy.service
-          systemctl is-active --quiet div3rsa-browser-executor.service
+          screen -list | grep -F '.localai-egress' >/dev/null
+          screen -list | grep -F '.localai-browser' >/dev/null
           curl --fail --silent --show-error --max-time 3 "$proxy/_div3rsa_health" >/dev/null
           curl --fail --silent --show-error --max-time 3 "$browser/health" >/dev/null
+
+          egress_pid="$(pgrep -f '/opt/div3rsa/egress-proxy/main\.ts' | head -n1 || true)"
+          browser_pid="$(pgrep -f '/opt/div3rsa/browser-executor/main\.ts' | head -n1 || true)"
+          [[ -n "$egress_pid" && -n "$browser_pid" ]] || { echo "sidecar process PID missing" >&2; exit 1; }
+          grep -Eq '^NoNewPrivs:[[:space:]]+1$' "/proc/${egress_pid}/status"
+          grep -Eq '^NoNewPrivs:[[:space:]]+1$' "/proc/${browser_pid}/status"
+          [[ "$(awk '/^Uid:/{print $2}' "/proc/${egress_pid}/status")" != "0" ]]
+          [[ "$(awk '/^Uid:/{print $2}' "/proc/${browser_pid}/status")" != "0" ]]
 
           blocked_code="$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' --proxy "$proxy" http://127.0.0.1/ || true)"
           [[ "$blocked_code" == "403" ]] || { echo "loopback egress negative gate failed: $blocked_code" >&2; exit 1; }
