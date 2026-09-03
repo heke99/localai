@@ -36,6 +36,17 @@ describe("textual registered tool-call detection", () => {
       .toEqual({ toolName: "http_request", reason: "explicit_registered_intent" });
   });
 
+  it("detects status-only Swedish and English progress preambles", () => {
+    expect(detectRegisteredToolIntent("Jag startar med att ladda relevanta färdigheter och kartlägga målet.", executionTools))
+      .toEqual({ toolName: null, reason: "progress_preamble" });
+    expect(detectRegisteredToolIntent("I'll start by inspecting the repository and checking the current state.", executionTools))
+      .toEqual({ toolName: null, reason: "progress_preamble" });
+  });
+
+  it("does not classify a substantive answer merely because it contains planning language later", () => {
+    expect(detectRegisteredToolIntent("Resultatet är klart. Jag börjar med att beskriva orsaken och ger sedan lösningen.", executionTools)).toBeNull();
+  });
+
   it("detects Qwen-style text tool envelopes without treating their arguments as executable", () => {
     expect(detectRegisteredToolIntent('<tool_call>\n{"name":"web_search","arguments":{"query":"latest node"}}\n</tool_call>', executionTools))
       .toEqual({ toolName: "web_search", reason: "text_tool_envelope" });

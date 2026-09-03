@@ -4,6 +4,7 @@ export type TextToolIntentReason =
   | "registered_invocation"
   | "explicit_registered_intent"
   | "text_tool_envelope"
+  | "progress_preamble"
   | "unstructured_execution";
 
 export interface TextToolIntent {
@@ -53,8 +54,16 @@ function explicitIntentToolName(content: string, tools: readonly ModelToolDefini
   return null;
 }
 
+const progressPreamblePattern = /^(?:jag\s+(?:startar|börjar)\s+med\s+att|jag\s+ska\s+börja\s+med\s+att|i(?:['’]ll|\s+will)\s+(?:start|begin)\s+by|first,?\s+i(?:['’]ll|\s+will))/i;
+const progressActionPattern = /\b(?:ladda|kartlägga|undersöka|kontrollera|verifiera|analysera|läsa|söka|granska|testa|köra|load(?:ing)?|map(?:ping)?|inspect(?:ing)?|check(?:ing)?|verify(?:ing)?|analy[sz](?:e|ing)|read(?:ing)?|search(?:ing)?|review(?:ing)?|test(?:ing)?|run(?:ning)?)\b/i;
 const commandLikeExecutionPattern = /(?:```(?:bash|sh|shell|zsh|powershell)?\s*[\s\S]*?\b(?:curl|wget|nmap|dig|nslookup|ping)\b|(?:^|\n)\s*(?:\$\s*)?(?:curl|wget|nmap|dig|nslookup|ping)\b)/i;
 const executionIntentPattern = /\b(?:behöver|måste|ska|need|needs|must|will|going\s+to)\b[\s\S]{0,240}\b(?:bekräfta|verifiera|testa|köra|confirm|verify|check|test|run|execute)\b/i;
+
+function looksLikeProgressPreamble(content: string): boolean {
+  const normalized = content.trim();
+  if (!normalized || normalized.length > 420) return false;
+  return progressPreamblePattern.test(normalized) && progressActionPattern.test(normalized);
+}
 
 function looksLikeUnstructuredExecution(content: string): boolean {
   return commandLikeExecutionPattern.test(content) && executionIntentPattern.test(content);
@@ -74,6 +83,10 @@ export function detectRegisteredToolIntent(
 
   const explicit = explicitIntentToolName(content, tools);
   if (explicit) return { toolName: explicit, reason: "explicit_registered_intent" };
+
+  if (looksLikeProgressPreamble(content)) {
+    return { toolName: null, reason: "progress_preamble" };
+  }
 
   if (looksLikeUnstructuredExecution(content)) {
     return { toolName: null, reason: "unstructured_execution" };
