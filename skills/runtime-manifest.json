@@ -7,7 +7,13 @@
       "name": "using-skills",
       "path": "skills/meta/using-skills/SKILL.md",
       "sha256": "ba218007576a48dc1b009e19a23219eaa1ecd25ee3caf287176baa11f6763ae0",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "meta",
@@ -15,7 +21,13 @@
       "name": "skill-authoring",
       "path": "skills/meta/skill-authoring/SKILL.md",
       "sha256": "1fbb96cb9d6fe4ca1947d487333ef8fc4604877a392a9dcc99091067cd9c1110",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "planning",
@@ -23,7 +35,16 @@
       "name": "brainstorming-design",
       "path": "skills/planning/brainstorming-design/SKILL.md",
       "sha256": "53ee0232024fe94d3fad93586b89442d3ef57e68783172364f36cdbbf0f4b9ab",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "medium",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": [],
+      "dependencies": [
+        "using-skills"
+      ]
     },
     {
       "category": "planning",
@@ -31,7 +52,18 @@
       "name": "system-design",
       "path": "skills/planning/system-design/SKILL.md",
       "sha256": "98c656e668e4e3c637cdbe923dd10e9df5338add904afe9553864f6fe4112fbb",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "medium",
+        "latency": "medium"
+      },
+      "conflicts": [],
+      "verification": [
+        "completion-proof"
+      ],
+      "dependencies": [
+        "using-skills"
+      ]
     },
     {
       "category": "planning",
@@ -39,7 +71,33 @@
       "name": "writing-plans",
       "path": "skills/planning/writing-plans/SKILL.md",
       "sha256": "dfa64464cdf440f68049466afccb662822face7d4bdab1f5cec267076ad83ec1",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": [],
+      "dependencies": [
+        "using-skills"
+      ]
+    },
+    {
+      "category": "planning",
+      "description": "Use on agent requests to choose the minimum sufficient FAST, STANDARD or DEEP reasoning workflow based on complexity, uncertainty, risk and required tools.",
+      "name": "reasoning-router",
+      "path": "skills/planning/reasoning-router/SKILL.md",
+      "sha256": "40be963f3c9ad3243dbba1e6da40cc7ec9a7f832a91d5cb2db32e759920d17f1",
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": [],
+      "dependencies": [
+        "using-skills"
+      ]
     },
     {
       "category": "execution",
@@ -47,7 +105,13 @@
       "name": "executing-plans",
       "path": "skills/execution/executing-plans/SKILL.md",
       "sha256": "b6eaf2f753b11f759cb6128345f3235010a3f7df22f991d3a5b95c3f5b95598b",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "execution",
@@ -55,7 +119,13 @@
       "name": "parallel-agent-orchestration",
       "path": "skills/execution/parallel-agent-orchestration/SKILL.md",
       "sha256": "46b3642d629c75d689bebaeb23b60fd6407907640014bb4cd8f6e272ef5b2d38",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "execution",
@@ -63,7 +133,13 @@
       "name": "agent-checkpointing",
       "path": "skills/execution/agent-checkpointing/SKILL.md",
       "sha256": "872a35bb24efeee19247564faf8c3fa2573e166a3a7a6c8253c4b838db01753a",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "engineering",
@@ -71,7 +147,18 @@
       "name": "test-driven-development",
       "path": "skills/engineering/test-driven-development/SKILL.md",
       "sha256": "8c8ba2c4e32fadcbeebefe6afd336bb7f072c8e93b0a0430961dd0983ec72781",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": [
+        "targeted-tests"
+      ],
+      "dependencies": [
+        "writing-plans"
+      ]
     },
     {
       "category": "engineering",
@@ -79,7 +166,16 @@
       "name": "systematic-debugging",
       "path": "skills/engineering/systematic-debugging/SKILL.md",
       "sha256": "7de61c60277dede3e0859e9e33e320680a1f55d25d77ce61e7065de157844df3",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "medium",
+        "latency": "medium"
+      },
+      "conflicts": [],
+      "verification": [],
+      "dependencies": [
+        "using-skills"
+      ]
     },
     {
       "category": "engineering",
@@ -87,7 +183,15 @@
       "name": "verification-before-completion",
       "path": "skills/engineering/verification-before-completion/SKILL.md",
       "sha256": "ddba290aac63d7431f2958e7f1f1fc72057fbdbeab2b9d07f155bbd29ebad6b7",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "medium"
+      },
+      "conflicts": [],
+      "verification": [
+        "completion-proof"
+      ]
     },
     {
       "category": "engineering",
@@ -95,7 +199,18 @@
       "name": "code-review",
       "path": "skills/engineering/code-review/SKILL.md",
       "sha256": "27a754be6564a1eee3b1cb1a2a16c200c1813bf28a69ad66627246c775668e0f",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": [
+        "diff-review"
+      ],
+      "dependencies": [
+        "verification-before-completion"
+      ]
     },
     {
       "category": "platform",
@@ -103,7 +218,13 @@
       "name": "github-operations",
       "path": "skills/platform/github-operations/SKILL.md",
       "sha256": "6a92718f279c47c303a8e1ed283f62e0b08913ab70058e0b8d3cc547ff707fc4",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "platform",
@@ -111,7 +232,13 @@
       "name": "supabase-postgres",
       "path": "skills/platform/supabase-postgres/SKILL.md",
       "sha256": "0d480acc7d6730f697f1d3b7e89e80410e1e98f11ac224f63bf9a6151ff9f446",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "platform",
@@ -119,7 +246,13 @@
       "name": "vercel-operations",
       "path": "skills/platform/vercel-operations/SKILL.md",
       "sha256": "79f5cf9ddca166090bc590220e7eacdd6cb7e500b7ad05348ede40e4335c5be1",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "platform",
@@ -127,15 +260,51 @@
       "name": "browser-e2e",
       "path": "skills/platform/browser-e2e/SKILL.md",
       "sha256": "45243dd3939666d71f5f97d282accf08c51e98485661d51f68ec6693fc434153",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "high"
+      },
+      "conflicts": [],
+      "verification": [
+        "browser-e2e"
+      ],
+      "dependencies": [
+        "verification-before-completion"
+      ]
     },
     {
       "category": "research",
       "description": "Use when an answer or decision depends on current, niche or externally verifiable information from the web.",
       "name": "web-research",
       "path": "skills/research/web-research/SKILL.md",
-      "sha256": "251ba0cdcd2d8bd64def25ae11429737626549fe34cd379b9bdbf06d70b5105b",
-      "version": "1.0.0"
+      "sha256": "9ccbda6f095bca8734816dcdafe894f329e7d38cd2619e914d269f6ebc370ec5",
+      "version": "1.1.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
+    },
+    {
+      "category": "research",
+      "description": "Use whenever an answer may depend on information that can change over time, including rules, visas, prices, news, software, public facts or other current web data.",
+      "name": "current-information-research",
+      "path": "skills/research/current-information-research/SKILL.md",
+      "sha256": "74d3aabc7fda56dbffce1beb53c427a73ceda3bb8270da78693870aebebcb64a",
+      "version": "1.1.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": [
+        "current-information-evidence"
+      ],
+      "dependencies": [
+        "reasoning-router"
+      ]
     },
     {
       "category": "knowledge",
@@ -143,7 +312,19 @@
       "name": "knowledge-ingestion",
       "path": "skills/knowledge/knowledge-ingestion/SKILL.md",
       "sha256": "371e9effa552376eacedcc1771e0d19551d12932b7a7f6e395a954fb2c3230aa",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": [
+        "completion-proof"
+      ],
+      "dependencies": [
+        "data-poisoning-defense",
+        "secrets-handling"
+      ]
     },
     {
       "category": "knowledge",
@@ -151,7 +332,18 @@
       "name": "memory-learning",
       "path": "skills/knowledge/memory-learning/SKILL.md",
       "sha256": "8cf4ddf59a2128d9ebb5b77e039433243ab51599d2ccc89c4376bd7bf0827d5a",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": [
+        "completion-proof"
+      ],
+      "dependencies": [
+        "data-poisoning-defense"
+      ]
     },
     {
       "category": "models",
@@ -159,7 +351,13 @@
       "name": "model-routing",
       "path": "skills/models/model-routing/SKILL.md",
       "sha256": "49307f80b39e3200c9be78bd063e2df5896bdc3bce0d5a2b805cf15b50c6b6ae",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "models",
@@ -167,7 +365,19 @@
       "name": "gpu-model-operations",
       "path": "skills/models/gpu-model-operations/SKILL.md",
       "sha256": "eab1ffa62c9b760766a42e0a7b5f6254ff958544d033c212a9e4b134fb14d8ef",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "medium",
+        "latency": "high"
+      },
+      "conflicts": [],
+      "verification": [
+        "performance-regression"
+      ],
+      "dependencies": [
+        "supply-chain-security",
+        "evals-benchmarking"
+      ]
     },
     {
       "category": "models",
@@ -175,7 +385,13 @@
       "name": "evals-benchmarking",
       "path": "skills/models/evals-benchmarking/SKILL.md",
       "sha256": "301afd38e2917ff26b15f92692f19acf65d6a7e631c6aa875920d57335ffcbd1",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "security",
@@ -183,7 +399,13 @@
       "name": "policy-access-control",
       "path": "skills/security/policy-access-control/SKILL.md",
       "sha256": "ea8ac07c439388f59d48b6fd9c6bf940405bdffbe4acb1d4815f1befdad8fc71",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "security",
@@ -191,7 +413,13 @@
       "name": "sandbox-execution",
       "path": "skills/security/sandbox-execution/SKILL.md",
       "sha256": "c31285b8347ecf2f8927220a05b72369b01c50393e915ca0a65cdfc97bea0c63",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "security",
@@ -199,7 +427,13 @@
       "name": "network-egress-control",
       "path": "skills/security/network-egress-control/SKILL.md",
       "sha256": "f040f125b386c1e96fbfc36e883d961edead45c717faeef4f87e02fe2f63898a",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "security",
@@ -207,7 +441,13 @@
       "name": "secrets-handling",
       "path": "skills/security/secrets-handling/SKILL.md",
       "sha256": "cff5650043cf88825b02f538491123438f315ac551880217b682b9bd00e39253",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "security",
@@ -215,7 +455,13 @@
       "name": "prompt-injection-defense",
       "path": "skills/security/prompt-injection-defense/SKILL.md",
       "sha256": "2be9acae876fd0be8f09c5dbd2c298518e1669f99ce3d2dd8a1a6bdbc3f177ad",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "security",
@@ -223,7 +469,13 @@
       "name": "data-poisoning-defense",
       "path": "skills/security/data-poisoning-defense/SKILL.md",
       "sha256": "224a0cf6c2cf45efe21397fb552ba243e06b98047d2d6ed1e7b0d4ae8997ad5a",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "security",
@@ -231,7 +483,20 @@
       "name": "authorized-pentest",
       "path": "skills/security/authorized-pentest/SKILL.md",
       "sha256": "5c3633b2638655b6f86c68a452482c3dc04262c535d498ac213d690c3a5c608e",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "medium",
+        "latency": "medium"
+      },
+      "conflicts": [],
+      "verification": [
+        "security-review"
+      ],
+      "dependencies": [
+        "policy-access-control",
+        "sandbox-execution",
+        "network-egress-control"
+      ]
     },
     {
       "category": "security",
@@ -239,7 +504,16 @@
       "name": "audit-context-building",
       "path": "skills/security/audit-context-building/SKILL.md",
       "sha256": "d103b612d806271eb01c3eae4128ec92d038866ac6cb68b757d9fcb407e0f744",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "medium",
+        "latency": "medium"
+      },
+      "conflicts": [],
+      "verification": [],
+      "dependencies": [
+        "using-skills"
+      ]
     },
     {
       "category": "security",
@@ -247,7 +521,19 @@
       "name": "differential-security-review",
       "path": "skills/security/differential-security-review/SKILL.md",
       "sha256": "c0c1fe54cc0aaddf3cb1926e734491278c133d92c62cafbdac273260a38db62a",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": [
+        "security-review"
+      ],
+      "dependencies": [
+        "audit-context-building",
+        "verification-before-completion"
+      ]
     },
     {
       "category": "security",
@@ -255,7 +541,18 @@
       "name": "static-analysis",
       "path": "skills/security/static-analysis/SKILL.md",
       "sha256": "24d232b80f6d66af219e20e95004d4544ff75dcb652891d9ea69daba1b4d18ad",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": [
+        "security-review"
+      ],
+      "dependencies": [
+        "audit-context-building"
+      ]
     },
     {
       "category": "security",
@@ -263,7 +560,13 @@
       "name": "property-based-testing",
       "path": "skills/security/property-based-testing/SKILL.md",
       "sha256": "edef189f95010acdecadace3fc73aab3036e70c2b6516932f3f1d6dd2c88b4b5",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "security",
@@ -271,7 +574,13 @@
       "name": "insecure-defaults",
       "path": "skills/security/insecure-defaults/SKILL.md",
       "sha256": "c1a988f1e027e0263cbfd4f9b3b1e064df0ca91a1b70c5a4ed45ae111397cfed",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "security",
@@ -279,7 +588,13 @@
       "name": "sharp-edges",
       "path": "skills/security/sharp-edges/SKILL.md",
       "sha256": "6ec82e0380789f8d3394a704fa734edce2472c78783a1b250a238f9ef4884d53",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "security",
@@ -287,7 +602,20 @@
       "name": "agentic-ci-security",
       "path": "skills/security/agentic-ci-security/SKILL.md",
       "sha256": "46f1eaa6b6b19d1d2bae78a673d9350a57ad3bb132ddb179fb44cdfab440f50e",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": [
+        "security-review"
+      ],
+      "dependencies": [
+        "policy-access-control",
+        "secrets-handling",
+        "supply-chain-security"
+      ]
     },
     {
       "category": "ops",
@@ -295,7 +623,13 @@
       "name": "observability",
       "path": "skills/ops/observability/SKILL.md",
       "sha256": "03d910da072c3c736bd84f1d2138d5450341a08cbcce9a3d459e968f97e35982",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     },
     {
       "category": "ops",
@@ -303,7 +637,18 @@
       "name": "incident-recovery",
       "path": "skills/ops/incident-recovery/SKILL.md",
       "sha256": "00dc23aa76e18900886708becb5238a0cf86d730301cbb691a73bbb7f161cdfd",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": [
+        "deployment-health"
+      ],
+      "dependencies": [
+        "observability"
+      ]
     },
     {
       "category": "ops",
@@ -311,7 +656,35 @@
       "name": "performance-profiling",
       "path": "skills/ops/performance-profiling/SKILL.md",
       "sha256": "d824392381dc3e3621eef839caa5dd2c2a83849442af0c767288328662282ef9",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "medium",
+        "latency": "medium"
+      },
+      "conflicts": [],
+      "verification": [
+        "performance-regression"
+      ]
+    },
+    {
+      "category": "ops",
+      "description": "Use when tuning concurrent model serving, llama.cpp parallel slots, batching, KV cache or GPU capacity and a production profile must be chosen from measured latency, throughput, stability and quality.",
+      "name": "capacity-benchmarking",
+      "path": "skills/ops/capacity-benchmarking/SKILL.md",
+      "sha256": "6443b3cd196c387531bfe9925764e28ce0907a485955dbf4394b7134a08c167e",
+      "version": "1.0.0",
+      "cost": {
+        "context": "medium",
+        "latency": "high"
+      },
+      "conflicts": [],
+      "verification": [
+        "performance-regression"
+      ],
+      "dependencies": [
+        "performance-profiling",
+        "evals-benchmarking"
+      ]
     },
     {
       "category": "ops",
@@ -319,7 +692,13 @@
       "name": "supply-chain-security",
       "path": "skills/ops/supply-chain-security/SKILL.md",
       "sha256": "df0465ba96fc0c2680230ce29ce1919dcd39c8e4b9613077dee14d9c854acd1f",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "cost": {
+        "context": "low",
+        "latency": "low"
+      },
+      "conflicts": [],
+      "verification": []
     }
   ]
 }

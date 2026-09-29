@@ -55,6 +55,9 @@ jobs:
       - name: Native TypeScript runtime smoke test
         run: npm run test:native-runtime
 
+      - name: Verify shipped skill manifest without rewriting it
+        run: npm run validate:skill-manifest
+
       - name: Unit and integration tests
         run: npm test
 

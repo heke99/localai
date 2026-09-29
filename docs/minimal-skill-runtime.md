@@ -43,16 +43,19 @@ Worker `skill-runtime` structured logs contain profile, mode, selected names/cou
 
 ## Verification before rollout
 
-Generate the runtime manifest before starting the worker:
+Verify the shipped runtime manifest before starting the worker. After a deliberate skill change, regenerate it and commit the artifact with that change:
 
 ```bash
 npm run build:skill-manifest
+npm run validate:skill-manifest
 npm run verify
 ```
 
-The checked-in manifest at base `a2c521d02f6847797b2dc4b944e2c7489feae581` predates some registry entries. Do not substitute it for the generated artifact. The new worker performs default-profile selection for Chat, Code, Lab and Research before claiming jobs, so missing required entries fail at startup instead of failing every user request. This is not a claim about which artifact an existing GPU host is running.
+The manifest at base `a2c521d02f6847797b2dc4b944e2c7489feae581` contained 40 entries and omitted `reasoning-router`, among others. Worker startup reproduced `unknown_skill:reasoning-router` in all four modes. The shipped artifact is now synchronized with all 43 registered skills. This does not activate all of them: selection remains 3/5/7/5 in minimal mode. Both CI paths check for manifest drift before regeneration, and the worker checks required dependencies before claiming jobs. This is not a claim about which artifact an existing GPU host is running.
 
 The new regression suite is `packages/skill-engine/src/runtime-profile.test.ts`. It covers selection, freshness, preserved Lab prerequisites, trusted opt-ins, model-configuration independence, dependencies/conflicts, budgets, integrity, external loading suppression and worker wiring. It does not prove live GPU quality or live executor connectivity.
+
+`services/agent-worker/src/minimal-skill-worker.test.ts` also loads the actual shipped manifest and original skill bodies through the production worker and adapter factory. HTTP transports and the security executor are controlled fixtures. It covers stable Q&A, search plus opened current evidence, scoped security observations and continuation with both `qwen-llamacpp` and `generic-openai`, a replacement model identity, scope rejection, separate active-test permission and cancellation. `packages/skill-engine/src/manifest-drift.test.ts` verifies that a stale artifact is rejected without silently rewriting it and that deliberate regeneration restores consistency. These tests verify integration contracts; they do not replace live acceptance against real model weights and an authorized target.
 
 Run the existing complete suite as well, particularly model conformance, final grounding/response integrity, conversation history, freshness preflight, scoped HTTP and security-runtime negative cases. No existing tests or release gates are removed or weakened.
 

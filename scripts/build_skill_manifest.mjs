@@ -57,5 +57,13 @@ const unknownRoutingSkills = Object.keys(skillRouting).filter((name) => !skills.
 if (unknownRoutingSkills.length) throw new Error(`unknown_skill_routing_metadata:${unknownRoutingSkills.join(",")}`);
 
 const payload = { schemaVersion: 1, skills };
-await writeFile(outputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-console.info(`Wrote ${skills.length} skills to skills/runtime-manifest.json`);
+const serialized = `${JSON.stringify(payload, null, 2)}\n`;
+if (process.argv.includes("--check")) {
+  if (await readFile(outputPath, "utf8") !== serialized) {
+    throw new Error("stale_skill_runtime_manifest:run npm run build:skill-manifest and commit skills/runtime-manifest.json");
+  }
+  console.info(`Verified ${skills.length} skills in skills/runtime-manifest.json`);
+} else {
+  await writeFile(outputPath, serialized, "utf8");
+  console.info(`Wrote ${skills.length} skills to skills/runtime-manifest.json`);
+}
