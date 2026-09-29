@@ -28,7 +28,7 @@ import { RuntimeRegistration, runtimeRegistrationConfigFromEnvironment, type Run
 import { RuntimeInferenceRouter, type RuntimeInferenceRpcClient } from "./runtime-inference-router";
 import { boundedWorkerConcurrency, runWorkerLanes } from "./worker-loop";
 import { KnowledgeAwareSkillRuntime, RunTrackingAgentQueue } from "./knowledge-aware-runtime";
-import { SkillEngine, type SkillManifest } from "@div3rsa/skill-engine";
+import { SkillEngine, formatSkillInstructions, skillRuntimeOptionsFromEnvironment, type SkillManifest } from "@div3rsa/skill-engine";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -150,13 +150,25 @@ const runtimeRegistration = runtimeConfig
   : null;
 const repositoryRoot = process.env.DIV3RSA_REPOSITORY_ROOT ?? process.cwd();
 const manifest = JSON.parse(await readFile(resolve(repositoryRoot, "skills/runtime-manifest.json"), "utf8")) as SkillManifest;
-const skillEngine = new SkillEngine(manifest, { read: (path) => readFile(resolve(repositoryRoot, path), "utf8") });
+const skillRuntimeOptions = skillRuntimeOptionsFromEnvironment();
+const skillEngine = new SkillEngine(manifest, { read: (path) => readFile(resolve(repositoryRoot, path), "utf8") }, skillRuntimeOptions);
+// Catch stale manifests/dependency errors before claiming any user jobs.
+for (const mode of ["chat", "code", "lab", "research"]) skillEngine.select(mode, "");
 const prepareSkills = async (mode: Parameters<typeof skillEngine.select>[0], prompt: string) => {
   const loaded = await skillEngine.load(skillEngine.select(mode, prompt));
-  return {
-    names: loaded.map((skill) => skill.metadata.name),
-    instructions: loaded.map((skill) => `## ${skill.metadata.name}@${skill.metadata.version}\n${skill.instructions}`).join("\n\n")
-  };
+  const names = loaded.map((skill) => skill.metadata.name);
+  const instructions = formatSkillInstructions(loaded);
+  console.info(JSON.stringify({
+    component: "skill-runtime",
+    profile: skillRuntimeOptions.profile,
+    mode,
+    selectedSkillCount: names.length,
+    selectedSkills: names,
+    instructionChars: instructions.length,
+    instructionBytes: Buffer.byteLength(instructions, "utf8"),
+    externalSecuritySkills: skillRuntimeOptions.loadExternalSecuritySkills
+  }));
+  return { names, instructions };
 };
 
 const coreToolRuntime = new CoreToolRuntime({

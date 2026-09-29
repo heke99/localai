@@ -1,3 +1,5 @@
+import { automaticSkillAllowed, assertSkillCount, assertSkillInstructionBudget, validateSkillRuntimeOptions, type SkillRuntimeOptions } from "./runtime-profile";
+
 export type SkillCostLevel = "low" | "medium" | "high";
 
 export interface SkillRoutingCost {
@@ -111,13 +113,18 @@ async function externalSecurityRoot(): Promise<string | null> {
 
 export class SkillEngine {
   private readonly skills: Map<string, SkillMetadata>;
-  constructor(manifest: SkillManifest, private readonly reader?: SkillBodyReader) {
+  private readonly runtimeOptions?: SkillRuntimeOptions;
+  constructor(manifest: SkillManifest, private readonly reader?: SkillBodyReader, runtimeOptions?: SkillRuntimeOptions) {
+    this.runtimeOptions = runtimeOptions ? validateSkillRuntimeOptions(runtimeOptions) : undefined;
     if (manifest.schemaVersion !== 1) throw new Error("unsupported_skill_manifest");
     for (const skill of manifest.skills) {
       if (!/^[a-f0-9]{64}$/i.test(skill.sha256)) throw new Error(`invalid_skill_sha256:${skill.name}`);
     }
     this.skills = new Map(manifest.skills.map((skill) => [skill.name, skill]));
     if (this.skills.size !== manifest.skills.length) throw new Error("duplicate_skill_name");
+    for (const name of this.runtimeOptions?.additionalSkills ?? []) {
+      if (!this.skills.has(name)) throw new Error(`unknown_skill:${name}`);
+    }
   }
 
   descriptors(mode?: string): SkillDescriptor[] {
@@ -129,8 +136,15 @@ export class SkillEngine {
 
   select(mode: string, prompt: string): SkillSelection[] {
     const requested = new Set(modeDefaults[mode] ?? ["using-skills", "reasoning-router", "verification-before-completion"]);
-    for (const [pattern, names] of signals) if (pattern.test(prompt)) names.forEach((name) => requested.add(name));
+    for (const name of this.runtimeOptions?.additionalSkills ?? []) {
+      const skill = this.skills.get(name)!;
+      if (!skill.modes?.length || skill.modes.includes(mode)) requested.add(name);
+    }
+    for (const [pattern, names] of signals) {
+      if (pattern.test(prompt)) names.filter((name) => automaticSkillAllowed(name, this.runtimeOptions)).forEach((name) => requested.add(name));
+    }
     for (const skill of this.skills.values()) {
+      if (!automaticSkillAllowed(skill.name, this.runtimeOptions)) continue;
       if (skill.modes?.length && !skill.modes.includes(mode)) continue;
       if (skill.triggers?.some((trigger) => trigger.length > 0 && prompt.toLowerCase().includes(trigger.toLowerCase()))) requested.add(skill.name);
     }
@@ -148,6 +162,7 @@ export class SkillEngine {
       ordered.push(name);
     };
     requested.forEach(add);
+    assertSkillCount(ordered.length, this.runtimeOptions);
     const selected = new Set(ordered);
     for (const name of ordered) {
       const conflict = this.skills.get(name)?.conflicts?.find((candidate) => selected.has(candidate));
@@ -160,17 +175,23 @@ export class SkillEngine {
     return result;
   }
 
+  private checkedInstructions<T extends SkillSelection & { instructions: string }>(skills: T[]): T[] {
+    assertSkillInstructionBudget(skills, this.runtimeOptions);
+    return skills;
+  }
+
   async load(selection: SkillSelection[]): Promise<Array<SkillSelection & { instructions: string }>> {
+    assertSkillCount(selection.length, this.runtimeOptions);
     if (!this.reader) throw new Error("skill_body_reader_unavailable");
     const { createHash } = await import("node:crypto");
-    const local = await Promise.all(selection.map(async (selected) => {
+    const local = this.checkedInstructions(await Promise.all(selection.map(async (selected) => {
       const instructions = await this.reader!.read(selected.metadata.path);
       const actual = createHash("sha256").update(instructions).digest("hex");
       if (actual !== selected.metadata.sha256.toLowerCase()) throw new Error(`skill_integrity_mismatch:${selected.metadata.name}`);
       return { ...selected, instructions };
-    }));
+    })));
     const query = (selection as SkillSelectionQueryCarrier)[externalSecurityQuery];
-    if (!query || query.mode !== "lab") return local;
+    if (!query || query.mode !== "lab" || this.runtimeOptions?.loadExternalSecuritySkills === false) return local;
 
     const root = await externalSecurityRoot();
     if (!root) return local;
@@ -208,10 +229,12 @@ export class SkillEngine {
     }));
 
     const verifier = local.findIndex((item) => item.metadata.name === "verification-before-completion");
-    if (verifier < 0) return [...local, ...external];
-    return [...local.slice(0, verifier), ...external, ...local.slice(verifier)];
+    if (verifier < 0) return this.checkedInstructions([...local, ...external]);
+    return this.checkedInstructions([...local.slice(0, verifier), ...external, ...local.slice(verifier)]);
   }
 }
 
 export * from "./security-skill-graph";
 export * from "./external-security-runtime";
+
+export * from "./runtime-profile";
